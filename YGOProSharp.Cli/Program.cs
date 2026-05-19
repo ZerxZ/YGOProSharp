@@ -5,7 +5,7 @@ using CancellationTokenSource shutdown = new();
 Console.CancelKeyPress += (_, eventArgs) =>
 {
     eventArgs.Cancel = true;
-    shutdown.Cancel();
+    shutdown?.Cancel();
 };
 
 try
