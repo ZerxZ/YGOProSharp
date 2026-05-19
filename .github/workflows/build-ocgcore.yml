@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   NATIVE_DIR: YGOProSharp.Native
@@ -45,7 +45,7 @@ jobs:
           - os: macos-15-intel
             rid: osx-x64
             xmake_plat: macosx
-            xmake_arch: x64
+            xmake_arch: x86_64
 
           - os: macos-latest
             rid: osx-arm64
@@ -60,6 +60,18 @@ jobs:
         uses: xmake-io/github-action-setup-xmake@v1
         with:
           xmake-version: latest
+          actions-cache-folder: .xmake-cache
+          package-cache: true
+          package-cache-key: native-packages-${{ runner.os }}-${{ matrix.rid }}-${{ hashFiles('YGOProSharp.Native/xmake.lua') }}
+          build-cache: true
+          build-cache-key: native-build-${{ runner.os }}-${{ matrix.rid }}-${{ hashFiles('YGOProSharp.Native/xmake.lua') }}
+          project-path: ${{ env.NATIVE_DIR }}
+
+      - name: Cache native downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NATIVE_DIR }}/.deps
+          key: native-downloads-${{ runner.os }}-${{ hashFiles('YGOProSharp.Native/xmake.lua') }}
 
       - name: Configure xmake
         working-directory: ${{ env.NATIVE_DIR }}
@@ -69,13 +81,14 @@ jobs:
             -p ${{ matrix.xmake_plat }} \
             -a ${{ matrix.xmake_arch }} \
             -m release \
+            --policies=build.ccache:y \
             -y
 
       - name: Build ocgcore
         working-directory: ${{ env.NATIVE_DIR }}
         shell: bash
         run: |
-          xmake -r ocgcore -y
+          xmake ocgcore
 
       - name: Show native output
         working-directory: ${{ env.NATIVE_DIR }}
@@ -98,6 +111,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
 
       - name: Download native artifacts
         uses: actions/download-artifact@v4
@@ -127,3 +143,19 @@ jobs:
           name: YGOProSharp.Native-nuget
           path: artifacts/nuget/*.nupkg
           if-no-files-found: error
+
+      - name: Commit native artifacts
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add "${NATIVE_DIR}/lib"
+          if git diff --cached --quiet; then
+            echo "No native artifact changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Update native runtime artifacts [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
