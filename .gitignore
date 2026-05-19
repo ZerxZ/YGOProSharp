@@ -1,0 +1,94 @@
+# =========================
+# .NET / C#
+# =========================
+bin/
+obj/
+[Bb]in/
+[Oo]bj/
+
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider / ReSharper
+.idea/
+.idea_modules/
+_ReSharper*/
+*.DotSettings.user
+*.sln.iml
+.ReSharper.Caches/
+
+# Visual Studio
+.vs/
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+.nuget/
+project.lock.json
+project.assets.json
+
+# Build output
+artifacts/
+publish/
+out/
+dist/
+
+# =========================
+# Xmake
+# =========================
+.xmake/
+build/
+.xmake-cache/
+
+# If xmake is under YGOProSharp.Native
+YGOProSharp.Native/.xmake/
+YGOProSharp.Native/build/
+
+# Downloaded / cloned native sources
+YGOProSharp.Native/.deps/
+YGOProSharp.Native/lua_src/
+YGOProSharp.Native/ygopro-core/
+
+# Optional old local dependency dirs
+lua_src/
+ygopro-core/
+.deps/
+
+# =========================
+# Keep native package assets
+# =========================
+# Do NOT ignore YGOProSharp.Native/lib,
+# because these files are packed into NuGet runtimes/*/native.
+!YGOProSharp.Native/lib/
+!YGOProSharp.Native/lib/**
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# =========================
+# Logs / temp
+# =========================
+*.log
+*.tmp
+*.temp
+*.cache
+*.bak
+*.swp
+*.swo
+
+# =========================
+# JetBrains terminal/history misc
+# =========================
+.history/

@@ -1,0 +1,108 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFrameworks>net7.0;net8.0;net9.0;net10.0</TargetFrameworks>
+        <RootNamespace>YGOProSharp.Native</RootNamespace>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+
+        <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+        <IncludeBuildOutput>false</IncludeBuildOutput>
+        <SkipCompilerExecution>true</SkipCompilerExecution>
+        <CopyBuildOutputToOutputDirectory>false</CopyBuildOutputToOutputDirectory>
+        <CopyOutputSymbolsToOutputDirectory>false</CopyOutputSymbolsToOutputDirectory>
+        <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+
+        <Configurations>Debug;Release;Prerelease</Configurations>
+        <Platforms>AnyCPU</Platforms>
+        <LangVersion>14.0</LangVersion>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <YGOProSharpNativeCurrentRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</YGOProSharpNativeCurrentRid>
+        <YGOProSharpNativeCurrentRid Condition="'$(YGOProSharpNativeCurrentRid)' == '' and '$(OS)' == 'Windows_NT'">win-x64</YGOProSharpNativeCurrentRid>
+    </PropertyGroup>
+
+    <PropertyGroup Label="NuGet">
+        <PackageId>YGOProSharp.Native</PackageId>
+        <VersionPrefix>0.1.0</VersionPrefix>
+
+        <Title>YGOProSharp Native library</Title>
+        <Authors>ZerxZ</Authors>
+        <Company>ZerxZ</Company>
+
+        <Description>Native runtime package for YGOProSharp, including ocgcore built from Fluorohydride/ygopro-core.</Description>
+        <Copyright>Copyright (c) 2026 ZerxZ.</Copyright>
+
+        <PackageProjectUrl>https://github.com/ZerxZ/YGOProSharp</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/ZerxZ/YGOProSharp</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+
+        <PackageTags>YGOPro;YGOProSharp;OCGCore;ygopro-core;native</PackageTags>
+
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageLicenseFile>LICENSE</PackageLicenseFile>
+
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <NoWarn>1591</NoWarn>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="Exists('logo.png')">
+        <PackageIcon>logo.png</PackageIcon>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(Configuration)' == 'Prerelease'">
+        <VersionSuffix>preview.$([System.DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss'))</VersionSuffix>
+        <Description>Native runtime package for YGOProSharp — PREVIEW CI build.</Description>
+        <PackageReleaseNotes>Preview CI build at $([System.DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss')) UTC; Version $(VersionPrefix)-$(VersionSuffix). Native ocgcore source: https://github.com/Fluorohydride/ygopro-core</PackageReleaseNotes>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="LICENSE" Pack="true" PackagePath="..\" />
+        <None Include="README.md" Pack="true" Visible="true" PackagePath="\" />
+
+        <None Include="logo.png"
+              Condition="Exists('logo.png')"
+              Pack="true"
+              Visible="false"
+              PackagePath="\" />
+
+        <Content Include="lib\**\*.*"
+                 Pack="true"
+                 PackagePath="runtimes\%(RecursiveDir)native\"
+                 Link="runtimes\%(RecursiveDir)native\%(Filename)%(Extension)"
+                 TargetPath="runtimes\%(RecursiveDir)native\%(Filename)%(Extension)"
+                 CopyToOutputDirectory="PreserveNewest"
+                 CopyToPublishDirectory="PreserveNewest" />
+
+        <Content Include="lib\$(YGOProSharpNativeCurrentRid)\*.dll;lib\$(YGOProSharpNativeCurrentRid)\*.so;lib\$(YGOProSharpNativeCurrentRid)\*.dylib"
+                 Condition="'$(YGOProSharpNativeCurrentRid)' != '' and Exists('lib\$(YGOProSharpNativeCurrentRid)')"
+                 Pack="false"
+                 Link="%(Filename)%(Extension)"
+                 TargetPath="%(Filename)%(Extension)"
+                 CopyToOutputDirectory="PreserveNewest"
+                 CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Remove="build\**" />
+        <None Remove=".deps\**" />
+        <None Remove="lua_src\**" />
+        <None Remove="ygopro-core\**" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Remove="build\**" />
+        <Compile Remove=".deps\**" />
+        <Compile Remove="lua_src\**" />
+        <Compile Remove="ygopro-core\**" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <EmbeddedResource Remove="build\**" />
+        <EmbeddedResource Remove=".deps\**" />
+        <EmbeddedResource Remove="lua_src\**" />
+        <EmbeddedResource Remove="ygopro-core\**" />
+    </ItemGroup>
+
+</Project>
