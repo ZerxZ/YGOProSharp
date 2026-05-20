@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.Extensions.Logging;
+using YGOProSharp.Logging;
 
 namespace YGOProSharp.Network;
 
@@ -16,6 +18,7 @@ public class AsyncBinaryClient
 
     private readonly NetworkClient _client;
     private readonly PacketFramer _framer;
+    private readonly ILogger<AsyncBinaryClient> _logger = AppLog.CreateLogger<AsyncBinaryClient>();
 
     public AsyncBinaryClient(NetworkClient client)
     {
@@ -57,12 +60,14 @@ public class AsyncBinaryClient
 
     public void Send(ReadOnlySpan<byte> packet)
     {
+        _logger.LogDebug("Sending async packet to {RemoteAddress}. Length={PacketLength}.", RemoteIPAddress, packet.Length);
         byte[] frame = _framer.Frame(packet);
         _client.BeginSend(frame);
     }
 
     public Task SendAsync(ReadOnlyMemory<byte> packet, CancellationToken cancellationToken = default)
     {
+        _logger.LogDebug("Sending async packet to {RemoteAddress}. Length={PacketLength}.", RemoteIPAddress, packet.Length);
         byte[] frame = _framer.Frame(packet.Span);
         return _client.SendAsync(frame, cancellationToken);
     }
@@ -74,11 +79,16 @@ public class AsyncBinaryClient
 
     private void Client_Connected()
     {
+        _logger.LogInformation("Async binary client connected to {RemoteAddress}.", RemoteIPAddress);
         Connected?.Invoke();
     }
 
     private void Client_Disconnected(Exception? ex)
     {
+        if (ex is null)
+            _logger.LogInformation("Async binary client disconnected from {RemoteAddress}.", RemoteIPAddress);
+        else
+            _logger.LogWarning(ex, "Async binary client disconnected with error from {RemoteAddress}.", RemoteIPAddress);
         Disconnected?.Invoke(ex);
     }
 
@@ -89,12 +99,14 @@ public class AsyncBinaryClient
             _framer.Append(data);
             while (_framer.TryReadPacket(out byte[] packet))
             {
+                _logger.LogDebug("Dispatching async packet from {RemoteAddress}. Length={PacketLength}.", RemoteIPAddress, packet.Length);
                 PacketReceivedRaw?.Invoke(packet);
                 PacketReceived?.Invoke(packet);
             }
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Failed to frame async incoming data from {RemoteAddress}.", RemoteIPAddress);
             _client.Close(ex);
         }
     }

@@ -1,6 +1,8 @@
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.Extensions.Logging;
+using YGOProSharp.Logging;
 
 namespace YGOProSharp.Network;
 
@@ -18,6 +20,7 @@ public class BinaryClient
     private readonly NetworkClient _client;
     private readonly Queue<byte[]> _pendingPackets = new();
     private readonly PacketFramer _framer;
+    private readonly ILogger<BinaryClient> _logger = AppLog.CreateLogger<BinaryClient>();
 
     private bool _wasConnected;
     private bool _wasDisconnected;
@@ -81,12 +84,14 @@ public class BinaryClient
 
     public void Send(ReadOnlySpan<byte> packet)
     {
+        _logger.LogDebug("Sending packet to {RemoteAddress}. Length={PacketLength}.", RemoteIPAddress, packet.Length);
         byte[] frame = _framer.Frame(packet);
         _client.BeginSend(frame);
     }
 
     public Task SendAsync(ReadOnlyMemory<byte> packet, CancellationToken cancellationToken = default)
     {
+        _logger.LogDebug("Sending async packet to {RemoteAddress}. Length={PacketLength}.", RemoteIPAddress, packet.Length);
         byte[] frame = _framer.Frame(packet.Span);
         return _client.SendAsync(frame, cancellationToken);
     }
@@ -110,6 +115,7 @@ public class BinaryClient
             if (packet is null)
                 return;
 
+            _logger.LogDebug("Dispatching packet from {RemoteAddress}. Length={PacketLength}.", RemoteIPAddress, packet.Length);
             PacketReceivedRaw?.Invoke(packet);
 
             if (PacketReceived is null)
@@ -124,12 +130,17 @@ public class BinaryClient
     private void Client_Connected()
     {
         _wasConnected = true;
+        _logger.LogInformation("Binary client connected to {RemoteAddress}.", RemoteIPAddress);
     }
 
     private void Client_Disconnected(Exception? ex)
     {
         _wasDisconnected = true;
         _closingException = ex;
+        if (ex is null)
+            _logger.LogInformation("Binary client disconnected from {RemoteAddress}.", RemoteIPAddress);
+        else
+            _logger.LogWarning(ex, "Binary client disconnected with error from {RemoteAddress}.", RemoteIPAddress);
     }
 
     private void Client_DataReceived(byte[] data)
@@ -139,12 +150,14 @@ public class BinaryClient
             _framer.Append(data);
             while (_framer.TryReadPacket(out byte[] packet))
             {
+                _logger.LogDebug("Queued packet from {RemoteAddress}. Length={PacketLength}.", RemoteIPAddress, packet.Length);
                 lock (_pendingPackets)
                     _pendingPackets.Enqueue(packet);
             }
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Failed to frame incoming data from {RemoteAddress}.", RemoteIPAddress);
             _client.Close(ex);
         }
     }

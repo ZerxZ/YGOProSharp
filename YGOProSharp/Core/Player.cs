@@ -1,5 +1,7 @@
 using System.IO;
+using Microsoft.Extensions.Logging;
 using YGOProSharp.Cards;
+using YGOProSharp.Logging;
 using YGOProSharp.Network;
 using YGOProSharp.Network.Enums;
 using YGOProSharp.Network.Utils;
@@ -15,6 +17,7 @@ namespace YGOProSharp
         public Deck Deck { get; private set; } = null!;
         public PlayerState State { get; set; }
         private YGOClient _client;
+        private readonly ILogger<Player> _logger;
 
         public Player(Game game, YGOClient client)
         {
@@ -22,6 +25,7 @@ namespace YGOProSharp
             Type = (int)PlayerType.Undefined;
             State = PlayerState.None;
             _client = client;
+            _logger = AppLog.CreateLogger<Player>();
         }
 
         public void Send(BinaryWriter packet)
@@ -36,6 +40,7 @@ namespace YGOProSharp
 
         public void OnDisconnected()
         {
+            _logger.LogInformation("Player {PlayerName} disconnected. Authenticated={Authenticated}, Type={PlayerType}.", Name, IsAuthentified, Type);
             if (IsAuthentified)
                 Game.RemovePlayer(this);
         }
@@ -59,63 +64,75 @@ namespace YGOProSharp
 
         public void Parse(ReadOnlySpan<byte> packet)
         {
-            PacketReader reader = new(packet);
-            CtosMessage msg = (CtosMessage)reader.ReadByte();
-            switch (msg)
+            try
             {
-                case CtosMessage.PlayerInfo:
-                    OnPlayerInfo(ref reader);
-                    break;
-                case CtosMessage.JoinGame:
-                    OnJoinGame(ref reader);
-                    break;
-                case CtosMessage.CreateGame:
-                    OnCreateGame(ref reader);
-                    break;
+                PacketReader reader = new(packet);
+                CtosMessage msg = (CtosMessage)reader.ReadByte();
+                _logger.LogDebug("Received CTOS {CtosMessage} from {PlayerName}. Length={PacketLength}.", msg, Name, packet.Length);
+                switch (msg)
+                {
+                    case CtosMessage.PlayerInfo:
+                        OnPlayerInfo(ref reader);
+                        break;
+                    case CtosMessage.JoinGame:
+                        OnJoinGame(ref reader);
+                        break;
+                    case CtosMessage.CreateGame:
+                        OnCreateGame(ref reader);
+                        break;
+                }
+                if (!IsAuthentified)
+                {
+                    _logger.LogDebug("Ignoring unauthenticated CTOS {CtosMessage} from {PlayerName}.", msg, Name);
+                    return;
+                }
+                switch (msg)
+                {
+                    case CtosMessage.Chat:
+                        OnChat(ref reader);
+                        break;
+                    case CtosMessage.HsToDuelist:
+                        Game.MoveToDuelist(this);
+                        break;
+                    case CtosMessage.HsToObserver:
+                        Game.MoveToObserver(this);
+                        break;
+                    case CtosMessage.LeaveGame:
+                        Game.RemovePlayer(this);
+                        break;
+                    case CtosMessage.HsReady:
+                        Game.SetReady(this, true);
+                        break;
+                    case CtosMessage.HsNotReady:
+                        Game.SetReady(this, false);
+                        break;
+                    case CtosMessage.HsKick:
+                        OnKick(ref reader);
+                        break;
+                    case CtosMessage.HsStart:
+                        Game.StartDuel(this);
+                        break;
+                    case CtosMessage.HandResult:
+                        OnHandResult(ref reader);
+                        break;
+                    case CtosMessage.TpResult:
+                        OnTpResult(ref reader);
+                        break;
+                    case CtosMessage.UpdateDeck:
+                        OnUpdateDeck(ref reader);
+                        break;
+                    case CtosMessage.Response:
+                        OnResponse(ref reader);
+                        break;
+                    case CtosMessage.Surrender:
+                        Game.Surrender(this, 0);
+                        break;
+                }
             }
-            if (!IsAuthentified)
-                return;
-            switch (msg)
+            catch (Exception ex)
             {
-                case CtosMessage.Chat:
-                    OnChat(ref reader);
-                    break;
-                case CtosMessage.HsToDuelist:
-                    Game.MoveToDuelist(this);
-                    break;
-                case CtosMessage.HsToObserver:
-                    Game.MoveToObserver(this);
-                    break;
-                case CtosMessage.LeaveGame:
-                    Game.RemovePlayer(this);
-                    break;
-                case CtosMessage.HsReady:
-                    Game.SetReady(this, true);
-                    break;
-                case CtosMessage.HsNotReady:
-                    Game.SetReady(this, false);
-                    break;
-                case CtosMessage.HsKick:
-                    OnKick(ref reader);
-                    break;
-                case CtosMessage.HsStart:
-                    Game.StartDuel(this);
-                    break;
-                case CtosMessage.HandResult:
-                    OnHandResult(ref reader);
-                    break;
-                case CtosMessage.TpResult:
-                    OnTpResult(ref reader);
-                    break;
-                case CtosMessage.UpdateDeck:
-                    OnUpdateDeck(ref reader);
-                    break;
-                case CtosMessage.Response:
-                    OnResponse(ref reader);
-                    break;
-                case CtosMessage.Surrender:
-                    Game.Surrender(this, 0);
-                    break;
+                _logger.LogError(ex, "Failed to parse packet from {PlayerName}. Length={PacketLength}.", Name, packet.Length);
+                throw;
             }
         }
 
@@ -124,6 +141,7 @@ namespace YGOProSharp
             if (Name != null)
                 return;
             Name = packet.ReadUnicode(20);
+            _logger.LogInformation("Player identified as {PlayerName}.", Name);
         }
 
         private void OnCreateGame(ref PacketReader packet)
@@ -134,6 +152,7 @@ namespace YGOProSharp
 
             Game.AddPlayer(this);
             IsAuthentified = true;
+            _logger.LogInformation("Player {PlayerName} created game and authenticated.", Name);
         }
 
         private void OnJoinGame(ref PacketReader packet)
@@ -150,29 +169,34 @@ namespace YGOProSharp
 
             Game.AddPlayer(this);
             IsAuthentified = true;
+            _logger.LogInformation("Player {PlayerName} joined game. ClientVersion={ClientVersion}.", Name, version);
         }
 
         private void OnChat(ref PacketReader packet)
         {
             string msg = packet.ReadUnicode(256);
+            _logger.LogInformation("Player {PlayerName} sent chat message.", Name);
             Game.Chat(this, msg);
         }
 
         private void OnKick(ref PacketReader packet)
         {
             int pos = packet.ReadByte();
+            _logger.LogInformation("Player {PlayerName} requested kick for position {PlayerSlot}.", Name, pos);
             Game.KickPlayer(this, pos);
         }
 
         private void OnHandResult(ref PacketReader packet)
         {
             int res = packet.ReadByte();
+            _logger.LogInformation("Player {PlayerName} selected hand result {HandResult}.", Name, res);
             Game.HandResult(this, res);
         }
 
         private void OnTpResult(ref PacketReader packet)
         {
             bool tp = packet.ReadByte() != 0;
+            _logger.LogInformation("Player {PlayerName} selected TP result {TpResult}.", Name, tp);
             Game.TpResult(this, tp);
         }
 
@@ -183,6 +207,7 @@ namespace YGOProSharp
             Deck deck = new Deck(Game.CardRepository);
             int main = packet.ReadInt32();
             int side = packet.ReadInt32();
+            _logger.LogInformation("Player {PlayerName} updated deck. Main={MainCount}, Side={SideCount}.", Name, main, side);
 
             for (int i = 0; i < main; i++)
                 deck.AddMain(packet.ReadInt32());
@@ -215,13 +240,23 @@ namespace YGOProSharp
         private void OnResponse(ref PacketReader packet)
         {
             if (Game.State != GameState.Duel)
+            {
+                _logger.LogDebug("Ignoring response from {PlayerName}: game state is {GameState}.", Name, Game.State);
                 return;
+            }
             if (State != PlayerState.Response)
+            {
+                _logger.LogDebug("Ignoring response from {PlayerName}: player state is {PlayerState}.", Name, State);
                 return;
+            }
             ReadOnlySpan<byte> resp = packet.ReadRemainingBytes();
             if (resp.Length > 64)
+            {
+                _logger.LogWarning("Ignoring oversized response from {PlayerName}. Length={ResponseLength}.", Name, resp.Length);
                 return;
+            }
             State = PlayerState.None;
+            _logger.LogDebug("Player {PlayerName} submitted response. Length={ResponseLength}.", Name, resp.Length);
             Game.SetResponse(resp);
         }
     }

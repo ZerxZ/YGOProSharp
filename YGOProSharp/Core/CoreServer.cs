@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using YGOProSharp.Abstractions.Ocg;
 using YGOProSharp.Cards;
+using YGOProSharp.Logging;
 using YGOProSharp.Network;
 
 namespace YGOProSharp
@@ -20,18 +20,16 @@ namespace YGOProSharp
 
         private NetworkServer? _listener;
         private readonly IDuelFactory? _duelFactory;
-        private readonly ILoggerFactory _loggerFactory;
         private readonly ILogger<CoreServer> _logger;
         private readonly ICardRepository _cardRepository;
         private readonly List<YGOClient> _clients = new();
 
         private bool _closePending;
 
-        public CoreServer(IDuelFactory? duelFactory = null, ILoggerFactory? loggerFactory = null, ICardRepository? cardRepository = null)
+        public CoreServer(IDuelFactory? duelFactory = null, ICardRepository? cardRepository = null)
         {
             _duelFactory = duelFactory;
-            _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
-            _logger = _loggerFactory.CreateLogger<CoreServer>();
+            _logger = AppLog.CreateLogger<CoreServer>();
             _cardRepository = cardRepository ?? EmptyCardRepository.Instance;
         }
 
@@ -39,17 +37,20 @@ namespace YGOProSharp
         {
             if (IsRunning)
                 return;
-            Addons = new AddonsManager(_loggerFactory);
-            Game = new Game(this, _duelFactory, _loggerFactory, _cardRepository);
+            Addons = new AddonsManager();
+            Game = new Game(this, _duelFactory, _cardRepository);
             Addons.Init(Game);
             try
             {
-                _listener = new NetworkServer(IPAddress.Any, Config.GetInt("Port", DefaultPort));
+                int port = Config.GetInt("Port", DefaultPort);
+                _logger.LogInformation("Starting core server on {Address}:{Port}.", IPAddress.Any, port);
+                _listener = new NetworkServer(IPAddress.Any, port);
                 _listener.ClientConnected += Listener_ClientConnected;
                 _listener.Start();
                 IsRunning = true;
                 IsListening = true;
                 Game.Start();
+                _logger.LogInformation("Core server started.");
             }
             catch (Exception ex)
             {
@@ -62,26 +63,31 @@ namespace YGOProSharp
             if (!IsListening)
                 return;
             IsListening = false;
+            _logger.LogInformation("Stopping listener.");
             _listener?.Close();
         }
 
         public void Stop()
         {
+            _logger.LogInformation("Stopping core server with {ClientCount} connected clients.", _clients.Count);
             StopListening();
             foreach (YGOClient client in _clients)
                 client.Close();
             Game?.Stop();
             IsRunning = false;
+            _logger.LogInformation("Core server stopped.");
         }
 
         public void StopDelayed()
         {
+            _logger.LogInformation("Core server delayed stop requested.");
             StopListening();
             _closePending = true;
         }
 
         public void AddClient(YGOClient client)
         {
+            _logger.LogInformation("Adding client {RemoteAddress}.", client.RemoteIPAddress);
             _clients.Add(client);
             if (Game is null)
                 throw new InvalidOperationException("Server game has not been initialized.");
@@ -90,6 +96,7 @@ namespace YGOProSharp
 
             client.PacketReceivedRaw += packet => player.Parse(packet.Span);
             client.Disconnected += packet => player.OnDisconnected();
+            _logger.LogDebug("Client {RemoteAddress} registered. ClientCount={ClientCount}.", client.RemoteIPAddress, _clients.Count);
         }
         
         public void Tick()
@@ -106,6 +113,7 @@ namespace YGOProSharp
                 client.Update();
                 if (!client.IsConnected)
                 {
+                    _logger.LogInformation("Removing disconnected client {RemoteAddress}.", client.RemoteIPAddress);
                     disconnectedClients.Add(client);
                 }
             }
@@ -124,6 +132,7 @@ namespace YGOProSharp
 
         private void Listener_ClientConnected(NetworkClient client)
         {
+            _logger.LogInformation("Client connected from {RemoteAddress}.", client.RemoteIPAddress);
             AddClient(new YGOClient(client));
         }
     }

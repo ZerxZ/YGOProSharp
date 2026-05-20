@@ -8,22 +8,27 @@ using YGOProSharp;
 using YGOProSharp.Abstractions.Ocg;
 using YGOProSharp.Abstractions.Ocg.Enums;
 using YGOProSharp.Cards;
+using YGOProSharp.Logging;
 using YGOProSharp.Network;
 using YGOProSharp.Network.Enums;
 using YGOProSharp.Network.Utils;
 using YGOProSharp.NativeApi;
 
+ListLoggerProvider logProvider = TestLog.Provider;
 using ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
 {
-    builder.SetMinimumLevel(LogLevel.Information);
+    builder.SetMinimumLevel(LogLevel.Trace);
+    builder.AddProvider(logProvider);
     builder.AddSimpleConsole(options =>
     {
         options.SingleLine = true;
         options.TimestampFormat = "";
     });
 });
-ILogger testLogger = loggerFactory.CreateLogger("YGOProSharp.Tests");
+AppLog.Configure(loggerFactory);
+ILogger testLogger = AppLog.CreateLogger("YGOProSharp.Tests");
 
+Run("AppLog parses log levels", AppLogParsesLogLevels);
 Run("CoreMessage reads native payloads from spans", CoreMessageReadsNativePayloadsFromSpans);
 Run("Native duel rejects too-small query destination buffers", NativeDuelRejectsTooSmallQueryDestinationBuffers);
 Run("Native duel preserves oversize response behavior", NativeDuelPreservesOversizeResponseBehavior);
@@ -36,12 +41,22 @@ Run("Repository card data provider maps cards to ocg data", RepositoryCardDataPr
 Run("Project boundaries keep native interop out of core", ProjectBoundariesKeepNativeInteropOutOfCore);
 Run("Project boundaries keep card models and sqlite separated", ProjectBoundariesKeepCardModelsAndSqliteSeparated);
 Run("Project boundaries keep direct Console writes out of source", ProjectBoundariesKeepDirectConsoleWritesOutOfSource);
+Run("Project boundaries keep logger parameters out of business APIs", ProjectBoundariesKeepLoggerParametersOutOfBusinessApis);
 Run("PacketFramer handles split and sticky packets", PacketFramerHandlesSplitAndStickyPackets);
 Run("PacketFramer handles 4-byte size-included headers", PacketFramerHandlesFourByteSizeIncludedHeaders);
 Run("PacketFramer rejects oversize packets", PacketFramerRejectsOversizePackets);
 Run("PacketReader reads little-endian and UTF-16 data", PacketReaderReadsLittleEndianAndUtf16Data);
 Run("Player parses player info from spans", PlayerParsesPlayerInfoFromSpans);
+Run("Game logs native errors", GameLogsNativeErrors);
 await RunAsync("NetworkClient loopback send and receive", NetworkClientLoopbackSendAndReceiveAsync);
+
+static void AppLogParsesLogLevels()
+{
+    AssertEqual((int)LogLevel.Information, (int)AppLog.ParseLevel(null));
+    AssertEqual((int)LogLevel.Debug, (int)AppLog.ParseLevel("Debug"));
+    AssertEqual((int)LogLevel.Trace, (int)AppLog.ParseLevel("trace"));
+    AssertEqual((int)LogLevel.Warning, (int)AppLog.ParseLevel("nope", LogLevel.Warning));
+}
 
 static void CoreMessageReadsNativePayloadsFromSpans()
 {
@@ -276,6 +291,35 @@ static void ProjectBoundariesKeepDirectConsoleWritesOutOfSource()
     }
 }
 
+static void ProjectBoundariesKeepLoggerParametersOutOfBusinessApis()
+{
+    string root = FindRepositoryRoot();
+    string coreProject = Path.Combine(root, "YGOProSharp");
+    string appLogPath = Path.Combine(coreProject, "Logging", "AppLog.cs");
+    string[] forbiddenParameterTokens = ["ILogger ", "ILogger<", "ILoggerFactory"];
+
+    foreach (string file in Directory.EnumerateFiles(coreProject, "*.cs", SearchOption.AllDirectories)
+                 .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") &&
+                                !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") &&
+                                !Path.GetFullPath(file).Equals(appLogPath, StringComparison.OrdinalIgnoreCase)))
+    {
+        foreach (string line in File.ReadLines(file))
+        {
+            string trimmed = line.TrimStart();
+            if (!trimmed.StartsWith("public ", StringComparison.Ordinal))
+                continue;
+            if (!trimmed.Contains('('))
+                continue;
+
+            foreach (string token in forbiddenParameterTokens)
+            {
+                if (trimmed.Contains(token, StringComparison.Ordinal))
+                    throw new InvalidOperationException($"{Path.GetRelativePath(root, file)} exposes logger parameter in public API.");
+            }
+        }
+    }
+}
+
 static void PacketFramerHandlesSplitAndStickyPackets()
 {
     PacketFramer framer = new();
@@ -342,6 +386,7 @@ static void PacketReaderReadsLittleEndianAndUtf16Data()
 
 static void PlayerParsesPlayerInfoFromSpans()
 {
+    TestLog.Provider.Clear();
     Config.Load([]);
     using MemoryStream stream = new();
     using BinaryWriter writer = new(stream);
@@ -353,10 +398,40 @@ static void PlayerParsesPlayerInfoFromSpans()
     player.Parse(stream.ToArray());
 
     AssertEqual("Tester", player.Name);
+    AssertTrue(TestLog.Provider.Contains(LogLevel.Information, "Player identified as Tester."));
+}
+
+static void GameLogsNativeErrors()
+{
+    TestLog.Provider.Clear();
+    string previousCurrentDirectory = Directory.GetCurrentDirectory();
+    string temporaryDirectory = Path.Combine(Path.GetTempPath(), "YGOProSharpTests_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(temporaryDirectory);
+
+    try
+    {
+        Directory.SetCurrentDirectory(temporaryDirectory);
+        Game game = new(new CoreServer());
+        System.Reflection.MethodInfo handleError = typeof(Game).GetMethod(
+            "HandleError",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(nameof(Game), "HandleError");
+
+        handleError.Invoke(game, ["synthetic lua error"]);
+
+        AssertTrue(Directory.EnumerateFiles(temporaryDirectory, "lua_*.txt").Any());
+        AssertTrue(TestLog.Provider.Contains(LogLevel.Error, "Native/Lua error"));
+    }
+    finally
+    {
+        Directory.SetCurrentDirectory(previousCurrentDirectory);
+        Directory.Delete(temporaryDirectory, recursive: true);
+    }
 }
 
 static async Task NetworkClientLoopbackSendAndReceiveAsync()
 {
+    TestLog.Provider.Clear();
     using TcpListener listener = new(IPAddress.Loopback, 0);
     listener.Start();
 
@@ -384,6 +459,10 @@ static async Task NetworkClientLoopbackSendAndReceiveAsync()
 
     client.Close();
     listener.Stop();
+
+    AssertTrue(TestLog.Provider.Contains(LogLevel.Information, "Network client connected"));
+    AssertTrue(TestLog.Provider.Contains(LogLevel.Debug, "Received 3 bytes"));
+    AssertTrue(TestLog.Provider.Contains(LogLevel.Information, "Network client disconnected"));
 }
 
 void Run(string name, Action test)
@@ -507,4 +586,99 @@ static string FindRepositoryRoot()
     }
 
     throw new DirectoryNotFoundException("Could not find repository root.");
+}
+
+internal static class TestLog
+{
+    public static ListLoggerProvider Provider { get; } = new();
+}
+
+internal sealed class ListLoggerProvider : ILoggerProvider
+{
+    private readonly List<LogRecord> _records = new();
+
+    public ILogger CreateLogger(string categoryName)
+    {
+        return new ListLogger(categoryName, Add);
+    }
+
+    public IReadOnlyList<LogRecord> Records
+    {
+        get
+        {
+            lock (_records)
+                return _records.ToArray();
+        }
+    }
+
+    public bool Contains(LogLevel level, string messagePart)
+    {
+        return Records.Any(record =>
+            record.Level == level &&
+            record.Message.Contains(messagePart, StringComparison.Ordinal));
+    }
+
+    public void Clear()
+    {
+        lock (_records)
+            _records.Clear();
+    }
+
+    public void Dispose()
+    {
+    }
+
+    private void Add(LogRecord record)
+    {
+        lock (_records)
+            _records.Add(record);
+    }
+}
+
+internal sealed class ListLogger : ILogger
+{
+    private readonly string _categoryName;
+    private readonly Action<LogRecord> _write;
+
+    public ListLogger(string categoryName, Action<LogRecord> write)
+    {
+        _categoryName = categoryName;
+        _write = write;
+    }
+
+    public IDisposable BeginScope<TState>(TState state)
+        where TState : notnull
+    {
+        return NullDisposable.Instance;
+    }
+
+    public bool IsEnabled(LogLevel logLevel)
+    {
+        return true;
+    }
+
+    public void Log<TState>(
+        LogLevel logLevel,
+        EventId eventId,
+        TState state,
+        Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        _write(new LogRecord(_categoryName, logLevel, formatter(state, exception), exception));
+    }
+}
+
+internal sealed record LogRecord(string Category, LogLevel Level, string Message, Exception? Exception);
+
+internal sealed class NullDisposable : IDisposable
+{
+    public static NullDisposable Instance { get; } = new();
+
+    private NullDisposable()
+    {
+    }
+
+    public void Dispose()
+    {
+    }
 }

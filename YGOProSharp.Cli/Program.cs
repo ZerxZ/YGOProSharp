@@ -1,29 +1,38 @@
 using Microsoft.Extensions.Logging;
 using YGOProSharp;
+using YGOProSharp.Logging;
 using YGOProSharp.NativeApi;
 
 using CancellationTokenSource shutdown = new();
+string? rawLogLevel = GetLogLevelValue(args);
+LogLevel logLevel = AppLog.ParseLevel(rawLogLevel);
 using ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
 {
-    builder.SetMinimumLevel(LogLevel.Information);
+    builder.SetMinimumLevel(logLevel);
     builder.AddSimpleConsole(options =>
     {
         options.SingleLine = true;
         options.TimestampFormat = "yyyy-MM-dd HH:mm:ss ";
     });
 });
+AppLog.Configure(loggerFactory);
 using NativeOcgRuntime runtime = new();
-ILogger logger = loggerFactory.CreateLogger("YGOProSharp.Cli");
+ILogger logger = AppLog.CreateLogger("YGOProSharp.Cli");
+if (!string.IsNullOrWhiteSpace(rawLogLevel) && !Enum.TryParse(rawLogLevel, ignoreCase: true, out LogLevel _))
+    logger.LogWarning("Invalid LogLevel '{LogLevel}', falling back to {DefaultLogLevel}.", rawLogLevel, logLevel);
 
 Console.CancelKeyPress += (_, eventArgs) =>
 {
     eventArgs.Cancel = true;
-    shutdown?.Cancel();
+    logger.LogInformation("Shutdown requested from console.");
+    shutdown.Cancel();
 };
 
 try
 {
-    await YGOProSharpServer.RunAsync(args, runtime, loggerFactory, shutdown.Token);
+    logger.LogInformation("Starting YGOProSharp CLI with log level {LogLevel}.", logLevel);
+    await YGOProSharpServer.RunAsync(args, runtime, shutdown.Token);
+    logger.LogInformation("YGOProSharp CLI stopped.");
     return 0;
 }
 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -32,4 +41,13 @@ catch (Exception ex) when (ex is not OperationCanceledException)
     await File.WriteAllTextAsync(crashFile, ex.ToString());
     logger.LogCritical(ex, "YGOProSharp crashed. Crash details were written to {CrashFile}.", crashFile);
     return 1;
+}
+
+static string? GetLogLevelValue(string[] args)
+{
+    return args
+        .Select(arg => arg.Split('=', 2, StringSplitOptions.TrimEntries))
+        .Where(parts => parts.Length == 2 && parts[0].Equals("LogLevel", StringComparison.OrdinalIgnoreCase))
+        .Select(parts => parts[1])
+        .LastOrDefault();
 }

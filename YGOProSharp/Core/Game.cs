@@ -4,11 +4,11 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using YGOProSharp.Abstractions;
 using YGOProSharp.Abstractions.Ocg;
 using YGOProSharp.Abstractions.Ocg.Enums;
 using YGOProSharp.Cards;
+using YGOProSharp.Logging;
 using YGOProSharp.Network;
 using YGOProSharp.Network.Enums;
 using YGOProSharp.Network.Utils;
@@ -60,7 +60,6 @@ namespace YGOProSharp
 
         private CoreServer _server;
         private readonly IDuelFactory? _duelFactory;
-        private readonly ILoggerFactory _loggerFactory;
         private readonly ILogger<Game> _logger;
         private IDuelSession _duel = null!;
         private GameAnalyser _analyser;
@@ -84,11 +83,10 @@ namespace YGOProSharp
         public event Action<object, PlayerEventArgs>? OnPlayerReady;
         public event Action<object, PlayerChatEventArgs>? OnPlayerChat;
 
-        public Game(CoreServer server, IDuelFactory? duelFactory = null, ILoggerFactory? loggerFactory = null, ICardRepository? cardRepository = null)
+        public Game(CoreServer server, IDuelFactory? duelFactory = null, ICardRepository? cardRepository = null)
         {
             _duelFactory = duelFactory;
-            _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
-            _logger = _loggerFactory.CreateLogger<Game>();
+            _logger = AppLog.CreateLogger<Game>();
             CardRepository = cardRepository ?? EmptyCardRepository.Instance;
             State = GameState.Lobby;
             Mode = Config.GetInt("Mode");
@@ -128,7 +126,16 @@ namespace YGOProSharp
             Timer = Config.GetInt("GameTimer", DEFAULT_TIMER);
 
             _server = server;
-            _analyser = new GameAnalyser(this, _loggerFactory.CreateLogger<GameAnalyser>());
+            _analyser = new GameAnalyser(this);
+            _logger.LogInformation(
+                "Game initialized. Mode={Mode}, Region={Region}, MasterRule={MasterRule}, StartLp={StartLp}, StartHand={StartHand}, DrawCount={DrawCount}, Timer={Timer}.",
+                Mode,
+                Region,
+                MasterRule,
+                StartLp,
+                StartHand,
+                DrawCount,
+                Timer);
         }
 
         public void SetRules(BinaryReader packet)
@@ -184,6 +191,7 @@ namespace YGOProSharp
 
         public void Start()
         {
+            _logger.LogInformation("Game network is ready.");
             if (OnNetworkReady != null)
             {
                 OnNetworkReady(this, EventArgs.Empty);
@@ -192,6 +200,7 @@ namespace YGOProSharp
 
         public void Stop()
         {
+            _logger.LogInformation("Game network is stopping.");
             if (OnNetworkEnd != null)
             {
                 OnNetworkEnd(this, EventArgs.Empty);
@@ -269,6 +278,7 @@ namespace YGOProSharp
                 {
                     OnPlayerJoin(this, new PlayerEventArgs(player));
                 }
+                _logger.LogInformation("Player {PlayerName} joined as observer while game state is {GameState}.", player.Name, State);
                 return;
             }
 
@@ -288,6 +298,7 @@ namespace YGOProSharp
                 Players[pos] = player;
                 IsReady[pos] = false;
                 player.Type = pos;
+                _logger.LogInformation("Player {PlayerName} joined player slot {PlayerSlot}.", player.Name, pos);
             }
             else
             {
@@ -297,6 +308,7 @@ namespace YGOProSharp
 
                 player.Type = (int)PlayerType.Observer;
                 Observers.Add(player);
+                _logger.LogWarning("No player slot available for {PlayerName}; joined as observer. ObserverCount={ObserverCount}.", player.Name, Observers.Count);
             }
 
             SendJoinGame(player);
@@ -337,8 +349,10 @@ namespace YGOProSharp
 
         public void RemovePlayer(Player player)
         {
+            _logger.LogInformation("Removing player {PlayerName} from type {PlayerType} while game state is {GameState}.", player.Name, player.Type, State);
             if (player.Equals(HostPlayer) && State == GameState.Lobby)
             {
+                _logger.LogInformation("Host player {PlayerName} left lobby; stopping server.", player.Name);
                 _server.Stop();
                 return;
             }
@@ -375,10 +389,16 @@ namespace YGOProSharp
         public void MoveToDuelist(Player player)
         {
             if (State != GameState.Lobby)
+            {
+                _logger.LogDebug("Ignoring MoveToDuelist for {PlayerName}: game state is {GameState}.", player.Name, State);
                 return;
+            }
             int pos = GetAvailablePlayerPos();
             if (pos == -1)
+            {
+                _logger.LogWarning("No duelist slot available for {PlayerName}.", player.Name);
                 return;
+            }
 
             int oldType = player.Type;
 
@@ -423,16 +443,23 @@ namespace YGOProSharp
             {
                 OnPlayerMove(this, new PlayerMoveEventArgs(player, oldType));
             }
+            _logger.LogInformation("Player {PlayerName} moved from {OldType} to duelist slot {PlayerType}.", player.Name, oldType, player.Type);
         }
 
         public void MoveToObserver(Player player)
         {
             if (State != GameState.Lobby)
+            {
+                _logger.LogDebug("Ignoring MoveToObserver for {PlayerName}: game state is {GameState}.", player.Name, State);
                 return;
+            }
             if (player.Type == (int)PlayerType.Observer)
                 return;
             if (IsReady[player.Type])
+            {
+                _logger.LogDebug("Ignoring MoveToObserver for ready player {PlayerName}.", player.Name);
                 return;
+            }
 
             int oldType = player.Type;
 
@@ -451,6 +478,7 @@ namespace YGOProSharp
             {
                 OnPlayerMove(this, new PlayerMoveEventArgs(player, oldType));
             }
+            _logger.LogInformation("Player {PlayerName} moved from {OldType} to observer. ObserverCount={ObserverCount}.", player.Name, oldType, Observers.Count);
         }
 
         public void Chat(Player player, string msg)
@@ -485,7 +513,10 @@ namespace YGOProSharp
         public void SetReady(Player player, bool ready)
         {
             if (State != GameState.Lobby)
+            {
+                _logger.LogDebug("Ignoring ready change for {PlayerName}: game state is {GameState}.", player.Name, State);
                 return;
+            }
             if (player.Type == (int)PlayerType.Observer)
                 return;
             if (IsReady[player.Type] == ready)
@@ -503,6 +534,7 @@ namespace YGOProSharp
                 }
                 if (result != 0)
                 {
+                    _logger.LogWarning("Deck check failed for {PlayerName}. Result={DeckCheckResult}.", player.Name, result);
                     BinaryWriter rechange = GamePacketFactory.Create(StocMessage.HsPlayerChange);
                     rechange.Write((byte)((player.Type << 4) + (int)(PlayerChange.NotReady)));
                     player.Send(rechange);
@@ -527,6 +559,7 @@ namespace YGOProSharp
             {
                 OnPlayerReady(this, new PlayerEventArgs(player));
             }
+            _logger.LogInformation("Player {PlayerName} readiness changed to {Ready}.", player.Name, ready);
         }
 
         public void KickPlayer(Player player, int pos)
@@ -541,18 +574,31 @@ namespace YGOProSharp
         public void StartDuel(Player player)
         {
             if (State != GameState.Lobby)
+            {
+                _logger.LogDebug("Ignoring StartDuel from {PlayerName}: game state is {GameState}.", player.Name, State);
                 return;
+            }
             if (!player.Equals(HostPlayer))
+            {
+                _logger.LogWarning("Ignoring StartDuel from non-host player {PlayerName}.", player.Name);
                 return;
+            }
             for (int i = 0; i < Players.Length; i++)
             {
                 if (!IsReady[i])
+                {
+                    _logger.LogDebug("Ignoring StartDuel because slot {PlayerSlot} is not ready.", i);
                     return;
+                }
                 if (Players[i] == null)
+                {
+                    _logger.LogDebug("Ignoring StartDuel because slot {PlayerSlot} is empty.", i);
                     return;
+                }
             }
 
             State = GameState.Hand;
+            _logger.LogInformation("Game starting. Mode={Mode}, IsTag={IsTag}, IsMatch={IsMatch}.", Mode, IsTag, IsMatch);
             SendToAll(GamePacketFactory.Create(StocMessage.DuelStart));
 
             SendHand();
@@ -566,7 +612,10 @@ namespace YGOProSharp
         public void HandResult(Player player, int result)
         {
             if (State != GameState.Hand)
+            {
+                _logger.LogDebug("Ignoring hand result from {PlayerName}: game state is {GameState}.", player.Name, State);
                 return;
+            }
             if (player.Type == (int)PlayerType.Observer)
                 return;
             if (result < 1 || result > 3)
@@ -579,6 +628,7 @@ namespace YGOProSharp
             if (_handResult[type] != 0)
                 return;
             _handResult[type] = result;
+            _logger.LogInformation("Player {PlayerName} submitted hand result {HandResult}.", player.Name, result);
             if (_handResult[0] != 0 && _handResult[1] != 0)
             {
                 BinaryWriter packet = GamePacketFactory.Create(StocMessage.HandResult);
@@ -608,15 +658,22 @@ namespace YGOProSharp
                 State = GameState.Starting;
                 Players[_startplayer].Send(GamePacketFactory.Create(StocMessage.SelectTp));
                 TpTimer = DateTime.UtcNow;
+                _logger.LogInformation("Hand result decided start player slot {StartPlayer}.", _startplayer);
             }
         }
 
         public void TpResult(Player player, bool result)
         {
             if (State != GameState.Starting)
+            {
+                _logger.LogDebug("Ignoring TP result from {PlayerName}: game state is {GameState}.", player.Name, State);
                 return;
+            }
             if (player.Type != _startplayer)
+            {
+                _logger.LogDebug("Ignoring TP result from {PlayerName}: expected player slot {StartPlayer}.", player.Name, _startplayer);
                 return;
+            }
             
             int opt = MasterRule << 16;
             if (EnablePriority)
@@ -637,9 +694,13 @@ namespace YGOProSharp
             State = GameState.Duel;
             int seed = Environment.TickCount;
             if (_duelFactory is null)
+            {
+                _logger.LogError("Cannot start duel because no duel factory is configured.");
                 throw new InvalidOperationException("A duel factory is required to start a duel.");
+            }
 
             _duel = _duelFactory.Create((uint)seed);
+            _logger.LogInformation("Duel created. Seed={Seed}, Options={Options}, StartPlayer={StartPlayer}.", seed, opt, _startplayer);
             Random rand = new Random(seed);
 
             _duel.SetAnalyzer(_analyser.Analyse);
@@ -726,6 +787,9 @@ namespace YGOProSharp
             RefreshExtra(1);
 
             _duel.Start(opt);
+            _logger.LogInformation("Duel started. Team0Deck={Team0DeckCount}, Team1Deck={Team1DeckCount}.",
+                _duel.QueryFieldCount(0, CardLocation.Deck),
+                _duel.QueryFieldCount(1, CardLocation.Deck));
 
             TurnCount = 0;
             LifePoints[0] = StartLp;
@@ -740,9 +804,13 @@ namespace YGOProSharp
             if (State == GameState.End)
                 return;
             if (!force && State != GameState.Duel)
+            {
+                _logger.LogDebug("Ignoring surrender from {PlayerName}: game state is {GameState}, force={Force}.", player.Name, State, force);
                 return;
+            }
             if (player.Type == (int)PlayerType.Observer)
                 return;
+            _logger.LogInformation("Player {PlayerName} surrendered. Reason={Reason}, Force={Force}.", player.Name, reason, force);
             BinaryWriter win = GamePacketFactory.Create(GameMessage.Win);
             int team = player.Type;
             if (IsTag)
@@ -821,6 +889,11 @@ namespace YGOProSharp
             {
                 int length = _duel.QueryFieldCard(player, location, buffer);
                 SendToCorrectDestination(player, location, buffer.AsSpan(0, length), observer);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to refresh location {Location} for player {Player}.", location, player);
+                throw;
             }
             finally
             {
@@ -934,6 +1007,11 @@ namespace YGOProSharp
                         SendToAllBut(update, player);
                 }
             }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to refresh card at player={Player}, location={Location}, sequence={Sequence}.", player, location, sequence);
+                throw;
+            }
             finally
             {
                 ArrayPool<byte>.Shared.Return(buffer);
@@ -950,6 +1028,7 @@ namespace YGOProSharp
         {
             _lastresponse = player;
             CurPlayers[player].State = PlayerState.Response;
+            _logger.LogDebug("Waiting for response from player slot {Player}.", player);
             SendToAllBut(GamePacketFactory.Create(GameMessage.Waiting), player);
             TimeStart();
             BinaryWriter packet = GamePacketFactory.Create(StocMessage.TimeLimit);
@@ -969,6 +1048,7 @@ namespace YGOProSharp
             }
 
             TimeStop();
+            _logger.LogDebug("Setting integer response for player slot {Player}.", _lastresponse);
             _duel.SetResponse(resp);
         }
 
@@ -982,6 +1062,7 @@ namespace YGOProSharp
             }
 
             TimeStop();
+            _logger.LogDebug("Setting binary response for player slot {Player}. Length={ResponseLength}.", _lastresponse, resp.Length);
             _duel.SetResponse(resp);
             Process();
         }
@@ -995,6 +1076,7 @@ namespace YGOProSharp
 
             if (State == GameState.Duel)
             {
+                _logger.LogInformation("Ending duel. Force={Force}.", force);
                 if (!Replay.Disabled)
                 {
                     Replay.End();
@@ -1013,6 +1095,7 @@ namespace YGOProSharp
                 IsReady[1] = false;
                 State = GameState.Side;
                 SideTimer = DateTime.UtcNow;
+                _logger.LogInformation("Entering side state for match. DuelCount={DuelCount}.", DuelCount);
                 SendToPlayers(GamePacketFactory.Create(StocMessage.ChangeSide));
                 SendToObservers(GamePacketFactory.Create(StocMessage.WaitingSide));
             }
@@ -1026,6 +1109,7 @@ namespace YGOProSharp
         public void End()
         {
             State = GameState.End;
+            _logger.LogInformation("Game ended. Winner={Winner}, DuelCount={DuelCount}.", Winner, DuelCount);
 
             SendToAll(GamePacketFactory.Create(StocMessage.DuelEnd));
             _server.StopDelayed();
@@ -1068,6 +1152,7 @@ namespace YGOProSharp
                     TimeSpan elapsed = DateTime.UtcNow - _time.Value;
                     if ((int)elapsed.TotalSeconds > _timelimit[_lastresponse])
                     {
+                        _logger.LogWarning("Player slot {Player} timed out during duel.", _lastresponse);
                         Surrender(CurPlayers[_lastresponse], 3);
                     }
                 }
@@ -1079,6 +1164,7 @@ namespace YGOProSharp
 
                 if (elapsed.TotalMilliseconds >= 120000)
                 {
+                    _logger.LogWarning("Side timer expired.");
                     if (!IsReady[0] && !IsReady[1])
                     {
                         EndDuel(true);
@@ -1097,6 +1183,7 @@ namespace YGOProSharp
 
                     if (elapsed.TotalMilliseconds >= 30000)
                     {
+                        _logger.LogWarning("TP selection timer expired for player slot {Player}.", _startplayer);
                         Surrender(CurPlayers[_startplayer], 3, true);
                     }
 
@@ -1108,6 +1195,7 @@ namespace YGOProSharp
 
                 if ((int)elapsed.TotalMilliseconds >= 60000)
                 {
+                    _logger.LogWarning("Hand selection timer expired.");
                     if (_handResult[0] != 0)
                         Surrender(Players[IsTag ? 2 : 1], 3, true);
                     else if (_handResult[1] != 0)
@@ -1126,6 +1214,7 @@ namespace YGOProSharp
                 _startplayer = 1 - _startplayer;
             MatchResults[DuelCount] = player;
             MatchReasons[DuelCount++] = reason;
+            _logger.LogInformation("Duel result saved. Winner={Winner}, Reason={Reason}, DuelCount={DuelCount}.", player, reason, DuelCount);
             
             if (OnDuelEnd != null)
             {
@@ -1156,6 +1245,7 @@ namespace YGOProSharp
                 IsTpSelect = true;
                 TpTimer = DateTime.UtcNow;
                 TimeReset();
+                _logger.LogInformation("Both players are ready after side. Selecting TP with start player {StartPlayer}.", _startplayer);
                 Players[_startplayer].Send(GamePacketFactory.Create(StocMessage.SelectTp));
             }
         }
@@ -1185,13 +1275,26 @@ namespace YGOProSharp
 
         private void Process()
         {
-            int result = _duel.Process();
+            int result;
+            try
+            {
+                result = _duel.Process();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Native duel process failed.");
+                throw;
+            }
+
+            _logger.LogTrace("Native duel process returned {ProcessResult}.", result);
             switch (result)
             {
                 case -1:
+                    _logger.LogInformation("Native duel requested forced end.");
                     EndDuel(true);
                     break;
                 case 2: // Game finished
+                    _logger.LogInformation("Native duel finished.");
                     EndDuel(false);
                     break;
             }
@@ -1273,12 +1376,15 @@ namespace YGOProSharp
         
         private void HandleError(string error)
         {
+            _logger.LogError("Native/Lua error: {NativeError}", error);
             BinaryWriter packet = GamePacketFactory.Create(StocMessage.Chat);
             packet.Write((short)PlayerType.Observer);
             packet.WriteUnicode(error, error.Length + 1);
             SendToAll(packet);
 
-            File.WriteAllText("lua_" + DateTime.UtcNow.ToString("yyyy-MM-dd_HH-mm-ss") + ".txt", error);
+            string errorFile = "lua_" + DateTime.UtcNow.ToString("yyyy-MM-dd_HH-mm-ss") + ".txt";
+            File.WriteAllText(errorFile, error);
+            _logger.LogError("Native/Lua error details were written to {ErrorFile}.", errorFile);
         }
 
         private static List<int> ShuffleCards(Random rand, IEnumerable<int> cards)

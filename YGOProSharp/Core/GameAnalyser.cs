@@ -1,8 +1,8 @@
 using System;
 using System.Buffers;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using YGOProSharp.Abstractions.Ocg.Enums;
+using YGOProSharp.Logging;
 
 namespace YGOProSharp
 {
@@ -11,17 +11,16 @@ namespace YGOProSharp
         public Game Game { get; private set; }
         private readonly ILogger<GameAnalyser> _logger;
 
-        public GameAnalyser(Game game, ILogger<GameAnalyser>? logger = null)
+        public GameAnalyser(Game game)
         {
             Game = game;
-            _logger = logger ?? NullLogger<GameAnalyser>.Instance;
+            _logger = AppLog.CreateLogger<GameAnalyser>();
         }
 
         public int Analyse(GameMessage msg, ref SequenceReader<byte> reader, ReadOnlyMemory<byte> raw)
         {
-#if DEBUG
             _logger.LogDebug("{GameMessage}", msg);
-#endif
+            _logger.LogTrace("Received OCG message {GameMessage} with {PayloadLength} bytes.", msg, raw.Length);
             CoreMessage cmsg = new CoreMessage(msg, raw);
             int result = AnalyseCore(msg, cmsg);
             reader.Advance(cmsg.Reader.Position);

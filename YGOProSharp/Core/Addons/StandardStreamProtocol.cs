@@ -1,7 +1,7 @@
 using System;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using YGOProSharp.Abstractions;
+using YGOProSharp.Logging;
 using YGOProSharp.Network.Enums;
 
 namespace YGOProSharp.Addons
@@ -10,10 +10,10 @@ namespace YGOProSharp.Addons
     {
         private readonly ILogger<StandardStreamProtocol> _logger;
 
-        public StandardStreamProtocol(Game game, ILogger<StandardStreamProtocol>? logger = null)
+        public StandardStreamProtocol(Game game)
             : base(game)
         {
-            _logger = logger ?? NullLogger<StandardStreamProtocol>.Instance;
+            _logger = AppLog.CreateLogger<StandardStreamProtocol>();
 
             if (!Config.GetBool("StandardStreamProtocol"))
                 return;

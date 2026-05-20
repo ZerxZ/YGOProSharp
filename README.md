@@ -78,6 +78,17 @@ dotnet run --project YGOProSharp.Cli -c Release
 - `script/`
 - `lflist.conf`
 
+## Logging
+
+```bash
+dotnet run --project YGOProSharp.Cli -c Release -- LogLevel=Debug
+dotnet run --project YGOProSharp.Cli -c Release -- LogLevel=Information StandardStreamProtocol=true
+```
+
+`LogLevel` supports `Trace`, `Debug`, `Information`, `Warning`, `Error`, and `Critical`.
+The CLI uses structured single-line console logging at `Information` by default.
+Lifecycle events are logged at `Information`; packet and message details are logged at `Debug` or `Trace`.
+
 ## Native Runtime
 
 `YGOProSharp.Native` 按标准 .NET runtime asset 布局提供原生库：

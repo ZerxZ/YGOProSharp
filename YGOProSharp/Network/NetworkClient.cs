@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.Extensions.Logging;
+using YGOProSharp.Logging;
 
 namespace YGOProSharp.Network;
 
@@ -16,6 +18,7 @@ public class NetworkClient : IDisposable
 
     private Socket? _socket;
     private IPEndPoint? _endPoint;
+    private readonly ILogger<NetworkClient> _logger = AppLog.CreateLogger<NetworkClient>();
     private CancellationTokenSource? _receiveCancellation;
     private Task? _receiveTask;
     private bool _isClosed;
@@ -39,6 +42,7 @@ public class NetworkClient : IDisposable
         _socket = socket;
         _isClosed = false;
         IsConnected = true;
+        _logger.LogInformation("Network client initialized for {RemoteAddress}.", RemoteIPAddress);
         Connected?.Invoke();
     }
 
@@ -54,11 +58,13 @@ public class NetworkClient : IDisposable
             await _socket.ConnectAsync(_endPoint, cancellationToken).ConfigureAwait(false);
 
             IsConnected = true;
+            _logger.LogInformation("Network client connected to {RemoteAddress}:{RemotePort}.", _endPoint.Address, _endPoint.Port);
             Connected?.Invoke();
             BeginReceive(cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            _logger.LogError(ex, "Failed to connect network client to {RemoteAddress}:{RemotePort}.", address, port);
             Close(ex);
         }
     }
@@ -70,6 +76,8 @@ public class NetworkClient : IDisposable
         await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            _logger.LogDebug("Sending {ByteCount} bytes to {RemoteAddress}.", data.Length, RemoteIPAddress);
+            _logger.LogTrace("Send payload preview: {PayloadPreview}.", CreatePayloadPreview(data.Span));
             int sent = 0;
             while (sent < data.Length)
             {
@@ -82,6 +90,7 @@ public class NetworkClient : IDisposable
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            _logger.LogError(ex, "Network send failed for {RemoteAddress}.", RemoteIPAddress);
             Close(ex);
             throw;
         }
@@ -131,6 +140,11 @@ public class NetworkClient : IDisposable
         _isClosed = true;
         IsConnected = false;
 
+        if (error is null)
+            _logger.LogInformation("Network client disconnected from {RemoteAddress}.", RemoteIPAddress);
+        else
+            _logger.LogWarning(error, "Network client disconnected with error from {RemoteAddress}.", RemoteIPAddress);
+
         try
         {
             _receiveCancellation?.Cancel();
@@ -166,10 +180,13 @@ public class NetworkClient : IDisposable
                 int bytesRead = await socket.ReceiveAsync(_receiveBuffer, SocketFlags.None, cancellationToken).ConfigureAwait(false);
                 if (bytesRead == 0)
                 {
+                    _logger.LogInformation("Remote endpoint {RemoteAddress} closed the connection.", RemoteIPAddress);
                     Close();
                     return;
                 }
 
+                _logger.LogDebug("Received {ByteCount} bytes from {RemoteAddress}.", bytesRead, RemoteIPAddress);
+                _logger.LogTrace("Receive payload preview: {PayloadPreview}.", CreatePayloadPreview(_receiveBuffer.AsSpan(0, bytesRead)));
                 DataReceived?.Invoke(_receiveBuffer.AsSpan(0, bytesRead).ToArray());
             }
         }
@@ -181,7 +198,16 @@ public class NetworkClient : IDisposable
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Network receive failed for {RemoteAddress}.", RemoteIPAddress);
             Close(ex);
         }
+    }
+
+    private static string CreatePayloadPreview(ReadOnlySpan<byte> payload)
+    {
+        const int maxPreviewLength = 32;
+        ReadOnlySpan<byte> preview = payload[..Math.Min(payload.Length, maxPreviewLength)];
+        string suffix = payload.Length > maxPreviewLength ? "..." : string.Empty;
+        return Convert.ToHexString(preview) + suffix;
     }
 }

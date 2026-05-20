@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.Extensions.Logging;
+using YGOProSharp.Logging;
 
 namespace YGOProSharp.Network;
 
@@ -9,6 +11,7 @@ public class AsyncNetworkServer : IDisposable
 
     private CancellationTokenSource? _acceptCancellation;
     private Task? _acceptTask;
+    private readonly ILogger<AsyncNetworkServer> _logger = AppLog.CreateLogger<AsyncNetworkServer>();
     private bool _isClosed;
 
     public AsyncNetworkServer(IPAddress address, int port)
@@ -27,6 +30,7 @@ public class AsyncNetworkServer : IDisposable
 
         IsListening = true;
         _listener.Start();
+        _logger.LogInformation("Async network server listening on {Endpoint}.", _listener.LocalEndpoint);
         _acceptCancellation = new CancellationTokenSource();
         _acceptTask = Task.Run(() => AcceptLoopAsync(_acceptCancellation.Token), CancellationToken.None);
     }
@@ -38,6 +42,7 @@ public class AsyncNetworkServer : IDisposable
 
         _isClosed = true;
         IsListening = false;
+        _logger.LogInformation("Async network server listener closing.");
         _acceptCancellation?.Cancel();
         _listener.Stop();
     }
@@ -55,6 +60,7 @@ public class AsyncNetworkServer : IDisposable
             while (!cancellationToken.IsCancellationRequested)
             {
                 Socket socket = await _listener.AcceptSocketAsync(cancellationToken).ConfigureAwait(false);
+                _logger.LogInformation("Accepted async socket from {RemoteEndPoint}.", socket.RemoteEndPoint);
                 ClientConnected?.Invoke(new NetworkClient(socket));
             }
         }
@@ -67,8 +73,9 @@ public class AsyncNetworkServer : IDisposable
         catch (SocketException) when (_isClosed)
         {
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            _logger.LogError(ex, "Async network server accept loop failed.");
             Close();
         }
     }
