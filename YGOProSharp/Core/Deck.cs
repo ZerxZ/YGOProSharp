@@ -1,6 +1,6 @@
 using System.Collections.Generic;
-using YGOProSharp.OCGWrapper;
-using YGOProSharp.OCGWrapper.Enums;
+using YGOProSharp.Abstractions.Ocg.Enums;
+using YGOProSharp.Cards;
 
 namespace YGOProSharp
 {

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using YGOProSharp.Abstractions.Ocg;
 using YGOProSharp.Network;
 
 namespace YGOProSharp
@@ -15,12 +16,14 @@ namespace YGOProSharp
         public Game? Game { get; private set; }
 
         private NetworkServer? _listener;
+        private readonly IDuelFactory? _duelFactory;
         private readonly List<YGOClient> _clients = new();
 
         private bool _closePending;
 
-        public CoreServer()
+        public CoreServer(IDuelFactory? duelFactory = null)
         {
+            _duelFactory = duelFactory;
         }
 
         public void Start()
@@ -28,7 +31,7 @@ namespace YGOProSharp
             if (IsRunning)
                 return;
             Addons = new AddonsManager();
-            Game = new Game(this);
+            Game = new Game(this, _duelFactory);
             Addons.Init(Game);
             try
             {

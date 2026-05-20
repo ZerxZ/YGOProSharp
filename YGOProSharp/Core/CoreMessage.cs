@@ -1,5 +1,5 @@
 using System.Buffers.Binary;
-using YGOProSharp.OCGWrapper.Enums;
+using YGOProSharp.Abstractions.Ocg.Enums;
 
 namespace YGOProSharp;
 

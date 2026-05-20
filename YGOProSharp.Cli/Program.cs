@@ -1,6 +1,8 @@
 using YGOProSharp;
+using YGOProSharp.NativeApi;
 
 using CancellationTokenSource shutdown = new();
+using NativeOcgRuntime runtime = new();
 
 Console.CancelKeyPress += (_, eventArgs) =>
 {
@@ -10,7 +12,7 @@ Console.CancelKeyPress += (_, eventArgs) =>
 
 try
 {
-    await YGOProSharpServer.RunAsync(args, shutdown.Token);
+    await YGOProSharpServer.RunAsync(args, runtime, shutdown.Token);
     return 0;
 }
 catch (Exception ex) when (ex is not OperationCanceledException)

@@ -1,17 +1,22 @@
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
 using YGOProSharp;
+using YGOProSharp.Abstractions.Ocg;
+using YGOProSharp.Abstractions.Ocg.Enums;
 using YGOProSharp.Network;
 using YGOProSharp.Network.Enums;
 using YGOProSharp.Network.Utils;
-using YGOProSharp.OCGWrapper;
-using YGOProSharp.OCGWrapper.Enums;
+using YGOProSharp.NativeApi;
 
 Run("CoreMessage reads native payloads from spans", CoreMessageReadsNativePayloadsFromSpans);
-Run("Duel rejects too-small query destination buffers", DuelRejectsTooSmallQueryDestinationBuffers);
-Run("Duel preserves oversize response behavior", DuelPreservesOversizeResponseBehavior);
+Run("Native duel rejects too-small query destination buffers", NativeDuelRejectsTooSmallQueryDestinationBuffers);
+Run("Native duel preserves oversize response behavior", NativeDuelPreservesOversizeResponseBehavior);
+Run("OcgCardData matches native card_data size", OcgCardDataMatchesNativeSize);
+Run("Native duel factory validates seed sequence length", NativeDuelFactoryValidatesSeedSequenceLength);
+Run("Project boundaries keep native interop out of core", ProjectBoundariesKeepNativeInteropOutOfCore);
 Run("PacketFramer handles split and sticky packets", PacketFramerHandlesSplitAndStickyPackets);
 Run("PacketFramer handles 4-byte size-included headers", PacketFramerHandlesFourByteSizeIncludedHeaders);
 Run("PacketFramer rejects oversize packets", PacketFramerRejectsOversizePackets);
@@ -36,23 +41,62 @@ static void CoreMessageReadsNativePayloadsFromSpans()
     AssertSequenceEqual(raw.AsSpan(0, 8), message.CreateBufferSpan());
 }
 
-static void DuelRejectsTooSmallQueryDestinationBuffers()
+static void NativeDuelRejectsTooSmallQueryDestinationBuffers()
 {
     byte[] source = [1, 2, 3, 4];
     byte[] destination = new byte[3];
 
-    AssertThrows<ArgumentException>(() => Duel.CopyQueryResult(source, source.Length, destination, "test_query"));
+    AssertThrows<ArgumentException>(() => NativeDuelSession.CopyQueryResult(source, source.Length, destination, "test_query"));
 }
 
-static void DuelPreservesOversizeResponseBehavior()
+static void NativeDuelPreservesOversizeResponseBehavior()
 {
-    byte[] response = new byte[Duel.MaxResponseLength + 1];
-    byte[] destination = Enumerable.Repeat((byte)0xCC, Duel.MaxResponseLength).ToArray();
+    byte[] response = new byte[OcgCoreConstants.MaxResponseLength + 1];
+    byte[] destination = Enumerable.Repeat((byte)0xCC, OcgCoreConstants.MaxResponseLength).ToArray();
 
-    bool copied = Duel.TryCopyResponse(response, destination);
+    bool copied = NativeDuelSession.TryCopyResponse(response, destination);
 
     AssertFalse(copied);
-    AssertSequenceEqual(Enumerable.Repeat((byte)0xCC, Duel.MaxResponseLength).ToArray(), destination);
+    AssertSequenceEqual(Enumerable.Repeat((byte)0xCC, OcgCoreConstants.MaxResponseLength).ToArray(), destination);
+}
+
+static void OcgCardDataMatchesNativeSize()
+{
+    AssertEqual(80, Marshal.SizeOf<OcgCardData>());
+}
+
+static void NativeDuelFactoryValidatesSeedSequenceLength()
+{
+    using NativeOcgRuntime runtime = new();
+
+    AssertThrows<ArgumentException>(() => runtime.DuelFactory.Create(new uint[1]));
+}
+
+static void ProjectBoundariesKeepNativeInteropOutOfCore()
+{
+    string root = FindRepositoryRoot();
+    string coreProject = Path.Combine(root, "YGOProSharp");
+    string abstractionsProject = Path.Combine(root, "YGOProSharp.Abstractions", "YGOProSharp.Abstractions.csproj");
+
+    string[] forbiddenCoreTokens = ["LibraryImport", "DllImport", "SafeHandle", "byte*", "OcgCoreImports"];
+    foreach (string file in Directory.EnumerateFiles(coreProject, "*.cs", SearchOption.AllDirectories)
+                 .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") &&
+                                !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")))
+    {
+        string text = File.ReadAllText(file);
+        foreach (string token in forbiddenCoreTokens)
+        {
+            if (text.Contains(token, StringComparison.Ordinal))
+                throw new InvalidOperationException($"{Path.GetRelativePath(root, file)} contains forbidden native interop token {token}.");
+        }
+    }
+
+    string abstractionsXml = File.ReadAllText(abstractionsProject);
+    foreach (string forbiddenReference in new[] { "YGOProSharp.Native", "YGOProSharp.NativeApi", "Microsoft.Data.Sqlite", "SevenZip" })
+    {
+        if (abstractionsXml.Contains(forbiddenReference, StringComparison.Ordinal))
+            throw new InvalidOperationException($"YGOProSharp.Abstractions references {forbiddenReference}.");
+    }
 }
 
 static void PacketFramerHandlesSplitAndStickyPackets()
@@ -242,4 +286,18 @@ static async Task<T> WaitAsync<T>(Task<T> task)
         throw new TimeoutException("Timed out waiting for asynchronous test operation.");
 
     return await task;
+}
+
+static string FindRepositoryRoot()
+{
+    DirectoryInfo? directory = new(AppContext.BaseDirectory);
+    while (directory is not null)
+    {
+        if (File.Exists(Path.Combine(directory.FullName, "YGOProSharp.slnx")))
+            return directory.FullName;
+
+        directory = directory.Parent;
+    }
+
+    throw new DirectoryNotFoundException("Could not find repository root.");
 }

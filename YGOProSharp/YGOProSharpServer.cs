@@ -1,4 +1,5 @@
-using YGOProSharp.OCGWrapper;
+using YGOProSharp.Abstractions.Ocg;
+using YGOProSharp.Cards;
 
 namespace YGOProSharp;
 
@@ -8,19 +9,28 @@ public static class YGOProSharpServer
 
     public static uint ClientVersion { get; private set; } = DefaultClientVersion;
 
-    public static async Task RunAsync(string[] args, CancellationToken cancellationToken = default)
+    public static async Task RunAsync(string[] args, IOcgRuntime runtime, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(runtime);
+
         Config.Load(args);
 
+        string rootPath = Config.GetString("RootPath", ".");
+        string scriptDirectory = Config.GetString("ScriptDirectory", "script");
+        string databaseFile = Config.GetString("DatabaseFile", "cards.cdb");
+        string databaseFullPath = Path.Combine(Path.GetFullPath(rootPath), databaseFile);
+
         BanlistManager.Init(Config.GetString("BanlistFile", "lflist.conf"));
-        Api.Init(
-            Config.GetString("RootPath", "."),
-            Config.GetString("ScriptDirectory", "script"),
-            Config.GetString("DatabaseFile", "cards.cdb"));
+        runtime.Initialize(new OcgRuntimeOptions(
+            rootPath,
+            scriptDirectory,
+            databaseFile,
+            new SqliteCardDataProvider(databaseFullPath),
+            new FileScriptProvider(rootPath, scriptDirectory)));
 
         ClientVersion = Config.GetUInt("ClientVersion", ClientVersion);
 
-        CoreServer server = new();
+        CoreServer server = new(runtime.DuelFactory);
         server.Start();
 
         try

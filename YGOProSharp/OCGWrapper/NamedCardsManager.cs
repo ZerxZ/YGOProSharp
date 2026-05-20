@@ -4,7 +4,7 @@ using System;
 using System.IO;
 using Microsoft.Data.Sqlite;
 
-namespace YGOProSharp.OCGWrapper
+namespace YGOProSharp.Cards
 {
     public static class NamedCardsManager
     {

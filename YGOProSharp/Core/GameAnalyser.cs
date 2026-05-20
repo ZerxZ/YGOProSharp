@@ -1,6 +1,6 @@
 using System;
 using System.Buffers;
-using YGOProSharp.OCGWrapper.Enums;
+using YGOProSharp.Abstractions.Ocg.Enums;
 
 namespace YGOProSharp
 {

@@ -1,4 +1,5 @@
 using System;
+using YGOProSharp.Abstractions;
 using YGOProSharp.Network.Enums;
 
 namespace YGOProSharp.Addons
@@ -35,7 +36,8 @@ namespace YGOProSharp.Addons
 
         private void Game_OnPlayerChat(object sender, PlayerChatEventArgs e)
         {
-            Console.WriteLine("::::chat|" + e.Player.Name + "|" + e.Message);
+            Player player = (Player)e.Player;
+            Console.WriteLine("::::chat|" + player.Name + "|" + e.Message);
         }
 
         private void Game_OnPlayerJoin(object sender, PlayerEventArgs e)
@@ -43,9 +45,10 @@ namespace YGOProSharp.Addons
             if (Game.State != GameState.Lobby)
                 return;
 
-            if (e.Player.Type != (int)PlayerType.Observer)
+            Player player = (Player)e.Player;
+            if (player.Type != (int)PlayerType.Observer)
             {
-                Console.WriteLine("::::join-slot|" + e.Player.Type + "|" + e.Player.Name);
+                Console.WriteLine("::::join-slot|" + player.Type + "|" + player.Name);
             }
             else
             {
@@ -58,9 +61,10 @@ namespace YGOProSharp.Addons
             if (Game.State != GameState.Lobby)
                 return;
 
-            if (e.Player.Type != (int)PlayerType.Observer)
+            Player player = (Player)e.Player;
+            if (player.Type != (int)PlayerType.Observer)
             {
-                Console.WriteLine("::::left-slot|" + e.Player.Type + "|" + e.Player.Name);
+                Console.WriteLine("::::left-slot|" + player.Type + "|" + player.Name);
             }
             else
             {
@@ -73,15 +77,16 @@ namespace YGOProSharp.Addons
             if (Game.State != GameState.Lobby)
                 return;
 
+            Player player = (Player)e.Player;
             if (e.FromType != (int)PlayerType.Observer)
             {
-                Console.WriteLine("::::left-slot|" + e.FromType + "|" + e.Player.Name);
+                Console.WriteLine("::::left-slot|" + e.FromType + "|" + player.Name);
             }
-            if (e.Player.Type != (int)PlayerType.Observer)
+            if (player.Type != (int)PlayerType.Observer)
             {
-                Console.WriteLine("::::join-slot|" + e.Player.Type + "|" + e.Player.Name);
+                Console.WriteLine("::::join-slot|" + player.Type + "|" + player.Name);
             }
-            if (e.FromType == (int)PlayerType.Observer || e.Player.Type == (int)PlayerType.Observer)
+            if (e.FromType == (int)PlayerType.Observer || player.Type == (int)PlayerType.Observer)
             {
                 Console.WriteLine("::::spectator|" + Game.Observers.Count);
             }
@@ -89,7 +94,8 @@ namespace YGOProSharp.Addons
 
         private void Game_OnPlayerReady(object sender, PlayerEventArgs e)
         {
-            Console.WriteLine("::::lock-slot|" + e.Player.Type + "|" + Game.IsReady[e.Player.Type]);
+            Player player = (Player)e.Player;
+            Console.WriteLine("::::lock-slot|" + player.Type + "|" + Game.IsReady[player.Type]);
         }
 
         private void Game_OnGameStart(object sender, EventArgs e)

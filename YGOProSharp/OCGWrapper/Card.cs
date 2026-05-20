@@ -1,26 +1,11 @@
-using YGOProSharp.OCGWrapper.Enums;
 using System.Data;
+using YGOProSharp.Abstractions.Ocg;
+using YGOProSharp.Abstractions.Ocg.Enums;
 
-namespace YGOProSharp.OCGWrapper
+namespace YGOProSharp.Cards
 {
     public class Card
     {
-        public struct CardData
-        {
-            public int Code;
-            public int Alias;
-            public long Setcode;
-            public int Type;
-            public int Level;
-            public int Attribute;
-            public int Race;
-            public int Attack;
-            public int Defense;
-            public int LScale;
-            public int RScale;
-            public int LinkMarker;
-        }
-
         public int Id { get; private set; }
         public int Ot { get; private set; }
         public int Alias { get; private set; }
@@ -37,7 +22,7 @@ namespace YGOProSharp.OCGWrapper
         public int Attack { get; private set; }
         public int Defense { get; private set; }
 
-        internal CardData Data { get; private set; }
+        internal OcgCardData Data { get; private set; }
 
         public static Card? Get(int id)
         {
@@ -78,21 +63,19 @@ namespace YGOProSharp.OCGWrapper
                 Defense = 0;
             }
 
-            Data = new CardData()
-            {
-                Code = Id,
-                Alias = Alias,
-                Setcode = Setcode,
-                Type = Type,
-                Level = Level,
-                Attribute = Attribute,
-                Race = Race,
-                Attack = Attack,
-                Defense = Defense,
-                LScale = LScale,
-                RScale = RScale,
-                LinkMarker = LinkMarker
-            };
+            Data = OcgCardData.Create(
+                (uint)Id,
+                (uint)Alias,
+                unchecked((ulong)Setcode),
+                (uint)Type,
+                (uint)Level,
+                (uint)Attribute,
+                (uint)Race,
+                Attack,
+                Defense,
+                (uint)LScale,
+                (uint)RScale,
+                (uint)LinkMarker);
         }
     }
 }

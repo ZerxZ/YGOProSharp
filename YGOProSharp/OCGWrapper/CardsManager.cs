@@ -1,8 +1,9 @@
 using System.Collections.Generic;
 using System.Data;
 using Microsoft.Data.Sqlite;
+using YGOProSharp.Abstractions.Ocg;
 
-namespace YGOProSharp.OCGWrapper
+namespace YGOProSharp.Cards
 {
     internal static class CardsManager
     {
@@ -38,6 +39,27 @@ namespace YGOProSharp.OCGWrapper
         {
             Card card = new Card(reader);
             _cards.Add(card.Id, card);
+        }
+    }
+
+    public sealed class SqliteCardDataProvider : ICardDataProvider
+    {
+        public SqliteCardDataProvider(string databaseFullPath)
+        {
+            CardsManager.Init(databaseFullPath);
+        }
+
+        public bool TryGetCardData(uint code, out OcgCardData data)
+        {
+            Card? card = CardsManager.GetCard((int)code);
+            if (card is null)
+            {
+                data = default;
+                return false;
+            }
+
+            data = card.Data;
+            return true;
         }
     }
 }

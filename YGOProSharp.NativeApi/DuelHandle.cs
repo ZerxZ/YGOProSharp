@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace YGOProSharp.OCGWrapper;
+namespace YGOProSharp.NativeApi;
 
 internal sealed class DuelHandle : SafeHandle
 {
@@ -19,7 +19,8 @@ internal sealed class DuelHandle : SafeHandle
 
     protected override bool ReleaseHandle()
     {
-        OcgCoreNative.EndDuel(handle);
+        OcgCoreImports.EndDuel(handle);
+        handle = IntPtr.Zero;
         return true;
     }
 }

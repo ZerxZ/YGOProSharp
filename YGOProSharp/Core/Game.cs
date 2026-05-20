@@ -3,11 +3,12 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
+using YGOProSharp.Abstractions;
+using YGOProSharp.Abstractions.Ocg;
+using YGOProSharp.Abstractions.Ocg.Enums;
 using YGOProSharp.Network;
 using YGOProSharp.Network.Enums;
 using YGOProSharp.Network.Utils;
-using YGOProSharp.OCGWrapper;
-using YGOProSharp.OCGWrapper.Enums;
 
 namespace YGOProSharp
 {
@@ -54,7 +55,8 @@ namespace YGOProSharp
         public int DuelCount;
 
         private CoreServer _server;
-        private Duel _duel = null!;
+        private readonly IDuelFactory? _duelFactory;
+        private IDuelSession _duel = null!;
         private GameAnalyser _analyser;
         private int[] _handResult;
         private int _startplayer;
@@ -76,8 +78,9 @@ namespace YGOProSharp
         public event Action<object, PlayerEventArgs>? OnPlayerReady;
         public event Action<object, PlayerChatEventArgs>? OnPlayerChat;
 
-        public Game(CoreServer server)
+        public Game(CoreServer server, IDuelFactory? duelFactory = null)
         {
+            _duelFactory = duelFactory;
             State = GameState.Lobby;
             Mode = Config.GetInt("Mode");
             Region = Config.GetInt("Rule", -1);
@@ -624,7 +627,10 @@ namespace YGOProSharp
 
             State = GameState.Duel;
             int seed = Environment.TickCount;
-            _duel = Duel.Create((uint)seed);
+            if (_duelFactory is null)
+                throw new InvalidOperationException("A duel factory is required to start a duel.");
+
+            _duel = _duelFactory.Create((uint)seed);
             Random rand = new Random(seed);
 
             _duel.SetAnalyzer(_analyser.Analyse);
@@ -801,7 +807,7 @@ namespace YGOProSharp
 
         private void RefreshLocation(int player, CardLocation location, Player? observer)
         {
-            byte[] buffer = ArrayPool<byte>.Shared.Rent(Duel.MaxQueryResultLength);
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(OcgCoreConstants.MaxQueryResultLength);
             try
             {
                 int length = _duel.QueryFieldCard(player, location, buffer);
@@ -882,7 +888,7 @@ namespace YGOProSharp
 
         public void RefreshSingle(int player, int location, int sequence)
         {
-            byte[] buffer = ArrayPool<byte>.Shared.Rent(Duel.MaxQueryResultLength);
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(OcgCoreConstants.MaxQueryResultLength);
             try
             {
                 int length = _duel.QueryCard(player, location, sequence, buffer);
@@ -1241,7 +1247,7 @@ namespace YGOProSharp
             }
 
             BinaryWriter reload = GamePacketFactory.Create(GameMessage.ReloadField);
-            byte[] fieldInfo = ArrayPool<byte>.Shared.Rent(Duel.FieldInfoLength);
+            byte[] fieldInfo = ArrayPool<byte>.Shared.Rent(OcgCoreConstants.FieldInfoLength);
             try
             {
                 int fieldInfoLength = _duel.QueryFieldInfo(fieldInfo);

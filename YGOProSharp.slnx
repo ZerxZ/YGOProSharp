@@ -1,6 +1,8 @@
 <Solution>
+  <Project Path="YGOProSharp.Abstractions/YGOProSharp.Abstractions.csproj" />
   <Project Path="YGOProSharp.Cli/YGOProSharp.Cli.csproj" />
   <Project Path="YGOProSharp.Native/YGOProSharp.Native.csproj" />
+  <Project Path="YGOProSharp.NativeApi/YGOProSharp.NativeApi.csproj" />
   <Project Path="YGOProSharp.Tests/YGOProSharp.Tests.csproj" />
   <Project Path="YGOProSharp/YGOProSharp.csproj" />
 </Solution>

@@ -12,6 +12,7 @@
       <ProjectReference Include="..\YGOProSharp.Native\YGOProSharp.Native.csproj"
                         ReferenceOutputAssembly="false"
                         PrivateAssets="all" />
+      <ProjectReference Include="..\YGOProSharp.NativeApi\YGOProSharp.NativeApi.csproj" />
       <ProjectReference Include="..\YGOProSharp\YGOProSharp.csproj" />
     </ItemGroup>
     <ItemGroup>

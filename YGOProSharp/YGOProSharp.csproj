@@ -3,7 +3,6 @@
     <PropertyGroup>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
-        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <TargetFrameworks>net10.0;net8.0;net9.0</TargetFrameworks>
         <PackageLicenseFile>LICENSE</PackageLicenseFile>
     </PropertyGroup>
@@ -11,10 +10,23 @@
     <ItemGroup>
       <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.8" />
       <PackageReference Include="SevenZip" Version="19.0.0" />
-        
+      <ProjectReference Include="..\YGOProSharp.Abstractions\YGOProSharp.Abstractions.csproj" />
     </ItemGroup>
     <ItemGroup>
         <None Include="..\LICENSE" Pack="true" PackagePath="\" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Remove="OCGWrapper\Api.cs" />
+        <Compile Remove="OCGWrapper\Duel.cs" />
+        <Compile Remove="OCGWrapper\DuelHandle.cs" />
+        <Compile Remove="OCGWrapper\MtRandom.cs" />
+        <Compile Remove="OCGWrapper\OcgCoreNative.cs" />
+        <Compile Remove="OCGWrapper\Enums\**" />
+        <Compile Remove="Core\IGame.cs" />
+        <Compile Remove="Core\PlayerEventArgs.cs" />
+        <Compile Remove="Core\PlayerMoveEventArgs.cs" />
+        <Compile Remove="Core\PlayerChatEventArgs.cs" />
     </ItemGroup>
 
 </Project>
