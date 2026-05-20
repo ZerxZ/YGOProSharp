@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using YGOProSharp.Abstractions;
 using YGOProSharp.Abstractions.Ocg;
 using YGOProSharp.Abstractions.Ocg.Enums;
+using YGOProSharp.Cards;
 using YGOProSharp.Network;
 using YGOProSharp.Network.Enums;
 using YGOProSharp.Network.Utils;
@@ -55,6 +56,7 @@ namespace YGOProSharp
         public int[] MatchResults { get; private set; }
         public int[] MatchReasons { get; private set; }
         public int DuelCount;
+        public ICardRepository CardRepository { get; }
 
         private CoreServer _server;
         private readonly IDuelFactory? _duelFactory;
@@ -82,11 +84,12 @@ namespace YGOProSharp
         public event Action<object, PlayerEventArgs>? OnPlayerReady;
         public event Action<object, PlayerChatEventArgs>? OnPlayerChat;
 
-        public Game(CoreServer server, IDuelFactory? duelFactory = null, ILoggerFactory? loggerFactory = null)
+        public Game(CoreServer server, IDuelFactory? duelFactory = null, ILoggerFactory? loggerFactory = null, ICardRepository? cardRepository = null)
         {
             _duelFactory = duelFactory;
             _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
             _logger = _loggerFactory.CreateLogger<Game>();
+            CardRepository = cardRepository ?? EmptyCardRepository.Instance;
             State = GameState.Lobby;
             Mode = Config.GetInt("Mode");
             Region = Config.GetInt("Rule", -1);

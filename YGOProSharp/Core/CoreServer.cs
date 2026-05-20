@@ -4,6 +4,7 @@ using System.Net;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using YGOProSharp.Abstractions.Ocg;
+using YGOProSharp.Cards;
 using YGOProSharp.Network;
 
 namespace YGOProSharp
@@ -21,15 +22,17 @@ namespace YGOProSharp
         private readonly IDuelFactory? _duelFactory;
         private readonly ILoggerFactory _loggerFactory;
         private readonly ILogger<CoreServer> _logger;
+        private readonly ICardRepository _cardRepository;
         private readonly List<YGOClient> _clients = new();
 
         private bool _closePending;
 
-        public CoreServer(IDuelFactory? duelFactory = null, ILoggerFactory? loggerFactory = null)
+        public CoreServer(IDuelFactory? duelFactory = null, ILoggerFactory? loggerFactory = null, ICardRepository? cardRepository = null)
         {
             _duelFactory = duelFactory;
             _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
             _logger = _loggerFactory.CreateLogger<CoreServer>();
+            _cardRepository = cardRepository ?? EmptyCardRepository.Instance;
         }
 
         public void Start()
@@ -37,7 +40,7 @@ namespace YGOProSharp
             if (IsRunning)
                 return;
             Addons = new AddonsManager(_loggerFactory);
-            Game = new Game(this, _duelFactory, _loggerFactory);
+            Game = new Game(this, _duelFactory, _loggerFactory, _cardRepository);
             Addons.Init(Game);
             try
             {

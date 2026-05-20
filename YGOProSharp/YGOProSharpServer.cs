@@ -21,18 +21,20 @@ public static class YGOProSharpServer
         string scriptDirectory = Config.GetString("ScriptDirectory", "script");
         string databaseFile = Config.GetString("DatabaseFile", "cards.cdb");
         string databaseFullPath = Path.Combine(Path.GetFullPath(rootPath), databaseFile);
+        ICardDatabaseManager cardDatabaseManager = new SqliteCardDatabaseManager();
+        ICardRepository cardRepository = cardDatabaseManager.LoadCards(databaseFullPath);
 
         BanlistManager.Init(Config.GetString("BanlistFile", "lflist.conf"));
         runtime.Initialize(new OcgRuntimeOptions(
             rootPath,
             scriptDirectory,
             databaseFile,
-            new SqliteCardDataProvider(databaseFullPath),
+            new RepositoryCardDataProvider(cardRepository),
             new FileScriptProvider(rootPath, scriptDirectory)));
 
         ClientVersion = Config.GetUInt("ClientVersion", ClientVersion);
 
-        CoreServer server = new(runtime.DuelFactory, loggerFactory);
+        CoreServer server = new(runtime.DuelFactory, loggerFactory, cardRepository);
         server.Start();
 
         try

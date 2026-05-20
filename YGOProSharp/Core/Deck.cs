@@ -6,12 +6,20 @@ namespace YGOProSharp
 {
     public class Deck
     {
+        private readonly ICardRepository _cardRepository;
+
         public IList<int> Main { get; private set; }
         public IList<int> Extra { get; private set; }
         public IList<int> Side { get; private set; }
 
         public Deck()
+            : this(EmptyCardRepository.Instance)
         {
+        }
+
+        public Deck(ICardRepository cardRepository)
+        {
+            _cardRepository = cardRepository;
             Main = new List<int>();
             Extra = new List<int>();
             Side = new List<int>();
@@ -19,8 +27,7 @@ namespace YGOProSharp
 
         public void AddMain(int cardId)
         {
-            Card? card = Card.Get(cardId);
-            if (card == null)
+            if (!_cardRepository.TryGetCard(cardId, out Card card))
                 return;
             if ((card.Type & (int)CardType.Token) != 0)
                 return;
@@ -38,8 +45,7 @@ namespace YGOProSharp
 
         public void AddSide(int cardId)
         {
-            Card? card = Card.Get(cardId);
-            if (card == null)
+            if (!_cardRepository.TryGetCard(cardId, out Card card))
                 return;
             if ((card.Type & (int)CardType.Token) != 0)
                 return;
@@ -62,8 +68,7 @@ namespace YGOProSharp
             {
                 foreach (int id in stack)
                 {
-                    Card? card = Card.Get(id);
-                    if (card is null)
+                    if (!_cardRepository.TryGetCard(id, out Card card))
                         continue;
 
                     AddToCards(cards, card);

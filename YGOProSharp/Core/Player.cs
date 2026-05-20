@@ -1,4 +1,5 @@
 using System.IO;
+using YGOProSharp.Cards;
 using YGOProSharp.Network;
 using YGOProSharp.Network.Enums;
 using YGOProSharp.Network.Utils;
@@ -179,7 +180,7 @@ namespace YGOProSharp
         {
             if (Type == (int)PlayerType.Observer)
                 return;
-            Deck deck = new Deck();
+            Deck deck = new Deck(Game.CardRepository);
             int main = packet.ReadInt32();
             int side = packet.ReadInt32();
 

@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using YGOProSharp;
 using YGOProSharp.Abstractions.Ocg;
 using YGOProSharp.Abstractions.Ocg.Enums;
+using YGOProSharp.Cards;
 using YGOProSharp.Network;
 using YGOProSharp.Network.Enums;
 using YGOProSharp.Network.Utils;
@@ -28,7 +29,12 @@ Run("Native duel rejects too-small query destination buffers", NativeDuelRejects
 Run("Native duel preserves oversize response behavior", NativeDuelPreservesOversizeResponseBehavior);
 Run("OcgCardData matches native card_data size", OcgCardDataMatchesNativeSize);
 Run("Native duel factory validates seed sequence length", NativeDuelFactoryValidatesSeedSequenceLength);
+Run("Deck routes main, extra, and token cards through repository", DeckRoutesMainExtraAndTokenCardsThroughRepository);
+Run("Deck side rejects missing and token cards", DeckSideRejectsMissingAndTokenCards);
+Run("Deck check uses repository aliases and banlist", DeckCheckUsesRepositoryAliasesAndBanlist);
+Run("Repository card data provider maps cards to ocg data", RepositoryCardDataProviderMapsCardsToOcgData);
 Run("Project boundaries keep native interop out of core", ProjectBoundariesKeepNativeInteropOutOfCore);
+Run("Project boundaries keep card models and sqlite separated", ProjectBoundariesKeepCardModelsAndSqliteSeparated);
 Run("Project boundaries keep direct Console writes out of source", ProjectBoundariesKeepDirectConsoleWritesOutOfSource);
 Run("PacketFramer handles split and sticky packets", PacketFramerHandlesSplitAndStickyPackets);
 Run("PacketFramer handles 4-byte size-included headers", PacketFramerHandlesFourByteSizeIncludedHeaders);
@@ -85,6 +91,88 @@ static void NativeDuelFactoryValidatesSeedSequenceLength()
     AssertThrows<ArgumentException>(() => runtime.DuelFactory.Create(new uint[1]));
 }
 
+static void DeckRoutesMainExtraAndTokenCardsThroughRepository()
+{
+    Deck deck = new(TestRepository(
+        TestCard(1),
+        TestCard(2, (int)CardType.Monster | (int)CardType.Fusion),
+        TestCard(3, (int)CardType.Monster | (int)CardType.Token)));
+
+    deck.AddMain(1);
+    deck.AddMain(2);
+    deck.AddMain(3);
+    deck.AddMain(404);
+
+    AssertCollectionEqual(new[] { 1 }, deck.Main);
+    AssertCollectionEqual(new[] { 2 }, deck.Extra);
+}
+
+static void DeckSideRejectsMissingAndTokenCards()
+{
+    Deck deck = new(TestRepository(
+        TestCard(1),
+        TestCard(3, (int)CardType.Monster | (int)CardType.Token)));
+
+    deck.AddSide(1);
+    deck.AddSide(3);
+    deck.AddSide(404);
+
+    AssertCollectionEqual(new[] { 1 }, deck.Side);
+}
+
+static void DeckCheckUsesRepositoryAliasesAndBanlist()
+{
+    Config.Load([
+        "MainDeckMinSize=1",
+        "MainDeckMaxSize=60",
+        "ExtraDeckMaxSize=15",
+        "SideDeckMaxSize=15"
+    ]);
+
+    Deck deck = new(TestRepository(
+        TestCard(10, alias: 20),
+        TestCard(11, alias: 20)));
+    Banlist banlist = new();
+    banlist.Add(20, 1);
+
+    deck.AddMain(10);
+    deck.AddMain(11);
+
+    AssertEqual(20, deck.Check(banlist, ocg: true, tcg: true));
+}
+
+static void RepositoryCardDataProviderMapsCardsToOcgData()
+{
+    Card card = TestCard(
+        100,
+        (int)CardType.Monster | (int)CardType.Link,
+        alias: 99,
+        setcode: 0x1234,
+        level: 7,
+        lScale: 1,
+        rScale: 2,
+        race: (int)CardRace.Cyberse,
+        attribute: (int)CardAttribute.Dark,
+        attack: 2500,
+        defense: 0,
+        linkMarker: (int)CardLinkMarker.Bottom);
+    RepositoryCardDataProvider provider = new(TestRepository(card));
+
+    AssertTrue(provider.TryGetCardData(100, out OcgCardData data));
+    AssertFalse(provider.TryGetCardData(404, out _));
+    AssertEqual((uint)100, data.Code);
+    AssertEqual((uint)99, data.Alias);
+    AssertEqual((uint)card.Type, data.Type);
+    AssertEqual((uint)7, data.Level);
+    AssertEqual((uint)CardAttribute.Dark, data.Attribute);
+    AssertEqual((uint)CardRace.Cyberse, data.Race);
+    AssertEqual(2500, data.Attack);
+    AssertEqual(0, data.Defense);
+    AssertEqual((uint)1, data.LScale);
+    AssertEqual((uint)2, data.RScale);
+    AssertEqual((uint)CardLinkMarker.Bottom, data.LinkMarker);
+}
+
 static void ProjectBoundariesKeepNativeInteropOutOfCore()
 {
     string root = FindRepositoryRoot();
@@ -109,6 +197,56 @@ static void ProjectBoundariesKeepNativeInteropOutOfCore()
     {
         if (abstractionsXml.Contains(forbiddenReference, StringComparison.Ordinal))
             throw new InvalidOperationException($"YGOProSharp.Abstractions references {forbiddenReference}.");
+    }
+}
+
+static void ProjectBoundariesKeepCardModelsAndSqliteSeparated()
+{
+    string root = FindRepositoryRoot();
+    string coreProject = Path.Combine(root, "YGOProSharp");
+    string sqliteManagerPath = Path.Combine(coreProject, "Cards", "SqliteCardDatabaseManager.cs");
+    string[] cardModelFiles =
+    [
+        Path.Combine(coreProject, "Cards", "Card.cs"),
+        Path.Combine(coreProject, "Cards", "NamedCard.cs")
+    ];
+
+    string[] forbiddenCardModelTokens = ["IDataRecord", "Microsoft.Data.Sqlite", "OcgCardData", "CardsManager"];
+    foreach (string file in cardModelFiles)
+    {
+        string text = File.ReadAllText(file);
+        foreach (string token in forbiddenCardModelTokens)
+        {
+            if (text.Contains(token, StringComparison.Ordinal))
+                throw new InvalidOperationException($"{Path.GetRelativePath(root, file)} contains forbidden card model dependency {token}.");
+        }
+    }
+
+    string[] forbiddenSqliteTokens = ["Microsoft.Data.Sqlite", "SqliteConnection"];
+    foreach (string file in Directory.EnumerateFiles(coreProject, "*.cs", SearchOption.AllDirectories)
+                 .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") &&
+                                !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") &&
+                                !Path.GetFullPath(file).Equals(sqliteManagerPath, StringComparison.OrdinalIgnoreCase)))
+    {
+        string text = File.ReadAllText(file);
+        foreach (string token in forbiddenSqliteTokens)
+        {
+            if (text.Contains(token, StringComparison.Ordinal))
+                throw new InvalidOperationException($"{Path.GetRelativePath(root, file)} contains forbidden direct sqlite dependency {token}.");
+        }
+    }
+
+    string[] forbiddenStaticLookups = ["Card." + "Get(", "NamedCard." + "Get("];
+    foreach (string file in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
+                 .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") &&
+                                !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")))
+    {
+        string text = File.ReadAllText(file);
+        foreach (string token in forbiddenStaticLookups)
+        {
+            if (text.Contains(token, StringComparison.Ordinal))
+                throw new InvalidOperationException($"{Path.GetRelativePath(root, file)} contains forbidden static card lookup.");
+        }
     }
 }
 
@@ -301,6 +439,15 @@ static void AssertSequenceEqual(ReadOnlySpan<byte> expected, ReadOnlySpan<byte> 
         throw new InvalidOperationException($"Expected [{string.Join(", ", expected.ToArray())}], actual [{string.Join(", ", actual.ToArray())}].");
 }
 
+static void AssertCollectionEqual<T>(IEnumerable<T> expected, IEnumerable<T> actual)
+    where T : IEquatable<T>
+{
+    T[] expectedItems = expected.ToArray();
+    T[] actualItems = actual.ToArray();
+    if (!expectedItems.SequenceEqual(actualItems))
+        throw new InvalidOperationException($"Expected [{string.Join(", ", expectedItems)}], actual [{string.Join(", ", actualItems)}].");
+}
+
 static void AssertThrows<TException>(Action action)
     where TException : Exception
 {
@@ -323,6 +470,29 @@ static async Task<T> WaitAsync<T>(Task<T> task)
         throw new TimeoutException("Timed out waiting for asynchronous test operation.");
 
     return await task;
+}
+
+static Card TestCard(
+    int id,
+    int type = (int)CardType.Monster,
+    int alias = 0,
+    long setcode = 0,
+    int ot = 3,
+    int level = 4,
+    int lScale = 0,
+    int rScale = 0,
+    int race = (int)CardRace.Warrior,
+    int attribute = (int)CardAttribute.Earth,
+    int attack = 1000,
+    int defense = 1000,
+    int linkMarker = 0)
+{
+    return new Card(id, ot, alias, setcode, type, level, lScale, rScale, race, attribute, attack, defense, linkMarker);
+}
+
+static InMemoryCardRepository TestRepository(params Card[] cards)
+{
+    return new InMemoryCardRepository(cards);
 }
 
 static string FindRepositoryRoot()
