@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Extensions.Logging;
 using YGOProSharp;
 using YGOProSharp.Abstractions.Ocg;
 using YGOProSharp.Abstractions.Ocg.Enums;
@@ -11,12 +12,24 @@ using YGOProSharp.Network.Enums;
 using YGOProSharp.Network.Utils;
 using YGOProSharp.NativeApi;
 
+using ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
+{
+    builder.SetMinimumLevel(LogLevel.Information);
+    builder.AddSimpleConsole(options =>
+    {
+        options.SingleLine = true;
+        options.TimestampFormat = "";
+    });
+});
+ILogger testLogger = loggerFactory.CreateLogger("YGOProSharp.Tests");
+
 Run("CoreMessage reads native payloads from spans", CoreMessageReadsNativePayloadsFromSpans);
 Run("Native duel rejects too-small query destination buffers", NativeDuelRejectsTooSmallQueryDestinationBuffers);
 Run("Native duel preserves oversize response behavior", NativeDuelPreservesOversizeResponseBehavior);
 Run("OcgCardData matches native card_data size", OcgCardDataMatchesNativeSize);
 Run("Native duel factory validates seed sequence length", NativeDuelFactoryValidatesSeedSequenceLength);
 Run("Project boundaries keep native interop out of core", ProjectBoundariesKeepNativeInteropOutOfCore);
+Run("Project boundaries keep direct Console writes out of source", ProjectBoundariesKeepDirectConsoleWritesOutOfSource);
 Run("PacketFramer handles split and sticky packets", PacketFramerHandlesSplitAndStickyPackets);
 Run("PacketFramer handles 4-byte size-included headers", PacketFramerHandlesFourByteSizeIncludedHeaders);
 Run("PacketFramer rejects oversize packets", PacketFramerRejectsOversizePackets);
@@ -96,6 +109,32 @@ static void ProjectBoundariesKeepNativeInteropOutOfCore()
     {
         if (abstractionsXml.Contains(forbiddenReference, StringComparison.Ordinal))
             throw new InvalidOperationException($"YGOProSharp.Abstractions references {forbiddenReference}.");
+    }
+}
+
+static void ProjectBoundariesKeepDirectConsoleWritesOutOfSource()
+{
+    string root = FindRepositoryRoot();
+    string consolePrefix = "Console.";
+    string consoleErrorPrefix = consolePrefix + "Error.";
+    string[] forbiddenWrites =
+    [
+        consolePrefix + "WriteLine",
+        consoleErrorPrefix + "WriteLine",
+        consolePrefix + "Write(",
+        consoleErrorPrefix + "Write("
+    ];
+
+    foreach (string file in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
+                 .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") &&
+                                !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")))
+    {
+        string text = File.ReadAllText(file);
+        foreach (string forbiddenWrite in forbiddenWrites)
+        {
+            if (text.Contains(forbiddenWrite, StringComparison.Ordinal))
+                throw new InvalidOperationException($"{Path.GetRelativePath(root, file)} contains forbidden direct console write {forbiddenWrite}.");
+        }
     }
 }
 
@@ -209,32 +248,30 @@ static async Task NetworkClientLoopbackSendAndReceiveAsync()
     listener.Stop();
 }
 
-static void Run(string name, Action test)
+void Run(string name, Action test)
 {
     try
     {
         test();
-        Console.WriteLine($"PASS {name}");
+        testLogger.LogInformation("PASS {TestName}", name);
     }
     catch (Exception ex)
     {
-        Console.Error.WriteLine($"FAIL {name}");
-        Console.Error.WriteLine(ex);
+        testLogger.LogError(ex, "FAIL {TestName}", name);
         Environment.ExitCode = 1;
     }
 }
 
-static async Task RunAsync(string name, Func<Task> test)
+async Task RunAsync(string name, Func<Task> test)
 {
     try
     {
         await test();
-        Console.WriteLine($"PASS {name}");
+        testLogger.LogInformation("PASS {TestName}", name);
     }
     catch (Exception ex)
     {
-        Console.Error.WriteLine($"FAIL {name}");
-        Console.Error.WriteLine(ex);
+        testLogger.LogError(ex, "FAIL {TestName}", name);
         Environment.ExitCode = 1;
     }
 }

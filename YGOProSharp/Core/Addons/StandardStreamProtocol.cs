@@ -1,4 +1,6 @@
 using System;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using YGOProSharp.Abstractions;
 using YGOProSharp.Network.Enums;
 
@@ -6,9 +8,13 @@ namespace YGOProSharp.Addons
 {
     public class StandardStreamProtocol : AddonBase
     {
-        public StandardStreamProtocol(Game game)
+        private readonly ILogger<StandardStreamProtocol> _logger;
+
+        public StandardStreamProtocol(Game game, ILogger<StandardStreamProtocol>? logger = null)
             : base(game)
         {
+            _logger = logger ?? NullLogger<StandardStreamProtocol>.Instance;
+
             if (!Config.GetBool("StandardStreamProtocol"))
                 return;
 
@@ -26,18 +32,18 @@ namespace YGOProSharp.Addons
 
         private void Game_OnNetworkReady(object sender, EventArgs e)
         {
-            Console.WriteLine("::::network-ready");
+            WriteProtocolMessage("::::network-ready");
         }
 
         private void Game_OnNetworkEnd(object sender, EventArgs e)
         {
-            Console.WriteLine("::::network-end");
+            WriteProtocolMessage("::::network-end");
         }
 
         private void Game_OnPlayerChat(object sender, PlayerChatEventArgs e)
         {
             Player player = (Player)e.Player;
-            Console.WriteLine("::::chat|" + player.Name + "|" + e.Message);
+            WriteProtocolMessage("::::chat|" + player.Name + "|" + e.Message);
         }
 
         private void Game_OnPlayerJoin(object sender, PlayerEventArgs e)
@@ -48,11 +54,11 @@ namespace YGOProSharp.Addons
             Player player = (Player)e.Player;
             if (player.Type != (int)PlayerType.Observer)
             {
-                Console.WriteLine("::::join-slot|" + player.Type + "|" + player.Name);
+                WriteProtocolMessage("::::join-slot|" + player.Type + "|" + player.Name);
             }
             else
             {
-                Console.WriteLine("::::spectator|" + Game.Observers.Count);
+                WriteProtocolMessage("::::spectator|" + Game.Observers.Count);
             }
         }
 
@@ -64,11 +70,11 @@ namespace YGOProSharp.Addons
             Player player = (Player)e.Player;
             if (player.Type != (int)PlayerType.Observer)
             {
-                Console.WriteLine("::::left-slot|" + player.Type + "|" + player.Name);
+                WriteProtocolMessage("::::left-slot|" + player.Type + "|" + player.Name);
             }
             else
             {
-                Console.WriteLine("::::spectator|" + Game.Observers.Count);
+                WriteProtocolMessage("::::spectator|" + Game.Observers.Count);
             }
         }
 
@@ -80,37 +86,42 @@ namespace YGOProSharp.Addons
             Player player = (Player)e.Player;
             if (e.FromType != (int)PlayerType.Observer)
             {
-                Console.WriteLine("::::left-slot|" + e.FromType + "|" + player.Name);
+                WriteProtocolMessage("::::left-slot|" + e.FromType + "|" + player.Name);
             }
             if (player.Type != (int)PlayerType.Observer)
             {
-                Console.WriteLine("::::join-slot|" + player.Type + "|" + player.Name);
+                WriteProtocolMessage("::::join-slot|" + player.Type + "|" + player.Name);
             }
             if (e.FromType == (int)PlayerType.Observer || player.Type == (int)PlayerType.Observer)
             {
-                Console.WriteLine("::::spectator|" + Game.Observers.Count);
+                WriteProtocolMessage("::::spectator|" + Game.Observers.Count);
             }
         }
 
         private void Game_OnPlayerReady(object sender, PlayerEventArgs e)
         {
             Player player = (Player)e.Player;
-            Console.WriteLine("::::lock-slot|" + player.Type + "|" + Game.IsReady[player.Type]);
+            WriteProtocolMessage("::::lock-slot|" + player.Type + "|" + Game.IsReady[player.Type]);
         }
 
         private void Game_OnGameStart(object sender, EventArgs e)
         {
-            Console.WriteLine("::::start-game");
+            WriteProtocolMessage("::::start-game");
         }
 
         private void Game_OnGameEnd(object sender, EventArgs e)
         {
-            Console.WriteLine("::::end-game|" + Game.Winner);
+            WriteProtocolMessage("::::end-game|" + Game.Winner);
         }
 
         private void Game_OnDuelEnd(object sender, EventArgs e)
         {
-            Console.WriteLine("::::end-duel|" + Game.MatchResults[Game.DuelCount - 1] + "|" + Game.MatchReasons[Game.DuelCount - 1]);
+            WriteProtocolMessage("::::end-duel|" + Game.MatchResults[Game.DuelCount - 1] + "|" + Game.MatchReasons[Game.DuelCount - 1]);
+        }
+
+        private void WriteProtocolMessage(string message)
+        {
+            _logger.LogInformation("{ProtocolMessage}", message);
         }
     }
 }

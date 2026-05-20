@@ -3,6 +3,8 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using YGOProSharp.Abstractions;
 using YGOProSharp.Abstractions.Ocg;
 using YGOProSharp.Abstractions.Ocg.Enums;
@@ -56,6 +58,8 @@ namespace YGOProSharp
 
         private CoreServer _server;
         private readonly IDuelFactory? _duelFactory;
+        private readonly ILoggerFactory _loggerFactory;
+        private readonly ILogger<Game> _logger;
         private IDuelSession _duel = null!;
         private GameAnalyser _analyser;
         private int[] _handResult;
@@ -78,14 +82,16 @@ namespace YGOProSharp
         public event Action<object, PlayerEventArgs>? OnPlayerReady;
         public event Action<object, PlayerChatEventArgs>? OnPlayerChat;
 
-        public Game(CoreServer server, IDuelFactory? duelFactory = null)
+        public Game(CoreServer server, IDuelFactory? duelFactory = null, ILoggerFactory? loggerFactory = null)
         {
             _duelFactory = duelFactory;
+            _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
+            _logger = _loggerFactory.CreateLogger<Game>();
             State = GameState.Lobby;
             Mode = Config.GetInt("Mode");
             Region = Config.GetInt("Rule", -1);
             if (Region != -1)
-                Console.Error.WriteLine("'Rule' is deprecated, please use 'Region' instead.");
+                _logger.LogWarning("'Rule' is deprecated, please use 'Region' instead.");
             else
                 Region = Config.GetInt("Region");
             MasterRule = Config.GetInt("MasterRule", 3);
@@ -119,7 +125,7 @@ namespace YGOProSharp
             Timer = Config.GetInt("GameTimer", DEFAULT_TIMER);
 
             _server = server;
-            _analyser = new GameAnalyser(this);
+            _analyser = new GameAnalyser(this, _loggerFactory.CreateLogger<GameAnalyser>());
         }
 
         public void SetRules(BinaryReader packet)

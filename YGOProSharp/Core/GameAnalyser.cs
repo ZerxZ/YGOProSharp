@@ -1,5 +1,7 @@
 using System;
 using System.Buffers;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using YGOProSharp.Abstractions.Ocg.Enums;
 
 namespace YGOProSharp
@@ -7,16 +9,18 @@ namespace YGOProSharp
     public class GameAnalyser
     {
         public Game Game { get; private set; }
+        private readonly ILogger<GameAnalyser> _logger;
 
-        public GameAnalyser(Game game)
+        public GameAnalyser(Game game, ILogger<GameAnalyser>? logger = null)
         {
             Game = game;
+            _logger = logger ?? NullLogger<GameAnalyser>.Instance;
         }
 
         public int Analyse(GameMessage msg, ref SequenceReader<byte> reader, ReadOnlyMemory<byte> raw)
         {
 #if DEBUG
-            Console.Error.WriteLine(msg);
+            _logger.LogDebug("{GameMessage}", msg);
 #endif
             CoreMessage cmsg = new CoreMessage(msg, raw);
             int result = AnalyseCore(msg, cmsg);

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using YGOProSharp.Abstractions.Ocg;
 using YGOProSharp.Cards;
 
@@ -9,9 +10,10 @@ public static class YGOProSharpServer
 
     public static uint ClientVersion { get; private set; } = DefaultClientVersion;
 
-    public static async Task RunAsync(string[] args, IOcgRuntime runtime, CancellationToken cancellationToken = default)
+    public static async Task RunAsync(string[] args, IOcgRuntime runtime, ILoggerFactory loggerFactory, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(runtime);
+        ArgumentNullException.ThrowIfNull(loggerFactory);
 
         Config.Load(args);
 
@@ -30,7 +32,7 @@ public static class YGOProSharpServer
 
         ClientVersion = Config.GetUInt("ClientVersion", ClientVersion);
 
-        CoreServer server = new(runtime.DuelFactory);
+        CoreServer server = new(runtime.DuelFactory, loggerFactory);
         server.Start();
 
         try

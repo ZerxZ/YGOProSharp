@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using YGOProSharp.Abstractions.Ocg;
 using YGOProSharp.Network;
 
@@ -17,21 +19,25 @@ namespace YGOProSharp
 
         private NetworkServer? _listener;
         private readonly IDuelFactory? _duelFactory;
+        private readonly ILoggerFactory _loggerFactory;
+        private readonly ILogger<CoreServer> _logger;
         private readonly List<YGOClient> _clients = new();
 
         private bool _closePending;
 
-        public CoreServer(IDuelFactory? duelFactory = null)
+        public CoreServer(IDuelFactory? duelFactory = null, ILoggerFactory? loggerFactory = null)
         {
             _duelFactory = duelFactory;
+            _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
+            _logger = _loggerFactory.CreateLogger<CoreServer>();
         }
 
         public void Start()
         {
             if (IsRunning)
                 return;
-            Addons = new AddonsManager();
-            Game = new Game(this, _duelFactory);
+            Addons = new AddonsManager(_loggerFactory);
+            Game = new Game(this, _duelFactory, _loggerFactory);
             Addons.Init(Game);
             try
             {
@@ -42,9 +48,9 @@ namespace YGOProSharp
                 IsListening = true;
                 Game.Start();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                //ignore
+                _logger.LogError(ex, "Failed to start core server.");
             }
         }
 
