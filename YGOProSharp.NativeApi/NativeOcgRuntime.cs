@@ -3,6 +3,9 @@ using YGOProSharp.Abstractions.Ocg;
 
 namespace YGOProSharp.NativeApi;
 
+/// <summary>
+/// ocgcore 的托管 runtime 边界（managed runtime boundary），负责 native callback、共享 script buffer 生命周期和活动 duel session。
+/// </summary>
 public sealed unsafe class NativeOcgRuntime : IOcgRuntime
 {
     private const nuint ScriptBufferSize = 0x100000;
@@ -26,6 +29,9 @@ public sealed unsafe class NativeOcgRuntime : IOcgRuntime
 
     internal bool IsInitialized => _options is not null;
 
+    /// <summary>
+    /// 向 ocgcore 注册托管 provider，并为后续 duel session 准备 callback 状态。
+    /// </summary>
     public void Initialize(OcgRuntimeOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -100,6 +106,7 @@ public sealed unsafe class NativeOcgRuntime : IOcgRuntime
 
     private uint OnCardReader(uint code, OcgCardData* data)
     {
+        // native core 按 code 请求 card_data；存储策略仍留在已配置的 provider 中。
         if (_options?.CardDataProvider.TryGetCardData(code, out OcgCardData cardData) == true)
             *data = cardData;
 

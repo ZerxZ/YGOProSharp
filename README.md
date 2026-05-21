@@ -1,8 +1,8 @@
 # YGOProSharp
 
-YGOProSharp 是一个实验性的 C# / .NET 项目，目标是把 YGOPro / OCGCore 相关能力整理成更清晰的 .NET 工程结构。
+YGOProSharp 是一个实验性的 C# / .NET 项目，目标是把 YGOPro / OCGCore 相关能力整理成更清晰的工程结构。
 
-这个仓库主要用于 **AI code vibing / AI 编程体验**：用 AI 辅助阅读、迁移、封装、重构和补全代码，观察 AI 参与工程化改造的过程。它不是稳定发行版，不保证能联机、开局或完整游玩。
+这个仓库主要用于 **AI code vibing / AI 编程体验**：用 AI 辅助阅读、迁移、封装、重构和补全文档，观察 AI 参与工程化改造的过程。它不是稳定发行版，不保证能联机、开局或完整游玩。
 
 ## 来源与参考
 
@@ -18,33 +18,44 @@ YGOProSharp 是一个实验性的 C# / .NET 项目，目标是把 YGOPro / OCGCo
 - 不保证能玩。
 - 不保证协议、卡片数据库、脚本和客户端版本兼容。
 - 不建议直接用于正式服务器。
-- 主要价值是体验 AI 参与代码迁移、native interop、网络协议处理和工程自动化。
+- 当前重点是验证 native interop、核心库、协议层和服务器层的解耦方式。
+
+## 快速阅读路线
+
+- [架构说明](docs/architecture.md)：Core / Protocol / Server / Native 分层与边界。
+- [调用流程](docs/call-flow.md)：CLI 启动、网络包、duel、卡库 callback 和错误日志流程。
+- [服务器迁移说明](docs/server-migration.md)：本轮把服务器和“前端协议层”抽成新项目的迁移清单。
+- [NativeApi 文档](YGOProSharp.NativeApi/README.md)：`ocgapi.h` 到托管 API 的映射。
+- [Native runtime 文档](YGOProSharp.Native/README.md)：`ocgcore` runtime assets、RID 和 xmake 构建说明。
 
 ## 项目结构
 
 ```text
 YGOProSharp/
-├─ YGOProSharp.Abstractions/  # 纯契约、事件参数、OCG DTO、枚举和 provider 接口
-├─ YGOProSharp.Native/        # ocgcore runtime 二进制与 xmake 构建，不提供托管 API
-├─ YGOProSharp.NativeApi/     # ocgapi.h 的安全托管封装
-├─ YGOProSharp/               # 核心服务器、游戏流程、数据库与脚本 provider
-├─ YGOProSharp.Cli/           # 组合根和命令行入口
-└─ YGOProSharp.Tests/         # 基础测试和架构边界测试
+├── YGOProSharp.Abstractions/  # OCG 契约、DTO、provider 接口，以及全局日志入口
+├── YGOProSharp.Native/        # ocgcore runtime 二进制与 xmake 构建，不提供托管 API
+├── YGOProSharp.NativeApi/     # ocgapi.h 的安全托管封装
+├── YGOProSharp.Core/          # 卡片、卡组、禁限表、脚本 provider、OCG message reader
+├── YGOProSharp.Protocol/      # YGO 客户端协议、CTOS/STOC、packet framing、socket client/server
+├── YGOProSharp.Server/        # 服务端启动流程、房间、玩家、Game 状态机、Replay、Addon
+├── YGOProSharp.Cli/           # 组合根和命令行入口
+├── YGOProSharp.Tests/         # 行为测试与架构边界测试
+└── docs/                      # 架构说明和调用流程文档
 ```
 
-核心边界：
+关键边界：
 
-- `YGOProSharp.Abstractions` 只放契约，不依赖 Native、NativeApi、Sqlite 或 SevenZip。
-- `YGOProSharp.Native` 只负责提供 `ocgcore` runtime 文件。
-- `YGOProSharp.NativeApi` 独占 `LibraryImport`、`SafeHandle`、native buffer 和 `ocgapi.h` raw binding。
-- `YGOProSharp` 通过 `IDuelFactory` / `IDuelSession` 调用 native 能力，不直接接触 `IntPtr`、`byte*` 或 P/Invoke。
-- `YGOProSharp.Cli` 作为组合根创建 `NativeOcgRuntime`，注入卡片数据库与脚本 provider。
+- `YGOProSharp.Core` 不引用 Protocol、Server、NativeApi 或 SevenZip。
+- `YGOProSharp.Protocol` 不引用 Core、Server、NativeApi 或 SQLite。
+- `YGOProSharp.Server` 组合 Core、Protocol、NativeApi，并保留原来的服务端状态机行为。
+- `YGOProSharp.NativeApi` 是唯一直接接触 `ocgapi.h` raw binding、native handle 和 unsafe buffer 的项目。
+- `YGOProSharp.Cli` 只负责创建 `NativeOcgRuntime`、配置全局日志并启动 Server。
 
 ## Native API
 
 托管 native 边界基于 `YGOProSharp.Native/ygopro-core/ocgapi.h`。
 
-`YGOProSharp.NativeApi` 默认使用 `create_duel_v2(uint[8])` 创建决斗；`create_duel(uint)` 仅作为 legacy / replay 路径保留在 wrapper 中。业务层只应依赖 `YGOProSharp.Abstractions.Ocg` 中的接口：
+`YGOProSharp.NativeApi` 默认使用 `create_duel_v2(uint[8])` 创建决斗；`create_duel(uint)` 仅作为 legacy / replay 路径保留在 wrapper 中。业务层应通过 `YGOProSharp.Abstractions.Ocg` 中的接口依赖 native 能力：
 
 - `IOcgRuntime`
 - `IDuelFactory`
@@ -72,7 +83,7 @@ dotnet run --project YGOProSharp.Tests -c Release
 dotnet run --project YGOProSharp.Cli -c Release
 ```
 
-运行时通常还需要 YGOPro 数据文件，默认从当前目录读取：
+运行时通常还需要 YGOPro 数据文件。默认从当前目录读取：
 
 - `cards.cdb`
 - `script/`
@@ -85,9 +96,9 @@ dotnet run --project YGOProSharp.Cli -c Release -- LogLevel=Debug
 dotnet run --project YGOProSharp.Cli -c Release -- LogLevel=Information StandardStreamProtocol=true
 ```
 
-`LogLevel` supports `Trace`, `Debug`, `Information`, `Warning`, `Error`, and `Critical`.
-The CLI uses structured single-line console logging at `Information` by default.
-Lifecycle events are logged at `Information`; packet and message details are logged at `Debug` or `Trace`.
+`LogLevel` 支持 `Trace`、`Debug`、`Information`、`Warning`、`Error`、`Critical`。CLI 默认使用 `Information` 等级的结构化单行 console 日志。
+
+生命周期事件在 `Information` 输出；包级和消息级细节在 `Debug` 输出；payload 短预览只在 `Trace` 输出。
 
 ## Native Runtime
 

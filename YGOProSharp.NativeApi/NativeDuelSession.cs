@@ -5,6 +5,9 @@ using YGOProSharp.Abstractions.Ocg.Enums;
 
 namespace YGOProSharp.NativeApi;
 
+/// <summary>
+/// 单个 native duel handle 的安全托管门面（managed facade），负责 message/query/response buffer 并转换 raw ocgapi 调用。
+/// </summary>
 public sealed class NativeDuelSession : IDuelSession
 {
     private readonly NativeOcgRuntime _runtime;
@@ -80,6 +83,7 @@ public sealed class NativeDuelSession : IDuelSession
                 fixed (byte* buffer = _messageBuffer)
                     OcgCoreImports.GetMessage(_handle, buffer);
 
+                // message 解释交回核心层 GameAnalyser；本类只管理 native buffer。
                 int result = HandleMessages(_messageBuffer.AsMemory(0, length));
                 if (result != 0)
                     return result;
@@ -174,6 +178,7 @@ public sealed class NativeDuelSession : IDuelSession
             return;
 
         _disposed = true;
+        // 释放 handle 前先 unregister，避免滞后的 native callback 解析到已释放 session。
         _runtime.Unregister(NativeHandle);
         _handle.Dispose();
     }

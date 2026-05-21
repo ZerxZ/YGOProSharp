@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging;
-using YGOProSharp;
-using YGOProSharp.Logging;
+using YGOProSharp.Abstractions.Logging;
 using YGOProSharp.NativeApi;
+using YGOProSharp.Server;
 
 using CancellationTokenSource shutdown = new();
 string? rawLogLevel = GetLogLevelValue(args);

@@ -100,13 +100,19 @@ dotnet pack YGOProSharp.Native/YGOProSharp.Native.csproj -c Release -o artifacts
 
 The generated package includes native binaries under `runtimes/<rid>/native/`.
 
+### Troubleshooting
+
+`EntryPointNotFoundException` usually means the current `ocgcore` binary does not export a function required by the managed layer. Compare `ygopro-core/ocgapi.h` with the export table of the built binary.
+
+If the application cannot find the native library at runtime, confirm that the output directory or NuGet package contains the `ocgcore` file for the current RID.
+
 ---
 
 ## 中文
 
 ### 概览
 
-`YGOProSharp.Native` 是 YGOProSharp 的原生运行时包，只提供 `ocgcore` 二进制文件。
+`YGOProSharp.Native` 是 YGOProSharp 的原生 runtime 包，只提供预构建的 `ocgcore` 二进制文件。
 
 这个项目 **不提供托管 API**。托管封装位于 `YGOProSharp.NativeApi`，业务代码应依赖 `YGOProSharp.Abstractions` 中的接口。
 
@@ -117,7 +123,7 @@ The generated package includes native binaries under `runtimes/<rid>/native/`.
 
 ### Runtime 资源
 
-包结构遵循标准 .NET native runtime asset 布局：
+NuGet 包遵循标准 .NET native runtime asset 布局：
 
 ```text
 runtimes/<rid>/native/
@@ -188,7 +194,7 @@ YGOProSharp.Native/lib/<rid>/
 
 ### CI 构建产物
 
-GitHub Actions 会按 RID 构建 `ocgcore`。每个 native job 上传对应的 `lib/<rid>/` 作为 artifact，最终打包 job 下载这些 artifact 后执行 `dotnet pack`。
+GitHub Actions 会按 RID 构建 `ocgcore`。每个 native job 上传对应的 `lib/<rid>/` 目录作为 artifact，最终 packaging job 下载这些 artifact 后执行 `dotnet pack`。
 
 ### 打包
 

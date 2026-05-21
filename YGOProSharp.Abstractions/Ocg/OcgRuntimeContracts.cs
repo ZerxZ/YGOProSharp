@@ -5,6 +5,9 @@ namespace YGOProSharp.Abstractions.Ocg;
 
 public delegate int DuelMessageAnalyzer(GameMessage message, ref SequenceReader<byte> reader, ReadOnlyMemory<byte> raw);
 
+/// <summary>
+/// 进程级 OCG runtime 抽象（process-level runtime），实现负责配置 callback 并暴露 duel session 工厂。
+/// </summary>
 public interface IOcgRuntime : IDisposable
 {
     IDuelFactory DuelFactory { get; }
@@ -12,6 +15,9 @@ public interface IOcgRuntime : IDisposable
     void Initialize(OcgRuntimeOptions options);
 }
 
+/// <summary>
+/// 创建托管 duel session，并隐藏底层 native 路径是 legacy seed 还是 seed sequence。
+/// </summary>
 public interface IDuelFactory
 {
     IDuelSession Create(uint seed);
@@ -21,6 +27,9 @@ public interface IDuelFactory
     IDuelSession CreateLegacy(uint seed);
 }
 
+/// <summary>
+/// 单个 duel 的托管操作面（managed operations），调用方不需要 native handle、pointer 或 ocgapi buffer。
+/// </summary>
 public interface IDuelSession : IDisposable
 {
     void SetAnalyzer(DuelMessageAnalyzer analyzer);
@@ -54,6 +63,9 @@ public interface IDuelSession : IDisposable
     void End();
 }
 
+/// <summary>
+/// 从服务层传入 native interop 层的 runtime 配置。
+/// </summary>
 public sealed class OcgRuntimeOptions
 {
     public OcgRuntimeOptions(
@@ -81,11 +93,17 @@ public sealed class OcgRuntimeOptions
     public IScriptProvider ScriptProvider { get; }
 }
 
+/// <summary>
+/// 向 ocgcore callback 提供 card_data 记录。
+/// </summary>
 public interface ICardDataProvider
 {
     bool TryGetCardData(uint code, out OcgCardData data);
 }
 
+/// <summary>
+/// 向 ocgcore callback 提供 Lua script bytes。
+/// </summary>
 public interface IScriptProvider
 {
     bool TryGetScript(string scriptName, out byte[] script);

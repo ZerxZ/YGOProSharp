@@ -17,7 +17,7 @@
                         ReferenceOutputAssembly="false"
                         PrivateAssets="all" />
       <ProjectReference Include="..\YGOProSharp.NativeApi\YGOProSharp.NativeApi.csproj" />
-      <ProjectReference Include="..\YGOProSharp\YGOProSharp.csproj" />
+      <ProjectReference Include="..\YGOProSharp.Server\YGOProSharp.Server.csproj" />
     </ItemGroup>
     <ItemGroup>
         <None Include="..\LICENSE" Pack="true" PackagePath="\" />

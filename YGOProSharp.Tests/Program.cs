@@ -4,15 +4,16 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Extensions.Logging;
-using YGOProSharp;
 using YGOProSharp.Abstractions.Ocg;
 using YGOProSharp.Abstractions.Ocg.Enums;
-using YGOProSharp.Cards;
-using YGOProSharp.Logging;
-using YGOProSharp.Network;
-using YGOProSharp.Network.Enums;
-using YGOProSharp.Network.Utils;
+using YGOProSharp.Core;
+using YGOProSharp.Core.Cards;
+using YGOProSharp.Abstractions.Logging;
+using YGOProSharp.Protocol;
+using YGOProSharp.Protocol.Enums;
+using YGOProSharp.Protocol.Utils;
 using YGOProSharp.NativeApi;
+using YGOProSharp.Server;
 
 ListLoggerProvider logProvider = TestLog.Provider;
 using ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
@@ -40,6 +41,7 @@ Run("Deck check uses repository aliases and banlist", DeckCheckUsesRepositoryAli
 Run("Repository card data provider maps cards to ocg data", RepositoryCardDataProviderMapsCardsToOcgData);
 Run("Project boundaries keep native interop out of core", ProjectBoundariesKeepNativeInteropOutOfCore);
 Run("Project boundaries keep card models and sqlite separated", ProjectBoundariesKeepCardModelsAndSqliteSeparated);
+Run("Project boundaries split core protocol and server", ProjectBoundariesSplitCoreProtocolAndServer);
 Run("Project boundaries keep direct Console writes out of source", ProjectBoundariesKeepDirectConsoleWritesOutOfSource);
 Run("Project boundaries keep logger parameters out of business APIs", ProjectBoundariesKeepLoggerParametersOutOfBusinessApis);
 Run("PacketFramer handles split and sticky packets", PacketFramerHandlesSplitAndStickyPackets);
@@ -137,13 +139,6 @@ static void DeckSideRejectsMissingAndTokenCards()
 
 static void DeckCheckUsesRepositoryAliasesAndBanlist()
 {
-    Config.Load([
-        "MainDeckMinSize=1",
-        "MainDeckMaxSize=60",
-        "ExtraDeckMaxSize=15",
-        "SideDeckMaxSize=15"
-    ]);
-
     Deck deck = new(TestRepository(
         TestCard(10, alias: 20),
         TestCard(11, alias: 20)));
@@ -153,7 +148,7 @@ static void DeckCheckUsesRepositoryAliasesAndBanlist()
     deck.AddMain(10);
     deck.AddMain(11);
 
-    AssertEqual(20, deck.Check(banlist, ocg: true, tcg: true));
+    AssertEqual(20, deck.Check(banlist, ocg: true, tcg: true, new DeckRules(MainDeckMinSize: 1)));
 }
 
 static void RepositoryCardDataProviderMapsCardsToOcgData()
@@ -191,7 +186,7 @@ static void RepositoryCardDataProviderMapsCardsToOcgData()
 static void ProjectBoundariesKeepNativeInteropOutOfCore()
 {
     string root = FindRepositoryRoot();
-    string coreProject = Path.Combine(root, "YGOProSharp");
+    string coreProject = Path.Combine(root, "YGOProSharp.Core");
     string abstractionsProject = Path.Combine(root, "YGOProSharp.Abstractions", "YGOProSharp.Abstractions.csproj");
 
     string[] forbiddenCoreTokens = ["LibraryImport", "DllImport", "SafeHandle", "byte*", "OcgCoreImports"];
@@ -218,7 +213,7 @@ static void ProjectBoundariesKeepNativeInteropOutOfCore()
 static void ProjectBoundariesKeepCardModelsAndSqliteSeparated()
 {
     string root = FindRepositoryRoot();
-    string coreProject = Path.Combine(root, "YGOProSharp");
+    string coreProject = Path.Combine(root, "YGOProSharp.Core");
     string sqliteManagerPath = Path.Combine(coreProject, "Cards", "SqliteCardDatabaseManager.cs");
     string[] cardModelFiles =
     [
@@ -265,6 +260,31 @@ static void ProjectBoundariesKeepCardModelsAndSqliteSeparated()
     }
 }
 
+static void ProjectBoundariesSplitCoreProtocolAndServer()
+{
+    string root = FindRepositoryRoot();
+    string coreProject = Path.Combine(root, "YGOProSharp.Core");
+    string protocolProject = Path.Combine(root, "YGOProSharp.Protocol");
+    string serverProject = Path.Combine(root, "YGOProSharp.Server");
+
+    AssertDoesNotContainAny(
+        ProjectText(coreProject),
+        ["YGOProSharp.Protocol", "YGOProSharp.Server", "SevenZip", "YGOClient", "CtosMessage", "StocMessage"],
+        "Core project boundary");
+
+    AssertDoesNotContainAny(
+        ProjectText(protocolProject),
+        ["YGOProSharp.Core", "YGOProSharp.Server", "YGOProSharp.NativeApi", "Microsoft.Data.Sqlite", "SqliteConnection"],
+        "Protocol project boundary");
+
+    string serverProjectFile = File.ReadAllText(Path.Combine(serverProject, "YGOProSharp.Server.csproj"));
+    foreach (string requiredReference in new[] { "YGOProSharp.Core", "YGOProSharp.Protocol", "YGOProSharp.NativeApi" })
+    {
+        if (!serverProjectFile.Contains(requiredReference, StringComparison.Ordinal))
+            throw new InvalidOperationException($"Server project must reference {requiredReference}.");
+    }
+}
+
 static void ProjectBoundariesKeepDirectConsoleWritesOutOfSource()
 {
     string root = FindRepositoryRoot();
@@ -294,11 +314,16 @@ static void ProjectBoundariesKeepDirectConsoleWritesOutOfSource()
 static void ProjectBoundariesKeepLoggerParametersOutOfBusinessApis()
 {
     string root = FindRepositoryRoot();
-    string coreProject = Path.Combine(root, "YGOProSharp");
-    string appLogPath = Path.Combine(coreProject, "Logging", "AppLog.cs");
+    string[] businessProjects =
+    [
+        Path.Combine(root, "YGOProSharp.Core"),
+        Path.Combine(root, "YGOProSharp.Protocol"),
+        Path.Combine(root, "YGOProSharp.Server")
+    ];
+    string appLogPath = Path.Combine(root, "YGOProSharp.Abstractions", "Logging", "AppLog.cs");
     string[] forbiddenParameterTokens = ["ILogger ", "ILogger<", "ILoggerFactory"];
 
-    foreach (string file in Directory.EnumerateFiles(coreProject, "*.cs", SearchOption.AllDirectories)
+    foreach (string file in businessProjects.SelectMany(project => Directory.EnumerateFiles(project, "*.cs", SearchOption.AllDirectories))
                  .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") &&
                                 !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") &&
                                 !Path.GetFullPath(file).Equals(appLogPath, StringComparison.OrdinalIgnoreCase)))
@@ -586,6 +611,25 @@ static string FindRepositoryRoot()
     }
 
     throw new DirectoryNotFoundException("Could not find repository root.");
+}
+
+static string ProjectText(string projectDirectory)
+{
+    IEnumerable<string> files = Directory.EnumerateFiles(projectDirectory, "*.cs", SearchOption.AllDirectories)
+        .Concat(Directory.EnumerateFiles(projectDirectory, "*.csproj", SearchOption.TopDirectoryOnly))
+        .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") &&
+                       !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}"));
+
+    return string.Join(Environment.NewLine, files.Select(File.ReadAllText));
+}
+
+static void AssertDoesNotContainAny(string text, IEnumerable<string> forbiddenTokens, string subject)
+{
+    foreach (string token in forbiddenTokens)
+    {
+        if (text.Contains(token, StringComparison.Ordinal))
+            throw new InvalidOperationException($"{subject} contains forbidden dependency token {token}.");
+    }
 }
 
 internal static class TestLog

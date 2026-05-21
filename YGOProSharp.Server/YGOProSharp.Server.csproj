@@ -1,22 +1,21 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <OutputType>Exe</OutputType>
-        <TargetFramework>net10.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+        <TargetFrameworks>net10.0;net8.0;net9.0</TargetFrameworks>
+        <PackageLicenseFile>LICENSE</PackageLicenseFile>
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.4" />
-    </ItemGroup>
-
-    <ItemGroup>
-      <ProjectReference Include="..\YGOProSharp.Abstractions\YGOProSharp.Abstractions.csproj" />
+      <PackageReference Include="SevenZip" Version="19.0.0" />
       <ProjectReference Include="..\YGOProSharp.Core\YGOProSharp.Core.csproj" />
       <ProjectReference Include="..\YGOProSharp.NativeApi\YGOProSharp.NativeApi.csproj" />
       <ProjectReference Include="..\YGOProSharp.Protocol\YGOProSharp.Protocol.csproj" />
-      <ProjectReference Include="..\YGOProSharp.Server\YGOProSharp.Server.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="..\LICENSE" Pack="true" PackagePath="\" />
     </ItemGroup>
 
 </Project>
