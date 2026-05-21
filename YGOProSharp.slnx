@@ -7,4 +7,5 @@
   <Project Path="YGOProSharp.Protocol/YGOProSharp.Protocol.csproj" />
   <Project Path="YGOProSharp.Server/YGOProSharp.Server.csproj" />
   <Project Path="YGOProSharp.Tests/YGOProSharp.Tests.csproj" />
+  <Project Path="Windbot/YGOProSharp.WindBot.csproj" />
 </Solution>

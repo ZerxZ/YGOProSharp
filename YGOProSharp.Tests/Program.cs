@@ -42,8 +42,11 @@ Run("Repository card data provider maps cards to ocg data", RepositoryCardDataPr
 Run("Project boundaries keep native interop out of core", ProjectBoundariesKeepNativeInteropOutOfCore);
 Run("Project boundaries keep card models and sqlite separated", ProjectBoundariesKeepCardModelsAndSqliteSeparated);
 Run("Project boundaries split core protocol and server", ProjectBoundariesSplitCoreProtocolAndServer);
+Run("Project boundaries keep WindBot decoupled", ProjectBoundariesKeepWindBotDecoupled);
 Run("Project boundaries keep direct Console writes out of source", ProjectBoundariesKeepDirectConsoleWritesOutOfSource);
 Run("Project boundaries keep logger parameters out of business APIs", ProjectBoundariesKeepLoggerParametersOutOfBusinessApis);
+Run("WindBot packet factory writes CTOS message byte", WindBotPacketFactoryWritesCtosMessageByte);
+Run("WindBot deck loads through named-card repository", WindBotDeckLoadsThroughNamedCardRepository);
 Run("PacketFramer handles split and sticky packets", PacketFramerHandlesSplitAndStickyPackets);
 Run("PacketFramer handles 4-byte size-included headers", PacketFramerHandlesFourByteSizeIncludedHeaders);
 Run("PacketFramer rejects oversize packets", PacketFramerRejectsOversizePackets);
@@ -282,6 +285,73 @@ static void ProjectBoundariesSplitCoreProtocolAndServer()
     {
         if (!serverProjectFile.Contains(requiredReference, StringComparison.Ordinal))
             throw new InvalidOperationException($"Server project must reference {requiredReference}.");
+    }
+}
+
+static void ProjectBoundariesKeepWindBotDecoupled()
+{
+    string root = FindRepositoryRoot();
+    string windBotProject = Path.Combine(root, "Windbot");
+
+    string sourceText = ProjectText(windBotProject);
+    string consolePrefix = "Console.";
+    string consoleErrorPrefix = consolePrefix + "Error.";
+    AssertDoesNotContainAny(
+        sourceText,
+        ["YGOSharp", "MDPro3", "YGOProSharp.Server", "YGOProSharp.NativeApi", consolePrefix + "WriteLine", consoleErrorPrefix + "WriteLine"],
+        "WindBot project boundary");
+
+    string projectFile = File.ReadAllText(Path.Combine(windBotProject, "YGOProSharp.WindBot.csproj"));
+    foreach (string requiredReference in new[] { "YGOProSharp.Abstractions", "YGOProSharp.Core", "YGOProSharp.Protocol" })
+    {
+        if (!projectFile.Contains(requiredReference, StringComparison.Ordinal))
+            throw new InvalidOperationException($"WindBot project must reference {requiredReference}.");
+    }
+}
+
+static void WindBotPacketFactoryWritesCtosMessageByte()
+{
+    using BinaryWriter writer = WindBot.Game.GamePacketFactory.Create(CtosMessage.Chat);
+    MemoryStream stream = (MemoryStream)writer.BaseStream;
+
+    AssertSequenceEqual(new[] { (byte)CtosMessage.Chat }, stream.ToArray());
+}
+
+static void WindBotDeckLoadsThroughNamedCardRepository()
+{
+    string previousDirectory = Environment.CurrentDirectory;
+    string temporaryDirectory = Path.Combine(Path.GetTempPath(), "YGOProSharpWindBotDeckTest_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(Path.Combine(temporaryDirectory, "Decks"));
+
+    try
+    {
+        File.WriteAllLines(Path.Combine(temporaryDirectory, "Decks", "Smoke.ydk"),
+        [
+            "#created by test",
+            "1",
+            "2",
+            "!side",
+            "3",
+            "404"
+        ]);
+
+        Environment.CurrentDirectory = temporaryDirectory;
+        WindBot.Game.Deck deck = WindBot.Game.Deck.Load("Smoke", TestNamedRepository(
+            TestNamedCard(1),
+            TestNamedCard(2, (int)CardType.Monster | (int)CardType.Fusion),
+            TestNamedCard(3)));
+
+        AssertEqual(1, deck.Cards.Count);
+        AssertEqual(1, deck.ExtraCards.Count);
+        AssertEqual(1, deck.SideCards.Count);
+        AssertEqual(1, deck.Cards[0].Id);
+        AssertEqual(2, deck.ExtraCards[0].Id);
+        AssertEqual(3, deck.SideCards[0].Id);
+    }
+    finally
+    {
+        Environment.CurrentDirectory = previousDirectory;
+        Directory.Delete(temporaryDirectory, recursive: true);
     }
 }
 
@@ -597,6 +667,31 @@ static Card TestCard(
 static InMemoryCardRepository TestRepository(params Card[] cards)
 {
     return new InMemoryCardRepository(cards);
+}
+
+static NamedCard TestNamedCard(
+    int id,
+    int type = (int)CardType.Monster,
+    int alias = 0,
+    long setcode = 0,
+    int ot = 3,
+    int level = 4,
+    int lScale = 0,
+    int rScale = 0,
+    int race = (int)CardRace.Warrior,
+    int attribute = (int)CardAttribute.Earth,
+    int attack = 1000,
+    int defense = 1000,
+    int linkMarker = 0,
+    string? name = null,
+    string description = "")
+{
+    return new NamedCard(id, ot, alias, setcode, type, level, lScale, rScale, race, attribute, attack, defense, linkMarker, name ?? $"Card {id}", description);
+}
+
+static InMemoryNamedCardRepository TestNamedRepository(params NamedCard[] cards)
+{
+    return new InMemoryNamedCardRepository(cards);
 }
 
 static string FindRepositoryRoot()
