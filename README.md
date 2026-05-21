@@ -123,4 +123,4 @@ runtimes/<rid>/native/
 
 `YGOProSharp.WindBot` 是独立的协议 Bot 客户端项目，通过 `YGOProSharp.Protocol` 连接服务端，不嵌入服务器状态机，也不引用 `YGOProSharp.Server` / `YGOProSharp.NativeApi`。它复用 `YGOProSharp.Core` 的卡片数据库能力，并保留 WindBot 自己的客户端状态模型。
 
-运行与配置说明见 [docs/windbot.md](docs/windbot.md)。当前适配目标是能编译、能按协议连接并发送基础 CTOS 响应，不保证 AI 对局完整可玩。
+来源说明和运行配置见 [YGOProSharp.WindBot/README.md](YGOProSharp.WindBot/README.md) 与 [docs/windbot.md](docs/windbot.md)。原始项目为 [IceYGO/windbot](https://github.com/IceYGO/windbot)，当前导入代码基于 [sherry_chaos/MDPro3](https://code.moenext.com/sherry_chaos/MDPro3) 版本。当前适配目标是能编译、能按协议连接并发送基础 CTOS 响应，不保证 AI 对局完整可玩。

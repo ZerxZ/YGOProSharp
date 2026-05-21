@@ -1,10 +1,22 @@
 # WindBot 适配说明
 
+## 上游对比
+
+本轮使用 `.external/windbot-upstream/` 作为 `IceYGO/windbot` 的本地只读对比目录，该目录通过 `.gitignore` 排除，不纳入提交。当前项目只保守补齐能直接适配到 `YGOProSharp.Protocol`、`YGOProSharp.Core`、`YGOProSharp.Abstractions` 的缺失代码。
+
+`Decks/` 和 `Dialogs/` 不复制进仓库；需要运行 Bot 时，请在运行目录或配置指定位置自行提供卡组与对话资源。旧 `YGOSharp.*`、`MDPro3`、旧工程文件、sqlite 二进制和 `.meta` 文件不会回流。
+
 `YGOProSharp.WindBot` 是一个独立的协议 Bot 客户端。它通过 `YGOProSharp.Protocol` 连接 `YGOProSharp.Server`，发送和接收 CTOS/STOC 消息；它不是服务端内置 AI，也不引用 `YGOProSharp.Server` 或 `YGOProSharp.NativeApi`。
+
+## 来源
+
+- 原始项目：[`IceYGO/windbot`](https://github.com/IceYGO/windbot)。
+- 当前导入代码基于：[`sherry_chaos/MDPro3`](https://code.moenext.com/sherry_chaos/MDPro3) 版本中的 WindBot 代码。
+- 本仓库只做 YGOProSharp 适配：替换协议、卡库和日志边界，不保证 AI 对局完整可玩。
 
 ## 项目位置
 
-- 项目文件：`Windbot/YGOProSharp.WindBot.csproj`
+- 项目文件：`YGOProSharp.WindBot/YGOProSharp.WindBot.csproj`
 - 命名空间：继续保留 `WindBot.*`，减少对原 WindBot 源码的侵入式改动。
 - 引用边界：
   - `YGOProSharp.Abstractions`：OCG enum、全局日志入口。
@@ -14,7 +26,7 @@
 ## 运行示例
 
 ```powershell
-dotnet run --project Windbot/YGOProSharp.WindBot.csproj -c Release -- DbPath=cards.cdb Deck=AI_Yubel LogLevel=Information
+dotnet run --project YGOProSharp.WindBot/YGOProSharp.WindBot.csproj -c Release -- DbPath=cards.cdb Deck=AI_Yubel LogLevel=Information
 ```
 
 常用配置仍沿用 WindBot 的参数模型，例如 `Name`、`Host`、`Port`、`HostInfo`、`Version`、`Deck`、`DeckFile`、`Dialog`、`Hand`、`ServerMode`、`ServerPort`。适配后新增或重点使用的数据库参数如下：

@@ -291,7 +291,7 @@ static void ProjectBoundariesSplitCoreProtocolAndServer()
 static void ProjectBoundariesKeepWindBotDecoupled()
 {
     string root = FindRepositoryRoot();
-    string windBotProject = Path.Combine(root, "Windbot");
+    string windBotProject = Path.Combine(root, "YGOProSharp.WindBot");
 
     string sourceText = ProjectText(windBotProject);
     string consolePrefix = "Console.";

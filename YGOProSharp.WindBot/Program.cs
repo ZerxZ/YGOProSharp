@@ -279,7 +279,7 @@ namespace WindBot
             if (!File.Exists(fullpath))
                 fullpath = Path.Combine("../deck/", tryfilename);
             if (!File.Exists(fullpath))
-                fullpath = Path.Combine("Data/Windbot/" + directory, tryfilename);
+                fullpath = Path.Combine("Data/WindBot/" + directory, tryfilename);
             if (!File.Exists(fullpath))
                 fullpath = Path.Combine("Deck/", tryfilename);
             return new FileStream(fullpath, FileMode.Open, FileAccess.Read);

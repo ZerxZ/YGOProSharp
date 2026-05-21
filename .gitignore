@@ -61,6 +61,9 @@ lua_src/
 ygopro-core/
 .deps/
 
+# Local external comparison sources
+.external/
+
 # =========================
 # Keep native package assets
 # =========================
