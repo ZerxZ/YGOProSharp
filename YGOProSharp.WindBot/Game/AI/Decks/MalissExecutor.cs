@@ -1,4 +1,4 @@
-ï»¿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using WindBot;
@@ -324,8 +324,8 @@ namespace WindBot.Game.AI.Decks
             int n = result.Count;
             while (n-- > 1)
             {
-                int index = Program.Rand.Next(result.Count);
-                int nextIndex = (index + Program.Rand.Next(result.Count - 1)) % result.Count;
+                int index = WindBotRuntime.Random.Next(result.Count);
+                int nextIndex = (index + WindBotRuntime.Random.Next(result.Count - 1)) % result.Count;
                 T tempCard = result[index];
                 result[index] = result[nextIndex];
                 result[nextIndex] = tempCard;
@@ -341,7 +341,7 @@ namespace WindBot.Game.AI.Decks
             int n = result.Count;
             while (n-- > 1)
             {
-                int index = Program.Rand.Next(n + 1);
+                int index = WindBotRuntime.Random.Next(n + 1);
                 ClientCard temp = result[index];
                 result[index] = result[n];
                 result[n] = temp;
@@ -1018,8 +1018,8 @@ namespace WindBot.Game.AI.Decks
             int n = list.Count;
             while (n-- > 1)
             {
-                int index = Program.Rand.Next(list.Count);
-                int nextIndex = (index + Program.Rand.Next(list.Count - 1)) % list.Count;
+                int index = WindBotRuntime.Random.Next(list.Count);
+                int nextIndex = (index + WindBotRuntime.Random.Next(list.Count - 1)) % list.Count;
                 int tempInt = list[index];
                 list[index] = list[nextIndex];
                 list[nextIndex] = tempInt;
@@ -2306,7 +2306,7 @@ namespace WindBot.Game.AI.Decks
         }
         #endregion
 
-        #region FLOW 3: Core â†’ Results (UG / Mirror / TP11 â†’ Make it 3!! â†’ Finishers)
+        #region FLOW 3: Core ¡ú Results (UG / Mirror / TP11 ¡ú Make it 3!! ¡ú Finishers)
         private bool HaveUG() => Bot.HasInHand(CardId.MalissInUnderground) || Bot.HasInSpellZone(CardId.MalissInUnderground);
         private bool HasSelfSSAvailable(int id)
         {

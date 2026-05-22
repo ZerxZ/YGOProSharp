@@ -1,6 +1,8 @@
 # WindBot 适配说明
 
-`YGOProSharp.WindBot` 是一个独立的协议 Bot 客户端。它通过 `YGOProSharp.Protocol` 连接 `YGOProSharp.Server`，发送和接收 CTOS/STOC 消息；它不是服务端内置 AI，也不引用 `YGOProSharp.Server` 或 `YGOProSharp.NativeApi`。
+`YGOProSharp.WindBot` 是一个独立的协议 Bot 客户端库。它通过 `YGOProSharp.Protocol` 连接 YGOProSharp 服务端，发送和接收 CTOS/STOC 消息；它不是服务端内置 AI，也不引用 `YGOProSharp.Server` 或 `YGOProSharp.NativeApi`。
+
+命令行启动统一由 `YGOProSharp.Cli` 负责，WindBot 项目本身不再生成 exe。
 
 ## 来源
 
@@ -27,8 +29,16 @@
 
 ## 运行示例
 
+普通客户端模式：
+
 ```powershell
-dotnet run --project YGOProSharp.WindBot/YGOProSharp.WindBot.csproj -c Release -- DbPath=cards.cdb Deck=AI_Yubel LogLevel=Information
+dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- windbot DbPath=cards.cdb Host=127.0.0.1 Port=7911 Deck=AI_Yubel LogLevel=Information
+```
+
+HTTP server mode：
+
+```powershell
+dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- windbot ServerMode=true DbPath=cards.cdb ServerPort=2399 BotListPath=bots.json
 ```
 
 常用参数：
@@ -41,13 +51,15 @@ dotnet run --project YGOProSharp.WindBot/YGOProSharp.WindBot.csproj -c Release -
 - `DbPath`：主 `cards.cdb` 路径。
 - `DbPaths` / `Databases`：额外数据库路径，支持 `;` 或 `,` 分隔。
 - `Locale`：额外尝试 `Data/locales/<Locale>/<DbPath>`。
-- `LogLevel`：`Trace`、`Debug`、`Information`、`Warning`、`Error`、`Critical`，默认 `Information`。
+- `ServerMode`：设为 `true` 时启动 HTTP host。
+- `BotListPath`：server mode 可选 JSON Bot 列表路径。
+- `LogLevel`：`Trace`、`Debug`、`Information`、`Warning`、`Error`、`Critical`。
 
 ## 卡片数据
 
 旧 WindBot 里依赖 `YGOSharp.OCGWrapper.NamedCard.Get` 的路径已经改成 `CardDatabase` 适配层。
 
-启动时 `Program.InitDatas` 使用 `SqliteCardDatabaseManager.LoadNamedCards(...)` 加载数据库，然后把 `INamedCardRepository` 注入 WindBot 的卡组读取和行为逻辑。
+CLI 启动时使用 `SqliteCardDatabaseManager.LoadNamedCards(...)` 加载数据库，然后通过 `WindBotRuntimeOptions.CardRepository` 注入到 `WindBotService`。库层只接收 `INamedCardRepository`，不解析数据库路径。
 
 边界如下：
 
@@ -59,10 +71,10 @@ dotnet run --project YGOProSharp.WindBot/YGOProSharp.WindBot.csproj -c Release -
 
 WindBot 保留原来的 `Logger.WriteLine`、`Logger.DebugWriteLine`、`Logger.WriteErrorLine` 调用入口，但内部统一转发到 `AppLog`。
 
-启动时配置一次全局 console logger；源码中不直接使用 `Console.WriteLine` 输出日志。
+全局 console logger 由 `YGOProSharp.Cli` 初始化；WindBot 库本身不引入 `Microsoft.Extensions.Logging.Console`，源码中也不直接使用 `Console.WriteLine` 输出日志。
 
 ## 当前限制
 
-本轮适配目标是让 WindBot 作为独立客户端项目纳入 solution，能够编译，并通过 YGOProSharp 的协议层发送基础 CTOS 响应。
+本轮适配目标是让 WindBot 作为独立客户端库纳入 solution，能够编译，并通过 YGOProSharp 的协议层发送基础 CTOS 响应。
 
 AI 行为完整性、对局稳定性和实际可玩性仍不保证，这和项目本身的 AI code vibing 定位一致。

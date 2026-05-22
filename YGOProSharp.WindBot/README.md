@@ -1,6 +1,8 @@
 # YGOProSharp.WindBot
 
-`YGOProSharp.WindBot` 是 YGOProSharp 的独立协议 Bot 客户端适配项目。它通过 `YGOProSharp.Protocol` 连接服务端，复用 `YGOProSharp.Core` 的卡片数据库能力，不嵌入服务端状态机，也不引用 `YGOProSharp.Server` 或 `YGOProSharp.NativeApi`。
+`YGOProSharp.WindBot` 是 YGOProSharp 的独立协议 Bot 客户端库。它通过 `YGOProSharp.Protocol` 连接服务端，复用 `YGOProSharp.Core` 的卡片数据库能力，不嵌入服务端状态机，也不引用 `YGOProSharp.Server` 或 `YGOProSharp.NativeApi`。
+
+本项目不再生成可执行文件；命令行启动统一由 `YGOProSharp.Cli` 负责。
 
 ## 来源
 
@@ -17,10 +19,16 @@
 
 对比时会跳过旧 `YGOSharp.*`、旧工程文件、旧 sqlite 二进制和 `.meta` 文件，避免把上游旧依赖重新带回当前 `Core` / `Protocol` / `Abstractions` 分层。
 
-## 运行
+## 通过 CLI 运行
 
 ```powershell
-dotnet run --project YGOProSharp.WindBot/YGOProSharp.WindBot.csproj -c Release -- DbPath=cards.cdb Deck=AI_Yubel LogLevel=Information
+dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- windbot DbPath=cards.cdb Host=127.0.0.1 Port=7911 Deck=AI_Yubel LogLevel=Information
+```
+
+HTTP server mode：
+
+```powershell
+dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- windbot ServerMode=true DbPath=cards.cdb ServerPort=2399 BotListPath=bots.json
 ```
 
 常用参数：
@@ -34,6 +42,30 @@ dotnet run --project YGOProSharp.WindBot/YGOProSharp.WindBot.csproj -c Release -
 - `DbPaths` / `Databases`：额外数据库路径，支持 `;` 或 `,` 分隔。
 - `Locale`：额外尝试 `Data/locales/<Locale>/<DbPath>`。
 - `LogLevel`：`Trace`、`Debug`、`Information`、`Warning`、`Error`、`Critical`，默认 `Information`。
+
+## 库式调用
+
+```csharp
+SqliteCardDatabaseManager databaseManager = new();
+INamedCardRepository cards = databaseManager.LoadNamedCards(["cards.cdb"]);
+
+WindBotRuntimeOptions runtimeOptions = new()
+{
+    CardRepository = cards,
+    TickDelayMilliseconds = 30
+};
+
+WindBotInfo info = new()
+{
+    Name = "WindBot",
+    Host = "127.0.0.1",
+    Port = 7911,
+    Deck = "AI_Yubel"
+};
+
+WindBotService service = new(runtimeOptions);
+await service.RunBotAsync(info, cancellationToken);
+```
 
 ## 边界
 

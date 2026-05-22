@@ -2,24 +2,42 @@
 
 本文描述当前代码的主要运行路径。它只说明调用关系，不表示项目已经具备完整可玩能力。
 
-## 启动流程
+## 服务端启动流程
 
 ```mermaid
 flowchart TD
-    CLI[YGOProSharp.Cli] --> Log[AppLog.Configure]
+    CLI[YGOProSharp.Cli server] --> Log[AppLog.Configure]
+    CLI --> Parse[CliConfiguration + CliOptionsFactory]
+    Parse --> Options[ServerOptions]
     CLI --> Runtime[NativeOcgRuntime]
-    CLI --> Entry[YGOProSharpServer.RunAsync]
-    Entry --> Config[Config.Load]
+    CLI --> Entry[YGOProSharpServer.RunAsync options + runtime]
     Entry --> Cards[SqliteCardDatabaseManager.LoadCards]
     Entry --> Banlist[BanlistManager.Init]
     Entry --> Providers[RepositoryCardDataProvider + FileScriptProvider]
     Providers --> Init[NativeOcgRuntime.Initialize]
-    Init --> CoreServer[CoreServer]
+    Init --> CoreServer[CoreServer options]
     CoreServer --> Listen[NetworkServer.Start]
     CoreServer --> Tick[Tick loop]
 ```
 
-CLI 是组合根：它配置全局日志，创建 native runtime，然后把控制权交给 `YGOProSharp.Server`。Server 入口读取配置、加载卡库和禁限表，创建 native callback provider，并进入轻量 tick loop。
+CLI 是唯一命令行入口：它解析 `Key=Value` 和 `Config=...`，配置全局日志，创建 native runtime，然后把 typed `ServerOptions` 传给 `YGOProSharp.Server`。Server 库层不再接收 CLI args，也不再读取静态 `Config`。
+
+## WindBot 启动流程
+
+```mermaid
+flowchart TD
+    CLI[YGOProSharp.Cli windbot] --> Log[AppLog.Configure]
+    CLI --> Parse[CliConfiguration + CliOptionsFactory]
+    Parse --> BotInfo[WindBotInfo]
+    Parse --> RuntimeOptions[WindBotRuntimeOptions]
+    CLI --> NamedCards[SqliteCardDatabaseManager.LoadNamedCards]
+    NamedCards --> RuntimeOptions
+    RuntimeOptions --> Service[WindBotService]
+    Service --> Client[GameClient]
+    Client --> Protocol[YGOProSharp.Protocol]
+```
+
+WindBot 是库，不再生成独立 exe。CLI 负责数据库路径解析和 repository 创建；WindBot 库只接收 `WindBotInfo`、`WindBotRuntimeOptions` 或 `WindBotServerModeOptions`。
 
 ## 网络到玩家动作
 
@@ -88,7 +106,7 @@ flowchart LR
     ScriptProvider --> ScriptCallback[NativeOcgRuntime script callback]
 ```
 
-SQLite 读取只在 `SqliteCardDatabaseManager` 内部发生。业务层使用 repository 查询领域模型；native callback 使用 `RepositoryCardDataProvider` 把 `Card` 转成 `OcgCardData`。
+SQLite 读取只在 `SqliteCardDatabaseManager` 内部发生。业务层使用 repository 查询领域模型，native callback 使用 `RepositoryCardDataProvider` 把 `Card` 转成 `OcgCardData`。
 
 脚本读取由 `FileScriptProvider` 完成，native 层只通过 `IScriptProvider` 请求脚本 bytes。
 
@@ -96,10 +114,10 @@ SQLite 读取只在 `SqliteCardDatabaseManager` 内部发生。业务层使用 r
 
 ```mermaid
 flowchart TD
-    NativeErr[Lua/native error] --> GameError[Game.HandleError]
-    GameError --> Log[AppLog LogError]
-    GameError --> File[lua_*.txt]
-    GameError --> Broadcast[STOC error broadcast]
+    Error[Native/Lua error] --> GameHandle[Game.HandleError]
+    GameHandle --> File[lua_*.txt]
+    GameHandle --> Log[AppLog LogError]
+    GameHandle --> Broadcast[Game chat broadcast]
 ```
 
-运行日志通过 `AppLog` 输出。生命周期默认走 `Information`；包级消息走 `Debug`；payload 短预览走 `Trace`。`Game.HandleError` 保留错误文件写入，同时输出结构化错误日志。
+日志入口是进程级 `AppLog`。CLI 初始化 console provider；Core、Protocol、Server、NativeApi 和 WindBot 都通过 `AppLog.CreateLogger(...)` 获取 logger。

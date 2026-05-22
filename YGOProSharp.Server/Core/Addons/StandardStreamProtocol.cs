@@ -17,9 +17,6 @@ namespace YGOProSharp.Server.Addons
         {
             _logger = AppLog.CreateLogger<StandardStreamProtocol>();
 
-            if (!Config.GetBool("StandardStreamProtocol"))
-                return;
-
             Game.OnNetworkReady += Game_OnNetworkReady;
             Game.OnNetworkEnd += Game_OnNetworkEnd;
             Game.OnPlayerChat += Game_OnPlayerChat;

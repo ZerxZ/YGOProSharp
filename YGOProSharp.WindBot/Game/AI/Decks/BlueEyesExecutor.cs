@@ -1,4 +1,4 @@
-﻿using YGOProSharp.Abstractions.Ocg.Enums;
+using YGOProSharp.Abstractions.Ocg.Enums;
 using System.Collections.Generic;
 using System.Linq;
 using WindBot;

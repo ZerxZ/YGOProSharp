@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Collections.Generic;
 using System.Runtime.Serialization;
@@ -65,7 +65,7 @@ namespace WindBot.Game.AI
             _game = game;
             DataContractJsonSerializer serializer = new DataContractJsonSerializer(typeof(DialogsData));
             string dialogfilename = game.Dialog;
-            using (FileStream fs = Program.ReadFile("Dialogs", dialogfilename, "json"))
+            using (FileStream fs = WindBotRuntime.ReadFile("Dialogs", dialogfilename, "json"))
             {
                 DialogsData data = (DialogsData)serializer.ReadObject(fs);
                 _welcome = data.welcome;
@@ -177,14 +177,14 @@ namespace WindBot.Game.AI
                 return;
             if (array == null || array.Count == 0)
                 return;
-            string message = string.Format(array[Program.Rand.Next(array.Count)], opts);
+            string message = string.Format(array[WindBotRuntime.Random.Next(array.Count)], opts);
             if (message != "")
                 _game.Chat(message);
         }
 
         private void InternalSendMessageForced(IList<string> array, params object[] opts)
         {
-            string message = string.Format(array[Program.Rand.Next(array.Count)], opts);
+            string message = string.Format(array[WindBotRuntime.Random.Next(array.Count)], opts);
             if (message != "")
                 _game.Chat(message);
         }

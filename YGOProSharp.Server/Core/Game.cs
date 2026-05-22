@@ -63,6 +63,7 @@ namespace YGOProSharp.Server
         private CoreServer _server;
         private readonly IDuelFactory? _duelFactory;
         private readonly ILogger<Game> _logger;
+        private readonly GameOptions _options;
         // Native session 生命周期从 lobby 进入 duel 时开始，并在 EndDuel/End 结束。
         private IDuelSession _duel = null!;
         private GameAnalyser _analyser;
@@ -89,19 +90,16 @@ namespace YGOProSharp.Server
         /// <summary>
         /// 使用领域依赖创建 game room；socket 和 native 实现细节留在本类之外。
         /// </summary>
-        public Game(CoreServer server, IDuelFactory? duelFactory = null, ICardRepository? cardRepository = null)
+        public Game(CoreServer server, IDuelFactory? duelFactory = null, ICardRepository? cardRepository = null, GameOptions? options = null)
         {
             _duelFactory = duelFactory;
             _logger = AppLog.CreateLogger<Game>();
+            _options = options ?? new GameOptions();
             CardRepository = cardRepository ?? EmptyCardRepository.Instance;
             State = GameState.Lobby;
-            Mode = Config.GetInt("Mode");
-            Region = Config.GetInt("Rule", -1);
-            if (Region != -1)
-                _logger.LogWarning("'Rule' is deprecated, please use 'Region' instead.");
-            else
-                Region = Config.GetInt("Region");
-            MasterRule = Config.GetInt("MasterRule", 3);
+            Mode = _options.Mode;
+            Region = _options.Region;
+            MasterRule = _options.MasterRule;
 
             IsMatch = Mode == 1;
             IsTag = Mode == 2;
@@ -117,19 +115,19 @@ namespace YGOProSharp.Server
             MatchReasons = new int[3];
             Observers = new List<Player>();
 
-            int lfList = Config.GetInt("Banlist");
+            int lfList = _options.Banlist;
             if (lfList >= 0 && lfList < BanlistManager.Banlists.Count)
                 Banlist = BanlistManager.Banlists[lfList];
 
-            StartLp = Config.GetInt("StartLp", DEFAULT_LIFEPOINTS);
+            StartLp = _options.StartLp;
             LifePoints[0] = StartLp;
             LifePoints[1] = StartLp;
-            StartHand = Config.GetInt("StartHand", DEFAULT_START_HAND);
-            DrawCount = Config.GetInt("DrawCount", DEFAULT_DRAW_COUNT);
-            EnablePriority = Config.GetBool("EnablePriority");
-            NoCheckDeck = Config.GetBool("NoCheckDeck");
-            NoShuffleDeck = Config.GetBool("NoShuffleDeck");
-            Timer = Config.GetInt("GameTimer", DEFAULT_TIMER);
+            StartHand = _options.StartHand;
+            DrawCount = _options.DrawCount;
+            EnablePriority = _options.EnablePriority;
+            NoCheckDeck = _options.NoCheckDeck;
+            NoShuffleDeck = _options.NoShuffleDeck;
+            Timer = _options.GameTimer;
 
             _server = server;
             _analyser = new GameAnalyser(this);
@@ -517,7 +515,7 @@ namespace YGOProSharp.Server
                 
                 if (player.Deck != null)
                 {
-                    result = NoCheckDeck ? 0 : player.Deck.Check(Banlist, ocg, tcg, CreateDeckRules());
+                    result = NoCheckDeck ? 0 : player.Deck.Check(Banlist, ocg, tcg, _options.DeckRules);
                 }
                 if (result != 0)
                 {
@@ -1440,13 +1438,5 @@ namespace YGOProSharp.Server
             Winner = winner;
         }
 
-        private static DeckRules CreateDeckRules()
-        {
-            return new DeckRules(
-                Config.GetInt("MainDeckMinSize", 40),
-                Config.GetInt("MainDeckMaxSize", 60),
-                Config.GetInt("ExtraDeckMaxSize", 15),
-                Config.GetInt("SideDeckMaxSize", 15));
-        }
     }
 }

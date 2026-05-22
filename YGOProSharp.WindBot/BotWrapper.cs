@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Collections.Generic;
 using System.Linq;
@@ -9,12 +9,6 @@ namespace WindBot
     public class BotWrapper
     {
         const int MB_ICONERRPR = 0x00000010;
-
-        public static void Main(string[] args)
-        {
-            ProcessStartInfo startInfo = new ProcessStartInfo();
-        }
-
 
         public class BotInfo
         {

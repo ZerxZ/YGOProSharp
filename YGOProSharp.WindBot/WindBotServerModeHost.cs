@@ -10,32 +10,49 @@ namespace WindBot
     public sealed class WindBotServerModeHost
     {
         private readonly int _serverPort;
-        private readonly Action<WindBotInfo> _startBot;
+        private readonly Func<WindBotInfo, CancellationToken, Task> _startBot;
+        private readonly string _botListPath;
 
-        public WindBotServerModeHost(int serverPort, Action<WindBotInfo> startBot)
+        public WindBotServerModeHost(int serverPort, Func<WindBotInfo, CancellationToken, Task> startBot, string botListPath = null)
         {
             _serverPort = serverPort;
             _startBot = startBot;
+            _botListPath = botListPath;
+        }
+
+        public WindBotServerModeHost(int serverPort, Action<WindBotInfo> startBot, string botListPath = null)
+            : this(serverPort, (info, _) =>
+            {
+                startBot(info);
+                return Task.CompletedTask;
+            }, botListPath)
+        {
         }
 
         public void Run()
         {
-            LoadBotList(Config.GetString("BotListPath"));
+            RunAsync(CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        public async Task RunAsync(CancellationToken cancellationToken = default)
+        {
+            LoadBotList(_botListPath);
 
             using HttpListener mainServer = new HttpListener();
             mainServer.AuthenticationSchemes = AuthenticationSchemes.Anonymous;
             mainServer.Prefixes.Add("http://+:" + _serverPort + "/");
             mainServer.Start();
+            using CancellationTokenRegistration registration = cancellationToken.Register(mainServer.Stop);
             Logger.WriteLine("WindBot server start successed.");
             Logger.WriteLine("HTTP GET http://127.0.0.1:" + _serverPort + "/?name=WindBot&host=127.0.0.1&port=7911 to call the bot.");
 
-            while (true)
+            while (!cancellationToken.IsCancellationRequested)
             {
 #if !DEBUG
                 try
                 {
 #endif
-                    HttpListenerContext context = mainServer.GetContext();
+                    HttpListenerContext context = await mainServer.GetContextAsync().ConfigureAwait(false);
                     string queryText = context.Request.Url == null
                         ? string.Empty
                         : context.Request.Url.Query.TrimStart('?');
@@ -51,7 +68,17 @@ namespace WindBot
                     try
                     {
 #endif
-                        _startBot(info);
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await _startBot(info, cancellationToken).ConfigureAwait(false);
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.WriteErrorLine("Start Thread Error: " + ex);
+                            }
+                        }, cancellationToken);
 #if !DEBUG
                     }
                     catch (Exception ex)
@@ -65,6 +92,8 @@ namespace WindBot
                 }
                 catch (Exception ex)
                 {
+                    if (cancellationToken.IsCancellationRequested)
+                        break;
                     Logger.WriteErrorLine("Parse Http Request Error: " + ex);
                 }
 #endif

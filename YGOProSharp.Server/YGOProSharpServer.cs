@@ -17,20 +17,19 @@ public static class YGOProSharpServer
     /// <summary>
     /// 启动服务循环（server loop），但不接管 logger 配置或 native runtime 构造。
     /// </summary>
-    public static async Task RunAsync(string[] args, IOcgRuntime runtime, CancellationToken cancellationToken = default)
+    public static async Task RunAsync(ServerOptions options, IOcgRuntime runtime, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(runtime);
 
         ILogger logger = AppLog.CreateLogger("YGOProSharp.Server");
 
-        Config.Load(args);
-
-        string rootPath = Config.GetString("RootPath", ".");
-        string scriptDirectory = Config.GetString("ScriptDirectory", "script");
-        string databaseFile = Config.GetString("DatabaseFile", "cards.cdb");
+        string rootPath = options.RootPath;
+        string scriptDirectory = options.ScriptDirectory;
+        string databaseFile = options.DatabaseFile;
         string databaseFullPath = Path.Combine(Path.GetFullPath(rootPath), databaseFile);
-        int port = Config.GetInt("Port", CoreServer.DefaultPort);
-        ClientVersion = Config.GetUInt("ClientVersion", ClientVersion);
+        int port = options.Port;
+        ClientVersion = options.ClientVersion;
         ICardDatabaseManager cardDatabaseManager = new SqliteCardDatabaseManager();
         logger.LogInformation(
             "Starting server with RootPath={RootPath}, ScriptDirectory={ScriptDirectory}, DatabaseFile={DatabaseFile}, ClientVersion={ClientVersion}, Port={Port}.",
@@ -52,7 +51,7 @@ public static class YGOProSharpServer
             throw;
         }
 
-        BanlistManager.Init(Config.GetString("BanlistFile", "lflist.conf"));
+        BanlistManager.Init(options.BanlistFile);
         try
         {
             runtime.Initialize(new OcgRuntimeOptions(
@@ -69,7 +68,7 @@ public static class YGOProSharpServer
             throw;
         }
 
-        CoreServer server = new(runtime.DuelFactory, cardRepository);
+        CoreServer server = new(runtime.DuelFactory, cardRepository, options);
         server.Start();
         if (server.IsRunning)
             logger.LogInformation("Server loop started.");

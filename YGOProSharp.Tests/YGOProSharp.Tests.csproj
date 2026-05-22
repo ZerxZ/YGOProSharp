@@ -8,11 +8,8 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.4" />
-    </ItemGroup>
-
-    <ItemGroup>
       <ProjectReference Include="..\YGOProSharp.Abstractions\YGOProSharp.Abstractions.csproj" />
+      <ProjectReference Include="..\YGOProSharp.Cli\YGOProSharp.Cli.csproj" />
       <ProjectReference Include="..\YGOProSharp.Core\YGOProSharp.Core.csproj" />
       <ProjectReference Include="..\YGOProSharp.NativeApi\YGOProSharp.NativeApi.csproj" />
       <ProjectReference Include="..\YGOProSharp.Protocol\YGOProSharp.Protocol.csproj" />

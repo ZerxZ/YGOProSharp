@@ -11,6 +11,7 @@ using YGOProSharp.Abstractions.Ocg.Enums;
 using YGOProSharp.Core;
 using YGOProSharp.Core.Cards;
 using YGOProSharp.Abstractions.Logging;
+using YGOProSharp.Cli;
 using YGOProSharp.Protocol;
 using YGOProSharp.Protocol.Enums;
 using YGOProSharp.Protocol.Utils;
@@ -22,11 +23,6 @@ using ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
 {
     builder.SetMinimumLevel(LogLevel.Trace);
     builder.AddProvider(logProvider);
-    builder.AddSimpleConsole(options =>
-    {
-        options.SingleLine = true;
-        options.TimestampFormat = "";
-    });
 });
 AppLog.Configure(loggerFactory);
 ILogger testLogger = AppLog.CreateLogger("YGOProSharp.Tests");
@@ -47,6 +43,8 @@ Run("Project boundaries split core protocol and server", ProjectBoundariesSplitC
 Run("Project boundaries keep WindBot decoupled", ProjectBoundariesKeepWindBotDecoupled);
 Run("Project boundaries keep direct Console writes out of source", ProjectBoundariesKeepDirectConsoleWritesOutOfSource);
 Run("Project boundaries keep logger parameters out of business APIs", ProjectBoundariesKeepLoggerParametersOutOfBusinessApis);
+Run("CLI maps server options", CliMapsServerOptions);
+Run("CLI maps WindBot options", CliMapsWindBotOptions);
 Run("WindBot packet factory writes CTOS message byte", WindBotPacketFactoryWritesCtosMessageByte);
 Run("WindBot deck loads through named-card repository", WindBotDeckLoadsThroughNamedCardRepository);
 Run("WindBot server mode parses query info", WindBotServerModeParsesQueryInfo);
@@ -277,6 +275,8 @@ static void ProjectBoundariesSplitCoreProtocolAndServer()
     string coreProject = Path.Combine(root, "YGOProSharp.Core");
     string protocolProject = Path.Combine(root, "YGOProSharp.Protocol");
     string serverProject = Path.Combine(root, "YGOProSharp.Server");
+    string windBotProject = Path.Combine(root, "YGOProSharp.WindBot");
+    string cliProject = Path.Combine(root, "YGOProSharp.Cli");
 
     AssertDoesNotContainAny(
         ProjectText(coreProject),
@@ -294,6 +294,29 @@ static void ProjectBoundariesSplitCoreProtocolAndServer()
         if (!serverProjectFile.Contains(requiredReference, StringComparison.Ordinal))
             throw new InvalidOperationException($"Server project must reference {requiredReference}.");
     }
+
+    AssertDoesNotContainAny(
+        ProjectText(serverProject),
+        ["Config.Load", "RunAsync(string[] args", "CliConfiguration", "CliOptionsFactory"],
+        "Server library entry boundary");
+
+    string nonCliEntryText = string.Join(Environment.NewLine, [
+        ProjectText(coreProject),
+        ProjectText(protocolProject),
+        ProjectText(serverProject),
+        ProjectText(windBotProject)
+    ]);
+    AssertDoesNotContainAny(
+        nonCliEntryText,
+        ["Console.CancelKeyPress", "AddSimpleConsole", "CliConfiguration", "CliOptionsFactory"],
+        "Non-CLI entry boundary");
+
+    string cliText = ProjectText(cliProject);
+    foreach (string requiredCliToken in new[] { "Console.CancelKeyPress", "AddSimpleConsole", "CliConfiguration", "CliOptionsFactory" })
+    {
+        if (!cliText.Contains(requiredCliToken, StringComparison.Ordinal))
+            throw new InvalidOperationException($"CLI project should own {requiredCliToken}.");
+    }
 }
 
 static void ProjectBoundariesKeepWindBotDecoupled()
@@ -310,11 +333,112 @@ static void ProjectBoundariesKeepWindBotDecoupled()
         "WindBot project boundary");
 
     string projectFile = File.ReadAllText(Path.Combine(windBotProject, "YGOProSharp.WindBot.csproj"));
+    AssertDoesNotContainAny(
+        projectFile,
+        ["OutputType", "StartupObject", "Microsoft.Extensions.Logging.Console"],
+        "WindBot library project boundary");
+
+    AssertDoesNotContainAny(
+        sourceText,
+        ["static void Main", "Environment.Exit", "Config.Load"],
+        "WindBot library entry boundary");
+
     foreach (string requiredReference in new[] { "YGOProSharp.Abstractions", "YGOProSharp.Core", "YGOProSharp.Protocol" })
     {
         if (!projectFile.Contains(requiredReference, StringComparison.Ordinal))
             throw new InvalidOperationException($"WindBot project must reference {requiredReference}.");
     }
+}
+
+static void CliMapsServerOptions()
+{
+    CliConfiguration configuration = CliConfiguration.Load([
+        "RootPath=.",
+        "ScriptDirectory=scripts",
+        "DatabaseFile=cards-ja.cdb",
+        "BanlistFile=custom-lflist.conf",
+        "Port=7922",
+        "ClientVersion=0x1362",
+        "StandardStreamProtocol=true",
+        "Rule=1",
+        "MasterRule=5",
+        "Mode=2",
+        "StartLp=4000",
+        "StartHand=4",
+        "DrawCount=2",
+        "GameTimer=120",
+        "NoCheckDeck=true",
+        "NoShuffleDeck=true",
+        "MainDeckMinSize=1",
+        "MainDeckMaxSize=80",
+        "ExtraDeckMaxSize=20",
+        "SideDeckMaxSize=20"
+    ]);
+
+    ServerOptions options = CliOptionsFactory.CreateServerOptions(configuration);
+
+    AssertEqual(".", options.RootPath);
+    AssertEqual("scripts", options.ScriptDirectory);
+    AssertEqual("cards-ja.cdb", options.DatabaseFile);
+    AssertEqual("custom-lflist.conf", options.BanlistFile);
+    AssertEqual(7922, options.Port);
+    AssertEqual(0x1362U, options.ClientVersion);
+    AssertTrue(options.StandardStreamProtocol);
+    AssertEqual(1, options.Game.Region);
+    AssertEqual(5, options.Game.MasterRule);
+    AssertEqual(2, options.Game.Mode);
+    AssertEqual(4000, options.Game.StartLp);
+    AssertEqual(4, options.Game.StartHand);
+    AssertEqual(2, options.Game.DrawCount);
+    AssertEqual(120, options.Game.GameTimer);
+    AssertTrue(options.Game.NoCheckDeck);
+    AssertTrue(options.Game.NoShuffleDeck);
+    AssertEqual(1, options.Game.DeckRules.MainDeckMinSize);
+    AssertEqual(80, options.Game.DeckRules.MainDeckMaxSize);
+    AssertEqual(20, options.Game.DeckRules.ExtraDeckMaxSize);
+    AssertEqual(20, options.Game.DeckRules.SideDeckMaxSize);
+}
+
+static void CliMapsWindBotOptions()
+{
+    INamedCardRepository repository = TestNamedRepository(TestNamedCard(1));
+    CliConfiguration configuration = CliConfiguration.Load([
+        "Name=Bot",
+        "Deck=AI",
+        "DeckFile=Smoke.ydk",
+        "Dialog=default",
+        "Host=127.0.0.1",
+        "Port=7911",
+        "HostInfo=abc",
+        "Version=4962",
+        "Hand=1",
+        "Debug=true",
+        "Chat=false",
+        "TickDelayMilliseconds=5",
+        "ServerPort=2400",
+        "BotListPath=bots.json"
+    ]);
+
+    WindBot.WindBotInfo info = CliOptionsFactory.CreateWindBotInfo(configuration);
+    WindBot.WindBotRuntimeOptions runtimeOptions = CliOptionsFactory.CreateWindBotRuntimeOptions(configuration, repository);
+    WindBot.WindBotServerModeOptions serverModeOptions = CliOptionsFactory.CreateWindBotServerModeOptions(configuration, runtimeOptions);
+
+    AssertEqual("Bot", info.Name);
+    AssertEqual("AI", info.Deck);
+    AssertEqual("Smoke.ydk", info.DeckFile);
+    AssertEqual("default", info.Dialog);
+    AssertEqual("127.0.0.1", info.Host);
+    AssertEqual(7911, info.Port);
+    AssertEqual("abc", info.HostInfo);
+    AssertEqual(4962, info.Version);
+    AssertEqual(1, info.Hand);
+    AssertTrue(info.Debug);
+    AssertFalse(info.Chat);
+    AssertEqual(5, runtimeOptions.TickDelayMilliseconds);
+    AssertEqual(2400, serverModeOptions.ServerPort);
+    AssertEqual("bots.json", serverModeOptions.BotListPath);
+    if (!ReferenceEquals(repository, runtimeOptions.CardRepository))
+        throw new InvalidOperationException("WindBot runtime options should keep the repository supplied by CLI.");
 }
 
 static void WindBotPacketFactoryWritesCtosMessageByte()
@@ -670,7 +794,6 @@ static void GamePacketFactoryCreatesDeckCountAndFieldFinish()
 static void PlayerHandlesRequestFieldSafely()
 {
     TestLog.Provider.Clear();
-    Config.Load([]);
     Game game = new(new CoreServer());
     Player player = new(game, new YGOClient());
 
@@ -699,7 +822,6 @@ static void PlayerHandlesRequestFieldSafely()
 static void PlayerParsesPlayerInfoFromSpans()
 {
     TestLog.Provider.Clear();
-    Config.Load([]);
     using MemoryStream stream = new();
     using BinaryWriter writer = new(stream);
     writer.Write((byte)CtosMessage.PlayerInfo);

@@ -1,4 +1,4 @@
-﻿using YGOProSharp.Abstractions.Ocg.Enums;
+using YGOProSharp.Abstractions.Ocg.Enums;
 using System.Collections.Generic;
 using System.Linq;
 using System;
@@ -180,8 +180,8 @@ namespace WindBot.Game.AI.Decks
             int n = result.Count;
             while (n-- > 1)
             {
-                int index = Program.Rand.Next(result.Count);
-                int nextIndex = (index + Program.Rand.Next(result.Count - 1)) % result.Count;
+                int index = WindBotRuntime.Random.Next(result.Count);
+                int nextIndex = (index + WindBotRuntime.Random.Next(result.Count - 1)) % result.Count;
                 ClientCard tempCard = result[index];
                 result[index] = result[nextIndex];
                 result[nextIndex] = tempCard;
@@ -768,8 +768,8 @@ namespace WindBot.Game.AI.Decks
             int n = list.Count;
             while (n-- > 1)
             {
-                int index = Program.Rand.Next(list.Count);
-                int nextIndex = (index + Program.Rand.Next(list.Count - 1)) % list.Count;
+                int index = WindBotRuntime.Random.Next(list.Count);
+                int nextIndex = (index + WindBotRuntime.Random.Next(list.Count - 1)) % list.Count;
                 int tempInt = list[index];
                 list[index] = list[nextIndex];
                 list[nextIndex] = tempInt;
@@ -2072,7 +2072,7 @@ namespace WindBot.Game.AI.Decks
             {
                 // if multi selections, select randomly
                 canSpSummonLevel10IdList.Clear();
-                int index = Program.Rand.Next(decideIdList.Count());
+                int index = WindBotRuntime.Random.Next(decideIdList.Count());
                 int lastDecide = decideIdList[index];
                 canSpSummonLevel10IdList.Add(lastDecide);
             }

@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 using System.Collections.Generic;
 using System.Threading;
 using WindBot.Game.AI;
@@ -1140,7 +1140,7 @@ namespace WindBot.Game
             if (numbers.Contains(m_number))
                 return numbers.IndexOf(m_number);
 
-            return Program.Rand.Next(0, numbers.Count); // Returns a random number.
+            return WindBotRuntime.Random.Next(0, numbers.Count); // Returns a random number.
         }
 
         /// <summary>

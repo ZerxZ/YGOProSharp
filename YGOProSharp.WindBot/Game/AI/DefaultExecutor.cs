@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using YGOProSharp.Abstractions.Ocg.Enums;
@@ -151,7 +151,7 @@ namespace WindBot.Game.AI
             public const int Mistake = 59305593;
 
             public const int BelialMarquisOfDarkness = 33655493;
-            public const int Chirubim茅PrincessOfAutumnLeaves = 87294988;
+            public const int ChirubiméPrincessOfAutumnLeaves = 87294988;
             public const int PerformapalBarokuriboh = 19050066;
             public const int LabrynthArchfiend = 48745395;
             public const int HarpiesPetDragonFearsomeFireBlast = 4991081;
@@ -282,7 +282,7 @@ namespace WindBot.Game.AI
         /// </summary>
         protected Dictionary<int, Func<ClientCard, bool>> DefenderProtectRule = new Dictionary<int, Func<ClientCard, bool>> {
             {_CardId.BelialMarquisOfDarkness, defender => defender.IsFaceup()},
-            {_CardId.Chirubim茅PrincessOfAutumnLeaves, defender => defender.HasRace(CardRace.Plant)},
+            {_CardId.ChirubiméPrincessOfAutumnLeaves, defender => defender.HasRace(CardRace.Plant)},
             {_CardId.PerformapalBarokuriboh, defender => true},
             {_CardId.LabrynthArchfiend, defender => defender.HasRace(CardRace.Fiend) && !defender.IsCode(_CardId.LabrynthArchfiend)},
             {_CardId.HarpiesPetDragonFearsomeFireBlast, defender => defender.Level <= 6 && defender.HasSetcode(_Setcode.Harpie)},
@@ -586,7 +586,7 @@ namespace WindBot.Game.AI
                 int shuffleCount = extraDeck.Count;
                 while (shuffleCount-- > 1)
                 {
-                    int index = Program.Rand.Next(extraDeck.Count);
+                    int index = WindBotRuntime.Random.Next(extraDeck.Count);
                     ClientCard tempCard = extraDeck[shuffleCount];
                     extraDeck[shuffleCount] = extraDeck[index];
                     extraDeck[index] = tempCard;

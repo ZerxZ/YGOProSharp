@@ -3,22 +3,24 @@ using System.Collections.Generic;
 namespace YGOProSharp.Server
 {
     /// <summary>
-    /// 创建并初始化围绕 game 的可选集成（addon），避免把 addon 关注点放进游戏状态机。
+    /// 创建并初始化围绕 game 的可选集成（addon）。
     /// </summary>
     public class AddonsManager
     {
+        private readonly bool _standardStreamProtocol;
+
         public List<AddonBase> Addons { get; private set; }
 
-        public AddonsManager()
+        public AddonsManager(bool standardStreamProtocol)
         {
+            _standardStreamProtocol = standardStreamProtocol;
             Addons = new List<AddonBase>();
         }
 
         public void Init(Game game)
         {
-            // TODO: 后续支持按配置加载指定 addon。
-
-            Addons.Add(new Addons.StandardStreamProtocol(game));
+            if (_standardStreamProtocol)
+                Addons.Add(new Addons.StandardStreamProtocol(game));
         }
     }
 }

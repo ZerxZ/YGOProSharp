@@ -1,4 +1,4 @@
-﻿using YGOProSharp.Abstractions.Ocg.Enums;
+using YGOProSharp.Abstractions.Ocg.Enums;
 using System.Collections.Generic;
 using WindBot;
 using WindBot.Game;
@@ -41,7 +41,7 @@ namespace WindBot.Game.AI.Decks
 
         public override int OnSelectOption(IList<int> options)
         {
-            return Program.Rand.Next(options.Count);
+            return WindBotRuntime.Random.Next(options.Count);
         }
 
     }

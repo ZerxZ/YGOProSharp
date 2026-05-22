@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using YGOProSharp.Abstractions.Ocg.Enums;
 using System;
 using System.Linq;

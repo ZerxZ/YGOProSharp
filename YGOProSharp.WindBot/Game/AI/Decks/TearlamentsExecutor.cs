@@ -1,4 +1,4 @@
-﻿using YGOProSharp.Core.Cards;
+using YGOProSharp.Core.Cards;
 using YGOProSharp.Abstractions.Ocg.Enums;
 using System.Collections.Generic;
 using System.Linq;
@@ -691,7 +691,7 @@ namespace WindBot.Game.AI.Decks
                 List<int> keys = new List<int>() { 0, 1, 2, 3, 4 };
                 while (keys.Count > 0)
                 {
-                    int index = Program.Rand.Next(keys.Count);
+                    int index = WindBotRuntime.Random.Next(keys.Count);
                     int key = keys[index];
                     int zone = 1 << key;
                     if ((zone & available) > 0) return zone;

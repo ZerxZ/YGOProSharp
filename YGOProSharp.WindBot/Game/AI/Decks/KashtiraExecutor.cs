@@ -1,4 +1,4 @@
-﻿using YGOProSharp.Abstractions.Ocg.Enums;
+using YGOProSharp.Abstractions.Ocg.Enums;
 using System.Collections.Generic;
 using System.Linq;
 using WindBot;
@@ -151,7 +151,7 @@ namespace WindBot.Game.AI.Decks
 
         public override void OnNewTurn()
         {
-            if (pre_link_mode < 0) pre_link_mode = Program.Rand.Next(2);
+            if (pre_link_mode < 0) pre_link_mode = WindBotRuntime.Random.Next(2);
             isSummoned = false;
             onlyXyzSummon = false;
             activate_KashtiraUnicorn_1 = false;
@@ -233,7 +233,7 @@ namespace WindBot.Game.AI.Decks
                  && hint == HintMsg.Remove && min == 1 && max == 1))
             {
                 //Can't get card info in enemy extral.
-                int index = Program.Rand.Next(cards.Count());
+                int index = WindBotRuntime.Random.Next(cards.Count());
                 if (index < 0 || index >= cards.Count()) return null;
                 IList<ClientCard> res = new List<ClientCard>();
                 res.Add(cards.ElementAtOrDefault(index));
@@ -550,7 +550,7 @@ namespace WindBot.Game.AI.Decks
             int n = list.Count;
             while (n-- > 1)
             {
-                int index = Program.Rand.Next(n + 1);
+                int index = WindBotRuntime.Random.Next(n + 1);
                 int temp = list[index];
                 list[index] = list[n];
                 list[n] = temp;

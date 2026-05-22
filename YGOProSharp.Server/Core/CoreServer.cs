@@ -25,6 +25,7 @@ namespace YGOProSharp.Server
         private readonly IDuelFactory? _duelFactory;
         private readonly ILogger<CoreServer> _logger;
         private readonly ICardRepository _cardRepository;
+        private readonly ServerOptions _options;
         private readonly List<YGOClient> _clients = new();
 
         private bool _closePending;
@@ -32,23 +33,24 @@ namespace YGOProSharp.Server
         /// <summary>
         /// 使用可选业务依赖创建 server，同时通过 <see cref="AppLog"/> 保持全局日志入口。
         /// </summary>
-        public CoreServer(IDuelFactory? duelFactory = null, ICardRepository? cardRepository = null)
+        public CoreServer(IDuelFactory? duelFactory = null, ICardRepository? cardRepository = null, ServerOptions? options = null)
         {
             _duelFactory = duelFactory;
             _logger = AppLog.CreateLogger<CoreServer>();
             _cardRepository = cardRepository ?? EmptyCardRepository.Instance;
+            _options = options ?? new ServerOptions();
         }
 
         public void Start()
         {
             if (IsRunning)
                 return;
-            Addons = new AddonsManager();
-            Game = new Game(this, _duelFactory, _cardRepository);
+            Addons = new AddonsManager(_options.StandardStreamProtocol);
+            Game = new Game(this, _duelFactory, _cardRepository, _options.Game);
             Addons.Init(Game);
             try
             {
-                int port = Config.GetInt("Port", DefaultPort);
+                int port = _options.Port;
                 _logger.LogInformation("Starting core server on {Address}:{Port}.", IPAddress.Any, port);
                 _listener = new NetworkServer(IPAddress.Any, port);
                 _listener.ClientConnected += Listener_ClientConnected;

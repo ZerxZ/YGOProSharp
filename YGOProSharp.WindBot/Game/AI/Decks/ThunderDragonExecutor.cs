@@ -1,4 +1,4 @@
-﻿using YGOProSharp.Abstractions.Ocg.Enums;
+using YGOProSharp.Abstractions.Ocg.Enums;
 using System.Collections.Generic;
 using System.Linq;
 using WindBot;
@@ -818,7 +818,7 @@ namespace WindBot.Game.AI.Decks
             int n = list.Count;
             while (n-- > 1)
             {
-                int index = Program.Rand.Next(n + 1);
+                int index = WindBotRuntime.Random.Next(n + 1);
                 int temp = list[index];
                 list[index] = list[n];
                 list[n] = temp;

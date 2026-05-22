@@ -1,4 +1,4 @@
-﻿using YGOProSharp.Abstractions.Ocg.Enums;
+using YGOProSharp.Abstractions.Ocg.Enums;
 using System.Collections.Generic;
 using System.Linq;
 using WindBot;
@@ -128,7 +128,7 @@ namespace WindBot.Game.AI.Decks
                 // select enemy's card first
                 while (enemyCards.Count > 0 && selected.Count < max)
                 {
-                    ClientCard card = enemyCards[Program.Rand.Next(enemyCards.Count)];
+                    ClientCard card = enemyCards[WindBotRuntime.Random.Next(enemyCards.Count)];
                     selected.Add(card);
                     enemyCards.Remove(card);
                     cards.Remove(card);
@@ -142,7 +142,7 @@ namespace WindBot.Game.AI.Decks
                 // select deck's card first
                 while (deckCards.Count > 0 && selected.Count < max)
                 {
-                    ClientCard card = deckCards[Program.Rand.Next(deckCards.Count)];
+                    ClientCard card = deckCards[WindBotRuntime.Random.Next(deckCards.Count)];
                     selected.Add(card);
                     deckCards.Remove(card);
                     cards.Remove(card);
@@ -156,7 +156,7 @@ namespace WindBot.Game.AI.Decks
                 // select bot's card first
                 while (botCards.Count > 0 && selected.Count < max)
                 {
-                    ClientCard card = botCards[Program.Rand.Next(botCards.Count)];
+                    ClientCard card = botCards[WindBotRuntime.Random.Next(botCards.Count)];
                     selected.Add(card);
                     botCards.Remove(card);
                     cards.Remove(card);
@@ -180,7 +180,7 @@ namespace WindBot.Game.AI.Decks
             // select random cards
             while (selected.Count < min)
             {
-                ClientCard card = cards[Program.Rand.Next(cards.Count)];
+                ClientCard card = cards[WindBotRuntime.Random.Next(cards.Count)];
                 selected.Add(card);
                 cards.Remove(card);
             }
@@ -190,7 +190,7 @@ namespace WindBot.Game.AI.Decks
                 // select max cards
                 while (selected.Count < max)
                 {
-                    ClientCard card = cards[Program.Rand.Next(cards.Count)];
+                    ClientCard card = cards[WindBotRuntime.Random.Next(cards.Count)];
                     selected.Add(card);
                     cards.Remove(card);
                 }
@@ -201,7 +201,7 @@ namespace WindBot.Game.AI.Decks
 
         public override int OnSelectOption(IList<int> options)
         {
-            return Program.Rand.Next(options.Count);
+            return WindBotRuntime.Random.Next(options.Count);
         }
 
         public override CardPosition OnSelectPosition(int cardId, IList<CardPosition> positions)
@@ -220,7 +220,7 @@ namespace WindBot.Game.AI.Decks
         private bool ImFeelingLucky()
         {
             if (Type == ExecutorType.Activate && DefaultCheckWhetherCardIsNegated(Card)) return false;
-            return Program.Rand.Next(10) >= 5 && DefaultDontChainMyself();
+            return WindBotRuntime.Random.Next(10) >= 5 && DefaultDontChainMyself();
         }
 
         private bool ImFeelingUnlucky()

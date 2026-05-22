@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using YGOProSharp.Abstractions.Ocg.Enums;
@@ -37,12 +37,12 @@ namespace WindBot.Game.AI
 
         public virtual int OnRockPaperScissors()
         {
-            return Program.Rand.Next(1, 4);
+            return WindBotRuntime.Random.Next(1, 4);
         }
 
         public virtual bool OnSelectHand()
         {
-            return Program.Rand.Next(2) > 0;
+            return WindBotRuntime.Random.Next(2) > 0;
         }
 
         /// <summary>

@@ -1,4 +1,4 @@
-﻿using YGOProSharp.Core.Cards;
+using YGOProSharp.Core.Cards;
 using YGOProSharp.Abstractions.Ocg.Enums;
 using System.Collections.Generic;
 using WindBot;
@@ -414,7 +414,7 @@ namespace WindBot.Game.AI.Decks
             int n = result.Count;
             while (n-- > 1)
             {
-                int index = Program.Rand.Next(n + 1);
+                int index = WindBotRuntime.Random.Next(n + 1);
                 ClientCard temp = result[index];
                 result[index] = result[n];
                 result[n] = temp;
@@ -849,8 +849,8 @@ namespace WindBot.Game.AI.Decks
             int n = list.Count;
             while (n-- > 1)
             {
-                int index = Program.Rand.Next(list.Count);
-                int nextIndex = (index + Program.Rand.Next(list.Count - 1)) % list.Count;
+                int index = WindBotRuntime.Random.Next(list.Count);
+                int nextIndex = (index + WindBotRuntime.Random.Next(list.Count - 1)) % list.Count;
                 int tempInt = list[index];
                 list[index] = list[nextIndex];
                 list[nextIndex] = tempInt;
@@ -1151,7 +1151,7 @@ namespace WindBot.Game.AI.Decks
                 SelectSTPlace(Card, true);
                 return true;
             }
-            return Program.Rand.Next(2) > 0;
+            return WindBotRuntime.Random.Next(2) > 0;
         }
 
         /// <summary>
@@ -1465,7 +1465,7 @@ namespace WindBot.Game.AI.Decks
                 {
                     Logger.DebugWriteLine("*** Haine pendulum destroy");
                     SelectDiscardSpell();
-                    AI.SelectNextCard(Program.Rand.Next(2) == 1 ? l : r);
+                    AI.SelectNextCard(WindBotRuntime.Random.Next(2) == 1 ? l : r);
                     return true;
                 }
             }
