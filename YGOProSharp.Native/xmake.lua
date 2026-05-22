@@ -1,6 +1,7 @@
 ﻿-- xmake.lua
 add_rules("mode.debug", "mode.release")
 set_languages("c11", "cxx17")
+add_plugindirs("plugins")
 
 if is_plat("windows") then
     if is_mode("release") then
