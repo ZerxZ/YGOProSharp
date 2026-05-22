@@ -1,8 +1,6 @@
 MIT License
 
 Copyright (c) 2026 ZerxZ
-Copyright (c) 2015 Fluorohydride
-Copyright (c) 1994-2025 Lua.org, PUC-Rio
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -11,7 +9,7 @@ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software, and to permit persons to whom the Software is
 furnished to do so, subject to the following conditions:
 
-The above copyright notices and this permission notice shall be included in all
+The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
@@ -25,15 +23,37 @@ SOFTWARE.
 Third-Party Notices
 -------------------
 
-This package includes or links native components built from the following
-open-source projects:
+This repository includes, links, adapts, or references code and ideas from
+several upstream projects. Their original copyright notices and license terms
+remain with their respective authors.
 
 1. ygopro-core
    Source: https://github.com/Fluorohydride/ygopro-core
+   Role: native OCG duel core used to build ocgcore runtime binaries
    License: MIT License
    Copyright (c) 2015 Fluorohydride
 
 2. Lua
    Source: https://www.lua.org/
+   Role: scripting runtime used by ygopro-core
    License: MIT License
    Copyright (c) 1994-2025 Lua.org, PUC-Rio
+
+3. IceYGO/ygosharp
+   Source: https://github.com/IceYGO/ygosharp
+   Role: C# YGOPro server, protocol, and architecture reference
+   License: see upstream repository
+
+4. IceYGO/windbot
+   Source: https://github.com/IceYGO/windbot
+   Role: original WindBot client Bot project and AI behavior reference
+   License: see upstream repository
+
+5. MDPro3 WindBot version
+   Source: https://code.moenext.com/sherry_chaos/MDPro3
+   Role: source version used for the current YGOProSharp.WindBot adaptation
+   License: see upstream repository
+
+YGOProSharp is an experimental AI-assisted adaptation and refactoring project.
+It does not imply endorsement by the upstream projects and does not guarantee
+compatibility with upstream clients, scripts, databases, or runtime behavior.

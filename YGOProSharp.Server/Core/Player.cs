@@ -131,6 +131,9 @@ namespace YGOProSharp.Server
                     case CtosMessage.Surrender:
                         Game.Surrender(this, 0);
                         break;
+                    case CtosMessage.RequestField:
+                        Game.RequestField(this);
+                        break;
                 }
             }
             catch (Exception ex)

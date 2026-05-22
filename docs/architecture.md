@@ -1,8 +1,8 @@
 # YGOProSharp 架构说明
 
-YGOProSharp 现在按 Core / Protocol / Server 拆分。拆分目标不是改变运行行为，而是让核心能力、客户端协议和服务端状态机拥有清楚的项目边界。
+YGOProSharp 当前按 `Core / Protocol / Server` 拆分。拆分目标不是改变运行行为，而是让核心能力、客户端协议和服务端状态机拥有清晰的项目边界。
 
-## 项目分层
+## 分层
 
 ```text
 YGOProSharp.Abstractions  -> OCG 契约、DTO、provider 接口、AppLog
@@ -12,6 +12,7 @@ YGOProSharp.Core          -> 卡片、卡组、禁限表、脚本 provider、OCG
 YGOProSharp.Protocol      -> YGO 客户端协议、CTOS/STOC、packet framing、socket client/server
 YGOProSharp.Server        -> 服务端配置、房间、玩家、Game、Replay、Addon
 YGOProSharp.Cli           -> 组合根和命令行入口
+YGOProSharp.WindBot       -> 外部协议 Bot 客户端
 YGOProSharp.Tests         -> 行为测试与架构边界测试
 ```
 
@@ -22,12 +23,16 @@ Cli -> Server -> Core
               -> Protocol
               -> NativeApi -> Native
 
+WindBot -> Core
+        -> Protocol
+        -> Abstractions
+
 Core -> Abstractions
 Protocol -> Abstractions
 NativeApi -> Abstractions + Native
 ```
 
-`Core` 不知道服务器和客户端协议；`Protocol` 不知道卡库、房间和 native duel；`Server` 才负责把这些部分组合起来。
+`Core` 不知道服务端和客户端协议；`Protocol` 不知道卡库、房间和 native duel；`Server` 负责把这些部分组合起来。
 
 ## Native Interop 边界
 
@@ -52,7 +57,7 @@ Server/Game -> IDuelFactory / IDuelSession -> YGOProSharp.NativeApi -> ocgcore
 - `CoreMessage`
 - `FileScriptProvider`
 
-SQLite 只允许出现在 `SqliteCardDatabaseManager`。`Deck` 通过 `ICardRepository` 查询卡片，通过 `DeckRules` 接收大小限制，不读取 Server 的 `Config`。
+SQLite 只允许集中在数据库 manager 实现里。`Deck` 通过 `ICardRepository` 查询卡片，通过 `DeckRules` 接收大小限制，不读取 Server 的 `Config`。
 
 ## Protocol 边界
 
@@ -76,12 +81,24 @@ Protocol 不引用 Core、Server、NativeApi 或 SQLite。它只把 socket bytes
 - `Player`：解析 CTOS，并把客户端动作转成 `Game` 调用。
 - `Game`：管理房间、玩家状态、duel 生命周期、广播和超时。
 - `GameAnalyser`：把 OCG message 转换成 STOC 包或 response 请求。
-- `Replay`、`AddonsManager`、`StandardStreamProtocol`：仍属于服务端运行能力。
+- `Replay`、`AddonsManager`、`StandardStreamProtocol`：服务端运行能力。
 
 Server 可以引用 Core、Protocol 和 NativeApi，但这些项目不能反向引用 Server。
 
 ## Logging 边界
 
-日志入口是 `YGOProSharp.Abstractions.Logging.AppLog`。CLI 或测试在启动时调用 `AppLog.Configure`；库代码通过 `AppLog.CreateLogger<T>()` 获取 logger。未配置时默认使用 `NullLoggerFactory.Instance`，所以 Core、Protocol、Server 都可以独立构造对象而不崩溃。
+日志入口是 `YGOProSharp.Abstractions.Logging.AppLog`。CLI 或测试在启动时调用 `AppLog.Configure`；库代码通过 `AppLog.CreateLogger<T>()` 获取 logger。
+
+未配置时默认使用 `NullLoggerFactory.Instance`，所以 Core、Protocol、Server 都可以独立构造对象而不崩溃。
 
 默认日志等级是 `Information`。生命周期事件使用 `Information`，包级细节使用 `Debug`，payload 预览使用 `Trace`。
+
+## WindBot 边界
+
+`YGOProSharp.WindBot` 是独立客户端，不嵌入 Server。它复用 Core 的卡库能力和 Protocol 的网络协议能力，保留 WindBot 自己的客户端状态模型和 AI executor。
+
+WindBot 不引用 `YGOProSharp.Server` 或 `YGOProSharp.NativeApi`。当前目标是适配编译和协议连接，不保证 AI 对局完整可玩。
+
+## 参考方向
+
+服务端、协议、WindBot、数据编码和线程模型的外部参考集中记录在 [参考项目索引](reference-projects.md)。这些项目用于阅读和对照，不改变当前 `Core / Protocol / Server / NativeApi / WindBot` 的依赖边界。

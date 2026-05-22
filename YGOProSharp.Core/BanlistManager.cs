@@ -10,21 +10,26 @@ namespace YGOProSharp.Core
 
         public static void Init(string fileName)
         {
-            Banlists = new List<Banlist>();
-            Banlist? current = null;
-            using StreamReader reader = new(fileName);
+            Banlists = ParseText(File.ReadAllText(fileName));
+        }
 
-            while (!reader.EndOfStream)
+        public static List<Banlist> ParseText(string text)
+        {
+            List<Banlist> banlists = new List<Banlist>();
+            Banlist? current = null;
+            using StringReader reader = new(text);
+
+            while (reader.ReadLine() is { } rawLine)
             {
-                string? line = reader.ReadLine();
-                if (line == null)
+                string line = rawLine.Trim();
+                if (line.Length == 0)
                     continue;
                 if (line.StartsWith("#"))
                     continue;
                 if (line.StartsWith("!"))
                 {
-                    current = new Banlist();
-                    Banlists.Add(current);
+                    current = new Banlist(line[1..].Trim());
+                    banlists.Add(current);
                     continue;
                 }
                 if (line.StartsWith("$"))
@@ -33,15 +38,17 @@ namespace YGOProSharp.Core
                         current.EnableWhitelistMode();
                     continue;
                 }
-                if (!line.Contains(" "))
-                    continue;
                 if (current == null)
                     continue;
-                string[] data = line.Split(' ');
+                string[] data = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                if (data.Length < 2)
+                    continue;
                 int id = int.Parse(data[0]);
                 int count = int.Parse(data[1]);
                 current.Add(id, count);
             }
+
+            return banlists;
         }
 
         public static int GetIndex(uint hash)

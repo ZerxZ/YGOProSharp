@@ -1,18 +1,18 @@
 # YGOProSharp.NativeApi
 
-`YGOProSharp.NativeApi` is the managed interop layer for `ocgcore`.
+`YGOProSharp.NativeApi` 是 `ocgcore` 的托管 interop 层。它把 `YGOProSharp.Native/ygopro-core/ocgapi.h` 中导出的函数映射为安全的 C# API。
 
-It maps the exported functions in `YGOProSharp.Native/ygopro-core/ocgapi.h` to safe C# APIs. Raw native details such as `LibraryImport`, `SafeHandle`, `IntPtr`, function pointers, and native buffers stay inside this project.
+raw native 细节，例如 `LibraryImport`、`SafeHandle`、`IntPtr`、函数指针和 native buffer，都限制在本项目内。
 
-## Relationship to Native
+## 与 Native 的关系
 
-- `YGOProSharp.Native` provides runtime files only: `ocgcore.dll`, `libocgcore.so`, and `libocgcore.dylib`.
-- `YGOProSharp.NativeApi` provides the managed API that calls those files.
-- Application code should use `IOcgRuntime`, `IDuelFactory`, and `IDuelSession` from `YGOProSharp.Abstractions`.
+- `YGOProSharp.Native` 只提供 runtime 文件：`ocgcore.dll`、`libocgcore.so`、`libocgcore.dylib`。
+- `YGOProSharp.NativeApi` 提供调用这些文件的托管 API。
+- 业务代码应使用 `YGOProSharp.Abstractions` 中的 `IOcgRuntime`、`IDuelFactory` 和 `IDuelSession`。
 
-## Wrapped ocgapi exports
+## 已封装的 ocgapi 导出
 
-The raw binding covers:
+raw binding 覆盖：
 
 - `set_script_reader`
 - `set_card_reader`
@@ -36,16 +36,26 @@ The raw binding covers:
 - `preload_script`
 - `default_script_reader`
 
-`create_duel_v2` is the default managed creation path and requires eight seed values. `create_duel` is kept only for legacy/replay compatibility. `default_script_reader` is bound internally for completeness, but it is not part of the public business API.
+`create_duel_v2` 是默认托管创建路径，需要八个 seed。`create_duel` 只保留给 legacy / replay 兼容路径。`default_script_reader` 只作为内部 raw binding，不作为业务层 public API 暴露。
 
 ## Providers
 
-`NativeOcgRuntime.Initialize` receives:
+`NativeOcgRuntime.Initialize` 接收：
 
-- `ICardDataProvider` for `card_data`
-- `IScriptProvider` for Lua script bytes
-- optional message/log callbacks through managed duel sessions
+- `ICardDataProvider`：提供 `card_data`
+- `IScriptProvider`：提供 Lua script bytes
+- message / log callback：通过托管 duel session 进入上层
 
-This keeps database and file-system policy outside the native interop layer.
+这让数据库策略和文件系统策略留在 Core / Server，而不是泄漏到 native interop 层。
 
-Public callers should not depend on the raw native binding. Use `IOcgRuntime`, `IDuelFactory`, and `IDuelSession` from `YGOProSharp.Abstractions.Ocg` instead.
+## 使用边界
+
+public caller 不应依赖 raw native binding。请通过 `YGOProSharp.Abstractions.Ocg` 中的接口调用 native 能力：
+
+- `IOcgRuntime`
+- `IDuelFactory`
+- `IDuelSession`
+- `ICardDataProvider`
+- `IScriptProvider`
+
+本项目可以依赖 `YGOProSharp.Native`，但不应依赖 `YGOProSharp.Server` 或 `YGOProSharp.Protocol`。

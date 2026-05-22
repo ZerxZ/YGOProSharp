@@ -54,7 +54,16 @@ public ref struct PacketReader
         ReadOnlySpan<byte> bytes = ReadSpan(length * sizeof(char));
         string text = Encoding.Unicode.GetString(bytes);
         int terminator = text.IndexOf('\0');
-        return terminator > 0 ? text[..terminator] : text;
+        return terminator >= 0 ? text[..terminator] : text;
+    }
+
+    public string ReadUtf8(int byteLength)
+    {
+        ReadOnlySpan<byte> bytes = ReadSpan(byteLength);
+        int terminator = bytes.IndexOf((byte)0);
+        if (terminator >= 0)
+            bytes = bytes[..terminator];
+        return Encoding.UTF8.GetString(bytes);
     }
 
     public ReadOnlySpan<byte> ReadRemainingBytes()

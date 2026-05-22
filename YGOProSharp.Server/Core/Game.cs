@@ -146,53 +146,34 @@ namespace YGOProSharp.Server
 
         public void SetRules(BinaryReader packet)
         {
-            uint lfList = packet.ReadUInt32();
-            if (lfList >= 0 && lfList < BanlistManager.Banlists.Count)
-                Banlist = BanlistManager.Banlists[BanlistManager.GetIndex(lfList)];
-            Region = packet.ReadByte();
-            MasterRule = packet.ReadByte();
-            Mode = packet.ReadByte();
-            IsMatch = Mode == 1;
-            IsTag = Mode == 2;
-            IsReady = new bool[IsTag ? 4 : 2];
-            Players = new Player[IsTag ? 4 : 2];
-            EnablePriority = packet.ReadByte() > 0;
-            NoCheckDeck = packet.ReadByte() > 0;
-            NoShuffleDeck = packet.ReadByte() > 0;
+            ApplyHostInfo(HostInfo.ReadFrom(packet));
             // C++ 填充（padding）：5 bytes + 3 bytes = 8 bytes
-            for (int i = 0; i < 3; i++)
-                packet.ReadByte();
-            int lifePoints = packet.ReadInt32();
-            LifePoints[0] = lifePoints;
-            LifePoints[1] = lifePoints;
-            StartHand = packet.ReadByte();
-            DrawCount = packet.ReadByte();
-            Timer = packet.ReadInt16();
         }
 
         public void SetRules(ref PacketReader packet)
         {
-            uint lfList = packet.ReadUInt32();
-            if (lfList >= 0 && lfList < BanlistManager.Banlists.Count)
-                Banlist = BanlistManager.Banlists[BanlistManager.GetIndex(lfList)];
-            Region = packet.ReadByte();
-            MasterRule = packet.ReadByte();
-            Mode = packet.ReadByte();
+            ApplyHostInfo(HostInfo.ReadFrom(ref packet));
+        }
+
+        private void ApplyHostInfo(HostInfo hostInfo)
+        {
+            if (BanlistManager.Banlists.Count > 0)
+                Banlist = BanlistManager.Banlists[BanlistManager.GetIndex(hostInfo.LfList)];
+            Region = hostInfo.Region;
+            MasterRule = hostInfo.MasterRule;
+            Mode = hostInfo.Mode;
             IsMatch = Mode == 1;
             IsTag = Mode == 2;
             IsReady = new bool[IsTag ? 4 : 2];
             Players = new Player[IsTag ? 4 : 2];
-            EnablePriority = packet.ReadByte() > 0;
-            NoCheckDeck = packet.ReadByte() > 0;
-            NoShuffleDeck = packet.ReadByte() > 0;
-            for (int i = 0; i < 3; i++)
-                packet.ReadByte();
-            int lifePoints = packet.ReadInt32();
-            LifePoints[0] = lifePoints;
-            LifePoints[1] = lifePoints;
-            StartHand = packet.ReadByte();
-            DrawCount = packet.ReadByte();
-            Timer = packet.ReadInt16();
+            EnablePriority = hostInfo.EnablePriority;
+            NoCheckDeck = hostInfo.NoCheckDeck;
+            NoShuffleDeck = hostInfo.NoShuffleDeck;
+            LifePoints[0] = hostInfo.StartLp;
+            LifePoints[1] = hostInfo.StartLp;
+            StartHand = hostInfo.StartHand;
+            DrawCount = hostInfo.DrawCount;
+            Timer = hostInfo.TimeLimit;
         }
 
         public void Start()
@@ -843,6 +824,27 @@ namespace YGOProSharp.Server
             RefreshHand(1);
         }
 
+        public void RequestField(Player player)
+        {
+            if (State != GameState.Duel)
+            {
+                _logger.LogDebug("Ignoring field request from {PlayerName}: game state is {GameState}.", player.Name, State);
+                return;
+            }
+
+            try
+            {
+                _logger.LogDebug("Synchronizing current field for {PlayerName}.", player.Name);
+                InitNewSpectator(player);
+                player.Send(GamePacketFactory.CreateFieldFinish());
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to synchronize current field for {PlayerName}.", player.Name);
+                throw;
+            }
+        }
+
         public void RefreshAllObserver(Player observer)
         {
             RefreshMonsters(0, observer);
@@ -1103,6 +1105,13 @@ namespace YGOProSharp.Server
                 State = GameState.Side;
                 SideTimer = DateTime.UtcNow;
                 _logger.LogInformation("Entering side state for match. DuelCount={DuelCount}.", DuelCount);
+                SendToPlayers(GamePacketFactory.CreateDeckCount(
+                    Players[0]?.Deck?.Main.Count ?? 0,
+                    Players[0]?.Deck?.Extra.Count ?? 0,
+                    Players[0]?.Deck?.Side.Count ?? 0,
+                    Players[1]?.Deck?.Main.Count ?? 0,
+                    Players[1]?.Deck?.Extra.Count ?? 0,
+                    Players[1]?.Deck?.Side.Count ?? 0));
                 SendToPlayers(GamePacketFactory.Create(StocMessage.ChangeSide));
                 SendToObservers(GamePacketFactory.Create(StocMessage.WaitingSide));
             }

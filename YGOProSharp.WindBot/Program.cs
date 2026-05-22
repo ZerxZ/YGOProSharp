@@ -147,84 +147,14 @@ namespace WindBot
 
         private static void RunAsServer(int ServerPort)
         {
-            using (HttpListener MainServer = new HttpListener())
-            {
-                MainServer.AuthenticationSchemes = AuthenticationSchemes.Anonymous;
-                MainServer.Prefixes.Add("http://+:" + ServerPort + "/");
-                MainServer.Start();
-                Logger.WriteLine("WindBot server start successed.");
-                Logger.WriteLine("HTTP GET http://127.0.0.1:" + ServerPort + "/?name=WindBot&host=127.0.0.1&port=7911 to call the bot.");
-                while (true)
-                {
-#if !DEBUG
-    try
-    {
-#endif
-                    HttpListenerContext ctx = MainServer.GetContext();
-
-                    WindBotInfo Info = new WindBotInfo();
-                    string RawUrl = Path.GetFileName(ctx.Request.RawUrl);
-                    var queryStringParser = QueryStringParser.ParseQueryString(RawUrl);
-                    Info.Name = queryStringParser["name"];
-                    Info.Deck = queryStringParser["deck"];
-                    Info.Host = queryStringParser["host"];
-                    string port = queryStringParser["port"];
-                    if (port != null)
-                        Info.Port = Int32.Parse(port);
-                    string deckfile = queryStringParser["deckfile"];
-                    if (deckfile != null)
-                        Info.DeckFile = deckfile;
-                    string dialog = queryStringParser["dialog"];
-                    if (dialog != null)
-                        Info.Dialog = dialog;
-                    string version = queryStringParser["version"];
-                    if (version != null)
-                        Info.Version = Int16.Parse(version);
-                    string password = queryStringParser["password"];
-                    if (password != null)
-                        Info.HostInfo = password;
-                    string hand = queryStringParser["hand"];
-                    if (hand != null)
-                        Info.Hand = Int32.Parse(hand);
-                    string debug = queryStringParser["debug"];
-                    if (debug != null)
-                        Info.Debug= bool.Parse(debug);
-                    string chat = queryStringParser["chat"];
-                    if (chat != null)
-                        Info.Chat = bool.Parse(chat);
-
-                    if (Info.Name == null || Info.Host == null || port == null)
-                    {
-                        ctx.Response.StatusCode = 400;
-                        ctx.Response.Close();
-                    }
-                    else
-                    {
-#if !DEBUG
-        try
-        {
-#endif
-                        Thread workThread = new Thread(new ParameterizedThreadStart(Run));
-                        workThread.Start(Info);
-#if !DEBUG
+            WindBotServerModeHost host = new WindBotServerModeHost(ServerPort, StartBotThread);
+            host.Run();
         }
-        catch (Exception ex)
+
+        private static void StartBotThread(WindBotInfo info)
         {
-            Logger.WriteErrorLine("Start Thread Error: " + ex);
-        }
-#endif
-                        ctx.Response.StatusCode = 200;
-                        ctx.Response.Close();
-                    }
-#if !DEBUG
-    }
-    catch (Exception ex)
-    {
-        Logger.WriteErrorLine("Parse Http Request Error: " + ex);
-    }
-#endif
-                }
-            }
+            Thread workThread = new Thread(new ParameterizedThreadStart(Run));
+            workThread.Start(info);
         }
 
         private static void Run(object o)

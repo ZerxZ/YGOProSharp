@@ -6,7 +6,7 @@ namespace YGOProSharp.Protocol.Utils
 {
     public static class BinaryExtensions
     {
-        // 固定长度字符串（fixed length strings）
+        // 固定长度 UTF-16 字符串（fixed length UTF-16 string）。
         public static void WriteUnicode(this BinaryWriter writer, string text, int len)
         {
             byte[] unicode = Encoding.Unicode.GetBytes(text);
@@ -23,7 +23,7 @@ namespace YGOProSharp.Protocol.Utils
             writer.Write(result);
         }
 
-        // 可变长度字符串（variable length strings）
+        // 可变长度 UTF-16 字符串（variable length UTF-16 string）。
         public static void WriteUnicodeAutoLength(this BinaryWriter writer, string text, int maxlen)
         {
             byte[] result = Encoding.Unicode.GetBytes(text + "\0");
@@ -45,8 +45,42 @@ namespace YGOProSharp.Protocol.Utils
             byte[] unicode = reader.ReadBytes(len * 2);
             string text = Encoding.Unicode.GetString(unicode);
             int index = text.IndexOf('\0');
-            if (index > 0) text = text.Substring(0, index);
+            if (index >= 0)
+                text = text.Substring(0, index);
             return text;
+        }
+
+        public static void WriteUtf8(this BinaryWriter writer, string text, int byteLength)
+        {
+            if (byteLength < 0)
+                throw new ArgumentOutOfRangeException(nameof(byteLength), byteLength, "Fixed UTF-8 length must be non-negative.");
+
+            byte[] result = new byte[byteLength];
+            if (byteLength == 0)
+            {
+                writer.Write(result);
+                return;
+            }
+
+            byte[] utf8 = Encoding.UTF8.GetBytes(text);
+            int copyLength = Math.Min(utf8.Length, byteLength - 1);
+            Array.Copy(utf8, result, copyLength);
+#if DEBUG
+            if (utf8.Length > byteLength - 1)
+                throw new ArgumentException("String '" + text + "' is too long for fixed UTF-8 length " + byteLength + ".");
+#endif
+            writer.Write(result);
+        }
+
+        public static string ReadUtf8(this BinaryReader reader, int byteLength)
+        {
+            if (byteLength < 0)
+                throw new ArgumentOutOfRangeException(nameof(byteLength), byteLength, "Fixed UTF-8 length must be non-negative.");
+
+            byte[] bytes = reader.ReadBytes(byteLength);
+            int index = Array.IndexOf(bytes, (byte)0);
+            int count = index >= 0 ? index : bytes.Length;
+            return Encoding.UTF8.GetString(bytes, 0, count);
         }
 
         public static byte[] ReadToEnd(this BinaryReader reader)

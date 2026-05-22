@@ -10,6 +10,7 @@ namespace YGOProSharp.Protocol.Enums
         TpResult = 0x6,
         ChangeSide = 0x7,
         WaitingSide = 0x8,
+        DeckCount = 0x9,
         CreateGame = 0x11,
         JoinGame = 0x12,
         TypeChange = 0x13,
@@ -22,6 +23,8 @@ namespace YGOProSharp.Protocol.Enums
         HsPlayerEnter = 0x20,
         HsPlayerChange = 0x21,
         HsWatchChange = 0x22,
-        TeammateSurrender = 0x23
+        TeammateSurrender = 0x23,
+        FieldFinish = 0x30,
+        SrvproRoomlist = 0x31
     }
 }

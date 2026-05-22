@@ -10,9 +10,11 @@ namespace YGOProSharp.Core
         public IList<int> UnlimitedIds { get; private set; }
         public bool WhitelistOnly { get; private set; }
         public uint Hash { get; private set; }
+        public string Name { get; }
 
-        public Banlist()
+        public Banlist(string name = "")
         {
+            Name = name;
             BannedIds = new List<int>();
             LimitedIds = new List<int>();
             SemiLimitedIds = new List<int>();

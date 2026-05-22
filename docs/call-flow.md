@@ -43,7 +43,7 @@ sequenceDiagram
 
 `YGOProSharp.Protocol` 只负责 socket 与 YGO packet。`Player.Parse` 是 CTOS 业务入口：认证前只处理 `PlayerInfo`、`JoinGame`、`CreateGame`；认证后才处理聊天、移动座位、准备、更新卡组、response、投降等动作。
 
-## 对局与 native 调用
+## 对局中的 native 调用
 
 ```mermaid
 sequenceDiagram
@@ -71,7 +71,7 @@ sequenceDiagram
     end
 ```
 
-`Game` 负责选择随机种子、创建 `IDuelSession`、设置玩家信息、把双方卡组喂给 native，然后启动 duel。默认路径使用 `create_duel_v2`，由 `NativeDuelFactory.Create(ReadOnlySpan<uint>)` 封装。
+`Game` 负责选择随机种子、创建 `IDuelSession`、设置玩家信息、把双方卡组喂给 native，然后启动 duel。默认路径使用 `create_duel_v2(uint[8])`，由 `NativeDuelFactory.Create(ReadOnlySpan<uint>)` 封装。
 
 ## 卡片数据与脚本 callback
 
@@ -85,22 +85,21 @@ flowchart LR
     DTO --> Native[NativeOcgRuntime card callback]
 
     ScriptDir[script/] --> ScriptProvider[FileScriptProvider]
-    ScriptProvider --> Runtime[NativeOcgRuntime script callback]
+    ScriptProvider --> ScriptCallback[NativeOcgRuntime script callback]
 ```
 
-SQLite 只在 Core 的 `SqliteCardDatabaseManager` 内使用。加载完成后，卡片数据以 repository 形式提供给 `Deck` 和 native card callback。脚本由 `FileScriptProvider` 读取，再由 `NativeOcgRuntime` 复制到 native callback buffer。
+SQLite 读取只在 `SqliteCardDatabaseManager` 内部发生。业务层使用 repository 查询领域模型；native callback 使用 `RepositoryCardDataProvider` 把 `Card` 转成 `OcgCardData`。
+
+脚本读取由 `FileScriptProvider` 完成，native 层只通过 `IScriptProvider` 请求脚本 bytes。
 
 ## 错误与日志
 
 ```mermaid
 flowchart TD
-    CLI[CLI] --> AppLog[AppLog.Configure]
-    AppLog --> Logs[Core / Protocol / Server logs]
-    Native[ocgcore log callback] --> Session[NativeDuelSession.OnMessage]
-    Session --> GameError[Game.HandleError]
+    NativeErr[Lua/native error] --> GameError[Game.HandleError]
+    GameError --> Log[AppLog LogError]
     GameError --> File[lua_*.txt]
-    GameError --> Broadcast[游戏内错误广播]
-    GameError --> Logger[LogError]
+    GameError --> Broadcast[STOC error broadcast]
 ```
 
-日志入口是 `AppLog`。CLI 配置 console logger；测试可以配置捕获 provider。native / Lua 错误通过 `NativeDuelSession.OnMessage` 进入 `Game.HandleError`，当前行为会写入 `lua_*.txt`、向游戏内广播错误，并记录 `LogError`。
+运行日志通过 `AppLog` 输出。生命周期默认走 `Information`；包级消息走 `Debug`；payload 短预览走 `Trace`。`Game.HandleError` 保留错误文件写入，同时输出结构化错误日志。

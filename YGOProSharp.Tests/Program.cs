@@ -1,8 +1,10 @@
 using System.Buffers.Binary;
+using System.Collections.Specialized;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using YGOProSharp.Abstractions.Ocg;
 using YGOProSharp.Abstractions.Ocg.Enums;
@@ -47,10 +49,19 @@ Run("Project boundaries keep direct Console writes out of source", ProjectBounda
 Run("Project boundaries keep logger parameters out of business APIs", ProjectBoundariesKeepLoggerParametersOutOfBusinessApis);
 Run("WindBot packet factory writes CTOS message byte", WindBotPacketFactoryWritesCtosMessageByte);
 Run("WindBot deck loads through named-card repository", WindBotDeckLoadsThroughNamedCardRepository);
+Run("WindBot server mode parses query info", WindBotServerModeParsesQueryInfo);
+Run("WindBot bot list path logs missing file", WindBotBotListPathLogsMissingFile);
+Run("Protocol message enums include reference values", ProtocolMessageEnumsIncludeReferenceValues);
 Run("PacketFramer handles split and sticky packets", PacketFramerHandlesSplitAndStickyPackets);
 Run("PacketFramer handles 4-byte size-included headers", PacketFramerHandlesFourByteSizeIncludedHeaders);
 Run("PacketFramer rejects oversize packets", PacketFramerRejectsOversizePackets);
 Run("PacketReader reads little-endian and UTF-16 data", PacketReaderReadsLittleEndianAndUtf16Data);
+Run("Binary extensions read and write fixed UTF-8 strings", BinaryExtensionsReadAndWriteFixedUtf8Strings);
+Run("Banlist parser reads names and whitelist mode", BanlistParserReadsNamesAndWhitelistMode);
+Run("Sqlite card database manager maps cdb fields", SqliteCardDatabaseManagerMapsCdbFields);
+Run("HostInfo parses CreateGame payload", HostInfoParsesCreateGamePayload);
+Run("GamePacketFactory creates deck count and field finish", GamePacketFactoryCreatesDeckCountAndFieldFinish);
+Run("Player handles request field safely", PlayerHandlesRequestFieldSafely);
 Run("Player parses player info from spans", PlayerParsesPlayerInfoFromSpans);
 Run("Game logs native errors", GameLogsNativeErrors);
 await RunAsync("NetworkClient loopback send and receive", NetworkClientLoopbackSendAndReceiveAsync);
@@ -194,8 +205,7 @@ static void ProjectBoundariesKeepNativeInteropOutOfCore()
 
     string[] forbiddenCoreTokens = ["LibraryImport", "DllImport", "SafeHandle", "byte*", "OcgCoreImports"];
     foreach (string file in Directory.EnumerateFiles(coreProject, "*.cs", SearchOption.AllDirectories)
-                 .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") &&
-                                !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")))
+                 .Where(IsRepositorySourcePath))
     {
         string text = File.ReadAllText(file);
         foreach (string token in forbiddenCoreTokens)
@@ -237,8 +247,7 @@ static void ProjectBoundariesKeepCardModelsAndSqliteSeparated()
 
     string[] forbiddenSqliteTokens = ["Microsoft.Data.Sqlite", "SqliteConnection"];
     foreach (string file in Directory.EnumerateFiles(coreProject, "*.cs", SearchOption.AllDirectories)
-                 .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") &&
-                                !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") &&
+                 .Where(file => IsRepositorySourcePath(file) &&
                                 !Path.GetFullPath(file).Equals(sqliteManagerPath, StringComparison.OrdinalIgnoreCase)))
     {
         string text = File.ReadAllText(file);
@@ -251,8 +260,7 @@ static void ProjectBoundariesKeepCardModelsAndSqliteSeparated()
 
     string[] forbiddenStaticLookups = ["Card." + "Get(", "NamedCard." + "Get("];
     foreach (string file in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
-                 .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") &&
-                                !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")))
+                 .Where(IsRepositorySourcePath))
     {
         string text = File.ReadAllText(file);
         foreach (string token in forbiddenStaticLookups)
@@ -355,6 +363,47 @@ static void WindBotDeckLoadsThroughNamedCardRepository()
     }
 }
 
+static void WindBotServerModeParsesQueryInfo()
+{
+    NameValueCollection query = WindBot.QueryStringParser.ParseQueryString(
+        "name=Bot&deck=AI&host=127.0.0.1&port=7911&deckfile=Smoke.ydk&dialog=default&version=4962&password=abc&hand=1&debug=true&chat=false");
+
+    WindBot.WindBotInfo info = WindBot.WindBotServerModeHost.CreateInfoFromQuery(query);
+    if (info == null)
+        throw new InvalidOperationException("Expected query to create WindBotInfo.");
+
+    AssertEqual("Bot", info.Name);
+    AssertEqual("AI", info.Deck);
+    AssertEqual("127.0.0.1", info.Host);
+    AssertEqual(7911, info.Port);
+    AssertEqual("Smoke.ydk", info.DeckFile);
+    AssertEqual("default", info.Dialog);
+    AssertEqual(4962, info.Version);
+    AssertEqual("abc", info.HostInfo);
+    AssertEqual(1, info.Hand);
+    AssertTrue(info.Debug);
+    AssertFalse(info.Chat);
+}
+
+static void WindBotBotListPathLogsMissingFile()
+{
+    TestLog.Provider.Clear();
+    string missingPath = Path.Combine(Path.GetTempPath(), "missing_windbot_list_" + Guid.NewGuid().ToString("N") + ".json");
+
+    IReadOnlyList<WindBot.WindBotInfo> bots = WindBot.WindBotServerModeHost.LoadBotList(missingPath);
+
+    AssertEqual(0, bots.Count);
+    AssertTrue(TestLog.Provider.Contains(LogLevel.Error, "BotListPath file not found"));
+}
+
+static void ProtocolMessageEnumsIncludeReferenceValues()
+{
+    AssertEqual(0x30, (int)CtosMessage.RequestField);
+    AssertEqual(0x09, (int)StocMessage.DeckCount);
+    AssertEqual(0x30, (int)StocMessage.FieldFinish);
+    AssertEqual(0x31, (int)StocMessage.SrvproRoomlist);
+}
+
 static void ProjectBoundariesKeepDirectConsoleWritesOutOfSource()
 {
     string root = FindRepositoryRoot();
@@ -369,8 +418,7 @@ static void ProjectBoundariesKeepDirectConsoleWritesOutOfSource()
     ];
 
     foreach (string file in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
-                 .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") &&
-                                !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")))
+                 .Where(IsRepositorySourcePath))
     {
         string text = File.ReadAllText(file);
         foreach (string forbiddenWrite in forbiddenWrites)
@@ -394,8 +442,7 @@ static void ProjectBoundariesKeepLoggerParametersOutOfBusinessApis()
     string[] forbiddenParameterTokens = ["ILogger ", "ILogger<", "ILoggerFactory"];
 
     foreach (string file in businessProjects.SelectMany(project => Directory.EnumerateFiles(project, "*.cs", SearchOption.AllDirectories))
-                 .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") &&
-                                !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") &&
+                 .Where(file => IsRepositorySourcePath(file) &&
                                 !Path.GetFullPath(file).Equals(appLogPath, StringComparison.OrdinalIgnoreCase)))
     {
         foreach (string line in File.ReadLines(file))
@@ -477,6 +524,176 @@ static void PacketReaderReadsLittleEndianAndUtf16Data()
     AssertEqual("Hi", reader.ReadUnicode(4));
     AssertSequenceEqual(new byte[] { 0xAA, 0xBB }, reader.ReadRemainingBytes());
     AssertEqual(0, reader.Remaining);
+
+    PacketReader emptyReader = new(new byte[4]);
+    AssertEqual("", emptyReader.ReadUnicode(2));
+}
+
+static void BinaryExtensionsReadAndWriteFixedUtf8Strings()
+{
+    using MemoryStream stream = new();
+    using BinaryWriter writer = new(stream);
+    writer.WriteUtf8("room", 8);
+    writer.WriteUtf8("大厅", 12);
+
+    stream.Position = 0;
+    using BinaryReader reader = new(stream);
+
+    AssertEqual("room", reader.ReadUtf8(8));
+    AssertEqual("大厅", reader.ReadUtf8(12));
+
+    PacketReader packetReader = new(stream.ToArray());
+    AssertEqual("room", packetReader.ReadUtf8(8));
+    AssertEqual("大厅", packetReader.ReadUtf8(12));
+}
+
+static void BanlistParserReadsNamesAndWhitelistMode()
+{
+    string text = """
+        # comment
+        !TCG 2026
+        1 0
+        2	1
+        $whitelist
+        !OCG 2026
+        3 2
+        4 3
+        """;
+
+    List<Banlist> banlists = BanlistManager.ParseText(text);
+
+    AssertEqual(2, banlists.Count);
+    AssertEqual("TCG 2026", banlists[0].Name);
+    AssertTrue(banlists[0].WhitelistOnly);
+    AssertEqual(0, banlists[0].GetQuantity(1));
+    AssertEqual(1, banlists[0].GetQuantity(2));
+    AssertEqual(0, banlists[0].GetQuantity(99));
+    AssertEqual("OCG 2026", banlists[1].Name);
+    AssertEqual(2, banlists[1].GetQuantity(3));
+    AssertEqual(3, banlists[1].GetQuantity(4));
+}
+
+static void SqliteCardDatabaseManagerMapsCdbFields()
+{
+    string temporaryDirectory = Path.Combine(Path.GetTempPath(), "YGOProSharpCdbTest_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(temporaryDirectory);
+    string firstDatabase = Path.Combine(temporaryDirectory, "cards1.cdb");
+    string secondDatabase = Path.Combine(temporaryDirectory, "cards2.cdb");
+
+    try
+    {
+        CreateTestCdb(firstDatabase, [
+            TestCdbRow(1, (int)CardType.Monster | (int)CardType.Link, levelInfo: 4, defense: (int)CardLinkMarker.Bottom, name: "Link"),
+            TestCdbRow(2, (int)CardType.Monster | (int)CardType.Pendulum, levelInfo: 4 | (8 << 16) | (1 << 24), defense: 2000, name: "Pendulum")
+        ]);
+        CreateTestCdb(secondDatabase, [
+            TestCdbRow(3, (int)CardType.Monster, levelInfo: 7, defense: 2500, name: "Second")
+        ]);
+
+        SqliteCardDatabaseManager manager = new();
+        ICardRepository cards = manager.LoadCards(firstDatabase);
+        INamedCardRepository namedCards = manager.LoadNamedCards([firstDatabase, secondDatabase]);
+
+        AssertTrue(cards.TryGetCard(1, out Card linkCard));
+        AssertEqual(0, linkCard.Defense);
+        AssertEqual((int)CardLinkMarker.Bottom, linkCard.LinkMarker);
+
+        AssertTrue(cards.TryGetCard(2, out Card pendulumCard));
+        AssertEqual(4, pendulumCard.Level);
+        AssertEqual(1, pendulumCard.LScale);
+        AssertEqual(8, pendulumCard.RScale);
+
+        AssertTrue(namedCards.TryGetCard(1, out NamedCard firstNamedCard));
+        AssertTrue(namedCards.TryGetCard(3, out NamedCard secondNamedCard));
+        AssertEqual("Link", firstNamedCard.Name);
+        AssertEqual("Second", secondNamedCard.Name);
+    }
+    finally
+    {
+        SqliteConnection.ClearAllPools();
+        Directory.Delete(temporaryDirectory, recursive: true);
+    }
+}
+
+static void HostInfoParsesCreateGamePayload()
+{
+    using MemoryStream stream = new();
+    using BinaryWriter writer = new(stream);
+    writer.Write(0x12345678U);
+    writer.Write((byte)2);
+    writer.Write((byte)5);
+    writer.Write((byte)1);
+    writer.Write((byte)1);
+    writer.Write((byte)0);
+    writer.Write((byte)1);
+    writer.Write(new byte[3]);
+    writer.Write(4000);
+    writer.Write((byte)4);
+    writer.Write((byte)2);
+    writer.Write((short)120);
+
+    stream.Position = 0;
+    using BinaryReader reader = new(stream);
+    HostInfo info = HostInfo.ReadFrom(reader);
+
+    AssertEqual(0x12345678U, info.LfList);
+    AssertEqual(2, info.Region);
+    AssertEqual(5, info.MasterRule);
+    AssertEqual(1, info.Mode);
+    AssertTrue(info.EnablePriority);
+    AssertFalse(info.NoCheckDeck);
+    AssertTrue(info.NoShuffleDeck);
+    AssertEqual(4000, info.StartLp);
+    AssertEqual(4, info.StartHand);
+    AssertEqual(2, info.DrawCount);
+    AssertEqual(120, info.TimeLimit);
+}
+
+static void GamePacketFactoryCreatesDeckCountAndFieldFinish()
+{
+    using BinaryWriter deckCount = GamePacketFactory.CreateDeckCount(40, 15, 3, 41, 14, 2);
+    byte[] deckCountBytes = ((MemoryStream)deckCount.BaseStream).ToArray();
+
+    AssertEqual(13, deckCountBytes.Length);
+    AssertEqual((byte)StocMessage.DeckCount, deckCountBytes[0]);
+    AssertEqual(40, (int)BinaryPrimitives.ReadInt16LittleEndian(deckCountBytes.AsSpan(1, 2)));
+    AssertEqual(15, (int)BinaryPrimitives.ReadInt16LittleEndian(deckCountBytes.AsSpan(3, 2)));
+    AssertEqual(3, (int)BinaryPrimitives.ReadInt16LittleEndian(deckCountBytes.AsSpan(5, 2)));
+    AssertEqual(41, (int)BinaryPrimitives.ReadInt16LittleEndian(deckCountBytes.AsSpan(7, 2)));
+    AssertEqual(14, (int)BinaryPrimitives.ReadInt16LittleEndian(deckCountBytes.AsSpan(9, 2)));
+    AssertEqual(2, (int)BinaryPrimitives.ReadInt16LittleEndian(deckCountBytes.AsSpan(11, 2)));
+
+    using BinaryWriter fieldFinish = GamePacketFactory.CreateFieldFinish();
+    AssertSequenceEqual(new[] { (byte)StocMessage.FieldFinish }, ((MemoryStream)fieldFinish.BaseStream).ToArray());
+}
+
+static void PlayerHandlesRequestFieldSafely()
+{
+    TestLog.Provider.Clear();
+    Config.Load([]);
+    Game game = new(new CoreServer());
+    Player player = new(game, new YGOClient());
+
+    using MemoryStream infoStream = new();
+    using (BinaryWriter writer = new(infoStream, Encoding.UTF8, leaveOpen: true))
+    {
+        writer.Write((byte)CtosMessage.PlayerInfo);
+        writer.WriteUnicode("FieldTester", 20);
+    }
+    player.Parse(infoStream.ToArray());
+
+    using MemoryStream joinStream = new();
+    using (BinaryWriter writer = new(joinStream, Encoding.UTF8, leaveOpen: true))
+    {
+        writer.Write((byte)CtosMessage.JoinGame);
+        writer.Write((short)0x1362);
+        writer.Write(0);
+        writer.Write((short)0);
+    }
+    player.Parse(joinStream.ToArray());
+    player.Parse(new[] { (byte)CtosMessage.RequestField });
+
+    AssertTrue(TestLog.Provider.Contains(LogLevel.Debug, "Ignoring field request"));
 }
 
 static void PlayerParsesPlayerInfoFromSpans()
@@ -694,6 +911,44 @@ static InMemoryNamedCardRepository TestNamedRepository(params NamedCard[] cards)
     return new InMemoryNamedCardRepository(cards);
 }
 
+static TestCdbRow TestCdbRow(int id, int type, int levelInfo, int defense, string name)
+{
+    return new TestCdbRow(id, type, levelInfo, defense, name);
+}
+
+static void CreateTestCdb(string path, IReadOnlyList<TestCdbRow> rows)
+{
+    using SqliteConnection connection = new($"Data Source={path}");
+    connection.Open();
+
+    using SqliteCommand command = connection.CreateCommand();
+    command.CommandText = """
+        CREATE TABLE datas(id INTEGER, ot INTEGER, alias INTEGER, setcode INTEGER, type INTEGER, level INTEGER, race INTEGER, attribute INTEGER, atk INTEGER, def INTEGER);
+        CREATE TABLE texts(id INTEGER, name TEXT, desc TEXT);
+        """;
+    command.ExecuteNonQuery();
+
+    foreach (TestCdbRow row in rows)
+    {
+        command.CommandText = """
+            INSERT INTO datas(id, ot, alias, setcode, type, level, race, attribute, atk, def)
+            VALUES ($id, 3, 0, 0, $type, $level, $race, $attribute, 1000, $def);
+            INSERT INTO texts(id, name, desc)
+            VALUES ($id, $name, $desc);
+            """;
+        command.Parameters.Clear();
+        command.Parameters.AddWithValue("$id", row.Id);
+        command.Parameters.AddWithValue("$type", row.Type);
+        command.Parameters.AddWithValue("$level", row.LevelInfo);
+        command.Parameters.AddWithValue("$race", (int)CardRace.Warrior);
+        command.Parameters.AddWithValue("$attribute", (int)CardAttribute.Earth);
+        command.Parameters.AddWithValue("$def", row.Defense);
+        command.Parameters.AddWithValue("$name", row.Name);
+        command.Parameters.AddWithValue("$desc", row.Name + " desc");
+        command.ExecuteNonQuery();
+    }
+}
+
 static string FindRepositoryRoot()
 {
     DirectoryInfo? directory = new(AppContext.BaseDirectory);
@@ -712,10 +967,20 @@ static string ProjectText(string projectDirectory)
 {
     IEnumerable<string> files = Directory.EnumerateFiles(projectDirectory, "*.cs", SearchOption.AllDirectories)
         .Concat(Directory.EnumerateFiles(projectDirectory, "*.csproj", SearchOption.TopDirectoryOnly))
-        .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") &&
-                       !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}"));
+        .Where(IsRepositorySourcePath);
 
     return string.Join(Environment.NewLine, files.Select(File.ReadAllText));
+}
+
+static bool IsRepositorySourcePath(string file)
+{
+    string fullPath = Path.GetFullPath(file);
+    string separator = Path.DirectorySeparatorChar.ToString();
+    string normalized = fullPath.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+    return !normalized.Contains(separator + "bin" + separator, StringComparison.OrdinalIgnoreCase) &&
+           !normalized.Contains(separator + "obj" + separator, StringComparison.OrdinalIgnoreCase) &&
+           !normalized.Contains(separator + ".external" + separator, StringComparison.OrdinalIgnoreCase) &&
+           !normalized.Contains(separator + ".git" + separator, StringComparison.OrdinalIgnoreCase);
 }
 
 static void AssertDoesNotContainAny(string text, IEnumerable<string> forbiddenTokens, string subject)
@@ -808,6 +1073,8 @@ internal sealed class ListLogger : ILogger
 }
 
 internal sealed record LogRecord(string Category, LogLevel Level, string Message, Exception? Exception);
+
+internal sealed record TestCdbRow(int Id, int Type, int LevelInfo, int Defense, string Name);
 
 internal sealed class NullDisposable : IDisposable
 {
