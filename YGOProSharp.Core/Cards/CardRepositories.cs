@@ -28,6 +28,11 @@ public interface ICardDatabaseManager
 {
     ICardRepository LoadCards(string databaseFullPath);
 
+    /// <summary>
+    /// 按顺序加载多个卡片数据库（靠后的数据库覆盖前面同 ID 的卡片记录，便于 expansions / diy 覆盖基础卡库）。
+    /// </summary>
+    ICardRepository LoadCards(IEnumerable<string> databaseFullPaths);
+
     INamedCardRepository LoadNamedCards(string databaseFullPath);
 
     INamedCardRepository LoadNamedCards(IEnumerable<string> databaseFullPaths);
@@ -125,5 +130,88 @@ public sealed class InMemoryNamedCardRepository : INamedCardRepository
     public IReadOnlyCollection<NamedCard> GetAllCards()
     {
         return _allCards;
+    }
+}
+
+/// <summary>
+/// 按优先级组合多个 <see cref="ICardRepository"/>（列表越靠前优先级越高），
+/// 用于在基础 <c>cards.cdb</c> 之上叠加内存 DIY 卡或扩展卡库。
+/// </summary>
+public sealed class CompositeCardRepository : ICardRepository
+{
+    private readonly ICardRepository[] _repositories;
+
+    public CompositeCardRepository(params ICardRepository[] repositories)
+        : this((IEnumerable<ICardRepository>)repositories)
+    {
+    }
+
+    public CompositeCardRepository(IEnumerable<ICardRepository> repositories)
+    {
+        ArgumentNullException.ThrowIfNull(repositories);
+        _repositories = repositories.Where(static repo => repo is not null).ToArray();
+    }
+
+    public bool TryGetCard(int id, out Card card)
+    {
+        for (int i = 0; i < _repositories.Length; i++)
+        {
+            if (_repositories[i].TryGetCard(id, out card))
+                return true;
+        }
+
+        card = null!;
+        return false;
+    }
+}
+
+/// <summary>
+/// 按优先级组合多个 <see cref="INamedCardRepository"/>（列表越靠前优先级越高）。
+/// </summary>
+public sealed class CompositeNamedCardRepository : INamedCardRepository
+{
+    private readonly INamedCardRepository[] _repositories;
+    private readonly Lazy<NamedCard[]> _allCards;
+
+    public CompositeNamedCardRepository(params INamedCardRepository[] repositories)
+        : this((IEnumerable<INamedCardRepository>)repositories)
+    {
+    }
+
+    public CompositeNamedCardRepository(IEnumerable<INamedCardRepository> repositories)
+    {
+        ArgumentNullException.ThrowIfNull(repositories);
+        _repositories = repositories.Where(static repo => repo is not null).ToArray();
+        _allCards = new Lazy<NamedCard[]>(BuildMergedCards);
+    }
+
+    public bool TryGetCard(int id, out NamedCard card)
+    {
+        for (int i = 0; i < _repositories.Length; i++)
+        {
+            if (_repositories[i].TryGetCard(id, out card))
+                return true;
+        }
+
+        card = null!;
+        return false;
+    }
+
+    public IReadOnlyCollection<NamedCard> GetAllCards()
+    {
+        return _allCards.Value;
+    }
+
+    private NamedCard[] BuildMergedCards()
+    {
+        Dictionary<int, NamedCard> merged = new();
+        // 从低优先级到高优先级写入，确保高优先级 repository 覆盖同 ID 卡片。
+        for (int i = _repositories.Length - 1; i >= 0; i--)
+        {
+            foreach (NamedCard card in _repositories[i].GetAllCards())
+                merged[card.Id] = card;
+        }
+
+        return [.. merged.Values];
     }
 }

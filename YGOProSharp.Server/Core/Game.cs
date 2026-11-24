@@ -25,6 +25,8 @@ namespace YGOProSharp.Server
         public const int DEFAULT_TIMER = 240;
 
         public Banlist Banlist { get; private set; } = null!;
+        public string RoomName { get; internal set; } = "default";
+        public bool IsManagedRoom { get; internal set; }
         public int Mode { get; set; }
         public int Region { get; set; }
         public int MasterRule { get; set; }
@@ -35,9 +37,13 @@ namespace YGOProSharp.Server
         public bool EnablePriority { get; set; }
         public bool NoCheckDeck { get; set; }
         public bool NoShuffleDeck { get; set; }
+        public int MatchWins { get; set; }
         public bool IsMatch { get; private set; }
         public bool IsTag { get; private set; }
         public bool IsTpSelect { get; private set; }
+        public CoreServer Server => _server;
+        public IReadOnlyList<string> ExtraScripts => _extraScripts;
+        public IReadOnlyDictionary<string, string> CustomTags => _customTags;
 
         public GameState State { get; private set; }
         public DateTime SideTimer { get; private set; }
@@ -64,6 +70,9 @@ namespace YGOProSharp.Server
         private readonly IDuelFactory? _duelFactory;
         private readonly ILogger<Game> _logger;
         private readonly GameOptions _options;
+        private readonly IDeckValidator _deckValidator;
+        private readonly List<string> _extraScripts;
+        private readonly Dictionary<string, string> _customTags;
         // Native session 生命周期从 lobby 进入 duel 时开始，并在 EndDuel/End 结束。
         private IDuelSession _duel = null!;
         private GameAnalyser _analyser;
@@ -85,7 +94,9 @@ namespace YGOProSharp.Server
         public event Action<object, PlayerEventArgs>? OnPlayerLeave;
         public event Action<object, PlayerMoveEventArgs>? OnPlayerMove;
         public event Action<object, PlayerEventArgs>? OnPlayerReady;
+        public event Action<object, PlayerChatInterceptEventArgs>? OnBeforePlayerChat;
         public event Action<object, PlayerChatEventArgs>? OnPlayerChat;
+        public event Action<object, DuelStartContext>? OnBeforeDuelStart;
 
         /// <summary>
         /// 使用领域依赖创建 game room；socket 和 native 实现细节留在本类之外。
@@ -95,11 +106,17 @@ namespace YGOProSharp.Server
             _duelFactory = duelFactory;
             _logger = AppLog.CreateLogger<Game>();
             _options = options ?? new GameOptions();
+            _deckValidator = _options.DeckValidator ?? DefaultDeckValidator.Instance;
+            _extraScripts = new List<string>(_options.ExtraScripts);
+            _customTags = _options.CustomTags is null
+                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string>(_options.CustomTags, StringComparer.OrdinalIgnoreCase);
             CardRepository = cardRepository ?? EmptyCardRepository.Instance;
             State = GameState.Lobby;
             Mode = _options.Mode;
             Region = _options.Region;
             MasterRule = _options.MasterRule;
+            MatchWins = Math.Max(1, _options.MatchWins);
 
             IsMatch = Mode == 1;
             IsTag = Mode == 2;
@@ -111,8 +128,9 @@ namespace YGOProSharp.Server
             _handResult = new int[2];
             _timelimit = new int[2];
             Winner = -1;
-            MatchResults = new int[3];
-            MatchReasons = new int[3];
+            int maxMatchDuels = Math.Max(3, MatchWins * 2 - 1);
+            MatchResults = new int[maxMatchDuels];
+            MatchReasons = new int[maxMatchDuels];
             Observers = new List<Player>();
 
             int lfList = _options.Banlist;
@@ -132,7 +150,8 @@ namespace YGOProSharp.Server
             _server = server;
             _analyser = new GameAnalyser(this);
             _logger.LogInformation(
-                "Game initialized. Mode={Mode}, Region={Region}, MasterRule={MasterRule}, StartLp={StartLp}, StartHand={StartHand}, DrawCount={DrawCount}, Timer={Timer}.",
+                "Game initialized. Room={RoomName}, Mode={Mode}, Region={Region}, MasterRule={MasterRule}, StartLp={StartLp}, StartHand={StartHand}, DrawCount={DrawCount}, Timer={Timer}.",
+                RoomName,
                 Mode,
                 Region,
                 MasterRule,
@@ -140,6 +159,109 @@ namespace YGOProSharp.Server
                 StartHand,
                 DrawCount,
                 Timer);
+        }
+
+        public bool IsEmpty
+        {
+            get
+            {
+                for (int i = 0; i < Players.Length; i++)
+                {
+                    if (Players[i] is not null)
+                        return false;
+                }
+
+                return Observers.Count == 0;
+            }
+        }
+
+        public RoomSnapshot CreateSnapshot()
+        {
+            List<string> playerNames = new(Players.Length);
+            for (int i = 0; i < Players.Length; i++)
+            {
+                if (Players[i] is not null)
+                    playerNames.Add(Players[i].Name ?? string.Empty);
+            }
+
+            return new RoomSnapshot(
+                RoomName,
+                State,
+                Mode,
+                Region,
+                MasterRule,
+                StartLp,
+                playerNames.Count,
+                Players.Length,
+                Observers.Count,
+                HostPlayer?.Name,
+                playerNames);
+        }
+
+        /// <summary>
+        /// 在大厅且尚未有玩家加入时应用由房间密码解析出的规则覆写。
+        /// </summary>
+        public void ApplyRuleOverrides(RoomRuleOverrides overrides)
+        {
+            ArgumentNullException.ThrowIfNull(overrides);
+            if (State != GameState.Lobby || !IsEmpty)
+                return;
+
+            GameOptions merged = overrides.ApplyTo(new GameOptions
+            {
+                Mode = Mode,
+                Region = Region,
+                MasterRule = MasterRule,
+                Banlist = Banlist is null ? -1 : BanlistManager.Banlists.IndexOf(Banlist),
+                StartLp = StartLp,
+                StartHand = StartHand,
+                DrawCount = DrawCount,
+                GameTimer = Timer,
+                EnablePriority = EnablePriority,
+                NoCheckDeck = NoCheckDeck,
+                NoShuffleDeck = NoShuffleDeck,
+                MatchWins = MatchWins,
+                DeckRules = _options.DeckRules,
+                DeckValidator = _deckValidator,
+                ExtraScripts = _extraScripts.ToArray(),
+                CustomTags = _customTags
+            });
+
+            Mode = merged.Mode;
+            Region = merged.Region;
+            MasterRule = merged.MasterRule;
+            MatchWins = Math.Max(1, merged.MatchWins);
+            IsMatch = Mode == 1;
+            IsTag = Mode == 2;
+            Players = new Player[IsTag ? 4 : 2];
+            IsReady = new bool[IsTag ? 4 : 2];
+            int maxMatchDuels = Math.Max(3, MatchWins * 2 - 1);
+            MatchResults = new int[maxMatchDuels];
+            MatchReasons = new int[maxMatchDuels];
+            EnablePriority = merged.EnablePriority;
+            NoCheckDeck = merged.NoCheckDeck;
+            NoShuffleDeck = merged.NoShuffleDeck;
+            StartLp = merged.StartLp;
+            LifePoints[0] = StartLp;
+            LifePoints[1] = StartLp;
+            StartHand = merged.StartHand;
+            DrawCount = merged.DrawCount;
+            Timer = merged.GameTimer;
+
+            if (merged.Banlist < 0)
+                Banlist = null!;
+            else if (merged.Banlist < BanlistManager.Banlists.Count)
+                Banlist = BanlistManager.Banlists[merged.Banlist];
+
+            _extraScripts.Clear();
+            _extraScripts.AddRange(merged.ExtraScripts);
+
+            _customTags.Clear();
+            if (merged.CustomTags is not null)
+            {
+                foreach (KeyValuePair<string, string> pair in merged.CustomTags)
+                    _customTags[pair.Key] = pair.Value;
+            }
         }
 
         public void SetRules(BinaryReader packet)
@@ -151,6 +273,11 @@ namespace YGOProSharp.Server
         public void SetRules(ref PacketReader packet)
         {
             ApplyHostInfo(HostInfo.ReadFrom(ref packet));
+        }
+
+        public void SetRules(HostInfo hostInfo)
+        {
+            ApplyHostInfo(hostInfo);
         }
 
         private void ApplyHostInfo(HostInfo hostInfo)
@@ -337,8 +464,16 @@ namespace YGOProSharp.Server
             _logger.LogInformation("Removing player {PlayerName} from type {PlayerType} while game state is {GameState}.", player.Name, player.Type, State);
             if (player.Equals(HostPlayer) && State == GameState.Lobby)
             {
-                _logger.LogInformation("Host player {PlayerName} left lobby; stopping server.", player.Name);
-                _server.Stop();
+                if (IsManagedRoom)
+                {
+                    _logger.LogInformation("Host player {PlayerName} left lobby of room {RoomName}; closing room.", player.Name, RoomName);
+                    _server.CloseRoom(this);
+                }
+                else
+                {
+                    _logger.LogInformation("Host player {PlayerName} left lobby; stopping server.", player.Name);
+                    _server.Stop();
+                }
                 return;
             }
 
@@ -468,32 +603,62 @@ namespace YGOProSharp.Server
 
         public void Chat(Player player, string msg)
         {
+            string outgoing = msg;
+            if (OnBeforePlayerChat != null)
+            {
+                PlayerChatInterceptEventArgs interceptArgs = new(player, outgoing);
+                OnBeforePlayerChat(this, interceptArgs);
+                if (interceptArgs.Handled)
+                    return;
+
+                outgoing = interceptArgs.Message;
+            }
+
             BinaryWriter packet = GamePacketFactory.Create(StocMessage.Chat);
             packet.Write((short)player.Type);
             if (player.Type == (int)PlayerType.Observer)
             {
-                string fullmsg = "[" + player.Name + "]: " + msg;
+                string fullmsg = "[" + player.Name + "]: " + outgoing;
                 CustomMessage(player, fullmsg);
             }
             else
             {
-                packet.WriteUnicode(msg, msg.Length + 1);
+                packet.WriteUnicode(outgoing, outgoing.Length + 1);
                 // 标准 YGOPro / MDPro3 客户端依赖服务端将 STOC_CHAT 广播给全体客户端（含发送者自身）以显示聊天内容。
                 SendToAll(packet);
             }
             if (OnPlayerChat != null)
             {
-                OnPlayerChat(this, new PlayerChatEventArgs(player, msg));
+                OnPlayerChat(this, new PlayerChatEventArgs(player, outgoing));
             }
         }
 
         public void CustomMessage(Player player, string msg)
         {
-            string finalmsg = msg;
+            BroadcastSystemMessage(msg);
+        }
+
+        /// <summary>
+        /// 向房间内所有客户端广播黄色系统消息。
+        /// </summary>
+        public void BroadcastSystemMessage(string msg)
+        {
             BinaryWriter packet = GamePacketFactory.Create(StocMessage.Chat);
             packet.Write((short)PlayerType.Yellow);
-            packet.WriteUnicode(finalmsg, finalmsg.Length + 1);
+            packet.WriteUnicode(msg, msg.Length + 1);
             SendToAll(packet);
+        }
+
+        /// <summary>
+        /// 仅向指定玩家发送黄色系统消息（例如聊天命令回执或规则提示）。
+        /// </summary>
+        public void SendSystemMessage(Player player, string msg)
+        {
+            ArgumentNullException.ThrowIfNull(player);
+            BinaryWriter packet = GamePacketFactory.Create(StocMessage.Chat);
+            packet.Write((short)PlayerType.Yellow);
+            packet.WriteUnicode(msg, msg.Length + 1);
+            player.Send(packet);
         }
 
         public void SetReady(Player player, bool ready)
@@ -510,13 +675,19 @@ namespace YGOProSharp.Server
 
             if (ready)
             {
-                bool ocg = Region == 0 || Region == 2;
-                bool tcg = Region == 1 || Region == 2;
                 int result = 1;
-                
+
                 if (player.Deck != null)
                 {
-                    result = NoCheckDeck ? 0 : player.Deck.Check(Banlist, ocg, tcg, _options.DeckRules);
+                    DeckValidationContext validationContext = new(
+                        this,
+                        player,
+                        player.Deck,
+                        Banlist,
+                        Region,
+                        NoCheckDeck,
+                        _options.DeckRules);
+                    result = _deckValidator.Validate(validationContext);
                 }
                 if (result != 0)
                 {
@@ -749,6 +920,23 @@ namespace YGOProSharp.Server
                         _duel.AddCard(id, pid, CardLocation.Extra);
                     Replay.Writer.Write(id);
                 }
+            }
+
+            for (int i = 0; i < _extraScripts.Count; i++)
+            {
+                string scriptName = _extraScripts[i];
+                if (string.IsNullOrWhiteSpace(scriptName))
+                    continue;
+
+                int preloadResult = _duel.PreloadScript(scriptName);
+                _logger.LogInformation("Preloaded extra duel script {ScriptName} with result {PreloadResult}.", scriptName, preloadResult);
+            }
+
+            if (OnBeforeDuelStart != null)
+            {
+                DuelStartContext duelStartContext = new(this, _duel, opt, (uint)seed);
+                OnBeforeDuelStart(this, duelStartContext);
+                opt = duelStartContext.DuelOptions;
             }
 
             BinaryWriter packet = GamePacketFactory.Create(GameMessage.Start);
@@ -1127,11 +1315,17 @@ namespace YGOProSharp.Server
 
         public void End()
         {
+            if (State == GameState.End)
+                return;
+
             State = GameState.End;
-            _logger.LogInformation("Game ended. Winner={Winner}, DuelCount={DuelCount}.", Winner, DuelCount);
+            _logger.LogInformation("Game ended. Room={RoomName}, Winner={Winner}, DuelCount={DuelCount}.", RoomName, Winner, DuelCount);
 
             SendToAll(GamePacketFactory.Create(StocMessage.DuelEnd));
-            _server.StopDelayed();
+            if (IsManagedRoom)
+                _server.OnRoomEnded(this);
+            else
+                _server.StopDelayed();
 
             if (OnGameEnd != null)
             {
@@ -1253,7 +1447,8 @@ namespace YGOProSharp.Server
             int[] wins = new int[3];
             for (int i = 0; i < DuelCount; i++)
                 wins[MatchResults[i]]++;
-            return wins[0] == 2 || wins[1] == 2 || wins[0] + wins[1] + wins[2] == 3;
+            int maxDuels = Math.Max(1, MatchWins * 2 - 1);
+            return wins[0] >= MatchWins || wins[1] >= MatchWins || wins[0] + wins[1] + wins[2] >= maxDuels;
         }
 
         public void MatchSide()

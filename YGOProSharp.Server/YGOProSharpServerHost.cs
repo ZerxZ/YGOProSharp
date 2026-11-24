@@ -52,6 +52,13 @@ public sealed class YGOProSharpServerHost : IDisposable, IAsyncDisposable
 
     public int ClientCount => Server.ClientCount;
 
+    public int RoomCount => Server.RoomCount;
+
+    /// <summary>
+    /// 获取当前所有活动房间的只读状态快照。
+    /// </summary>
+    public IReadOnlyList<RoomSnapshot> GetRooms() => Server.GetRooms();
+
     /// <summary>
     /// 按 <see cref="ServerOptions.EnableNetworkListener"/> 启动核心服务端（不自动开启后台循环，适合手动调用 <see cref="Tick"/>）。
     /// </summary>

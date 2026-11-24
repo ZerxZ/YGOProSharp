@@ -1,12 +1,13 @@
 using Microsoft.Extensions.Logging;
-using YGOProSharp.Abstractions.Ocg;
-using YGOProSharp.Core.Cards;
 using YGOProSharp.Abstractions.Logging;
+using YGOProSharp.Abstractions.Ocg;
+using YGOProSharp.Core;
+using YGOProSharp.Core.Cards;
 
 namespace YGOProSharp.Server;
 
 /// <summary>
-/// 主库入口（library entrypoint），由 CLI host 调用，用来串接配置、数据 provider、native runtime 和核心 tick loop。
+/// 主库入口（library entrypoint），由 CLI host 调用，用来串接配置、分层 DIY/扩展资源、native runtime 和核心 tick loop。
 /// </summary>
 public static class YGOProSharpServer
 {
@@ -20,7 +21,7 @@ public static class YGOProSharpServer
     }
 
     /// <summary>
-    /// 根据配置加载卡库、禁限表并初始化 native runtime，返回可直接托管或手动 Tick 的 <see cref="YGOProSharpServerHost"/>。
+    /// 根据配置加载基础与扩展/DIY 卡库、脚本、禁限表并初始化 native runtime，返回可直接托管或手动 Tick 的 <see cref="YGOProSharpServerHost"/>。
     /// </summary>
     public static YGOProSharpServerHost CreateHost(ServerOptions options, IOcgRuntime runtime)
     {
@@ -37,6 +38,16 @@ public static class YGOProSharpServer
         await host.RunLoopAsync(tickDelayMilliseconds: 1, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// 按加载顺序解析最终卡片数据库（<c>.cdb</c>）列表（基础卡库在前，expansions / diy / ExtraDatabases 在后以实现覆盖），
+    /// 供服务端与内嵌 WindBot 共享同一套 DIY 卡库。
+    /// </summary>
+    public static IReadOnlyList<string> ResolveDatabasePaths(ServerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return DiscoverAssets(options).DatabasePaths;
+    }
+
     internal static CoreServer InitializeCoreServer(ServerOptions options, IOcgRuntime runtime)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -47,39 +58,58 @@ public static class YGOProSharpServer
         string rootPath = options.RootPath;
         string scriptDirectory = options.ScriptDirectory;
         string databaseFile = options.DatabaseFile;
-        string databaseFullPath = Path.Combine(Path.GetFullPath(rootPath), databaseFile);
         int port = options.Port;
         ClientVersion = options.ClientVersion;
         ICardDatabaseManager cardDatabaseManager = new SqliteCardDatabaseManager();
+
+        DiscoveredAssets assets = DiscoverAssets(options);
+
         logger.LogInformation(
-            "Starting server with RootPath={RootPath}, ScriptDirectory={ScriptDirectory}, DatabaseFile={DatabaseFile}, ClientVersion={ClientVersion}, Port={Port}, EnableNetworkListener={EnableNetworkListener}.",
+            "Starting server with RootPath={RootPath}, ScriptDirectory={ScriptDirectory}, DatabaseFile={DatabaseFile}, ClientVersion={ClientVersion}, Port={Port}, EnableNetworkListener={EnableNetworkListener}, EnableMultiRoom={EnableMultiRoom}, DatabaseCount={DatabaseCount}, ScriptDirs={ScriptDirCount}, ScriptArchives={ArchiveCount}, BanlistFiles={BanlistFileCount}.",
             rootPath,
             scriptDirectory,
             databaseFile,
             ClientVersion,
             port,
-            options.EnableNetworkListener);
+            options.EnableNetworkListener,
+            options.EnableMultiRoom,
+            assets.DatabasePaths.Count,
+            assets.ScriptDirectories.Count,
+            assets.ScriptArchives.Count,
+            assets.BanlistPaths.Count);
 
         ICardRepository cardRepository;
         try
         {
-            cardRepository = cardDatabaseManager.LoadCards(databaseFullPath);
-            logger.LogInformation("Loaded card database from {DatabasePath}.", databaseFullPath);
+            if (assets.DatabasePaths.Count == 0 || !File.Exists(assets.PrimaryDatabasePath))
+                throw new FileNotFoundException("Could not find the cards database.", assets.PrimaryDatabasePath);
+
+            ICardRepository diskRepository = assets.DatabasePaths.Count == 1
+                ? cardDatabaseManager.LoadCards(assets.DatabasePaths[0])
+                : cardDatabaseManager.LoadCards(assets.DatabasePaths);
+
+            cardRepository = options.AdditionalCardRepositories.Count == 0
+                ? diskRepository
+                : new CompositeCardRepository(options.AdditionalCardRepositories.Concat([diskRepository]));
+
+            logger.LogInformation("Loaded {DatabaseCount} card database(s). Primary={DatabasePath}.", assets.DatabasePaths.Count, assets.PrimaryDatabasePath);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Failed to load card database from {DatabasePath}.", databaseFullPath);
+            logger.LogError(ex, "Failed to load card database from {DatabasePath}.", assets.PrimaryDatabasePath);
             throw;
         }
 
-        string banlistPath = Path.IsPathRooted(options.BanlistFile)
-            ? options.BanlistFile
-            : Path.Combine(Path.GetFullPath(rootPath), options.BanlistFile);
-        if (!File.Exists(banlistPath) && File.Exists(options.BanlistFile))
-            banlistPath = options.BanlistFile;
+        if (assets.BanlistPaths.Count == 1)
+            BanlistManager.Init(assets.BanlistPaths[0]);
+        else if (assets.BanlistPaths.Count > 1)
+            BanlistManager.Init(assets.BanlistPaths);
+        else
+            BanlistManager.Init(assets.PrimaryBanlistPath);
 
-        BanlistManager.Init(banlistPath);
-        logger.LogInformation("Loaded banlist from {BanlistPath}.", banlistPath);
+        logger.LogInformation("Loaded {BanlistCount} banlist(s) from {BanlistFileCount} file(s).", BanlistManager.Banlists.Count, assets.BanlistPaths.Count);
+
+        IScriptProvider scriptProvider = BuildScriptProvider(options, assets, logger);
         try
         {
             runtime.Initialize(new OcgRuntimeOptions(
@@ -87,15 +117,210 @@ public static class YGOProSharpServer
                 scriptDirectory,
                 databaseFile,
                 new RepositoryCardDataProvider(cardRepository),
-                new FileScriptProvider(rootPath, scriptDirectory)));
+                scriptProvider));
             logger.LogInformation("Native OCG runtime initialized.");
         }
         catch (Exception ex)
         {
+            if (scriptProvider is IDisposable disposableProvider)
+                disposableProvider.Dispose();
             logger.LogError(ex, "Failed to initialize native OCG runtime.");
             throw;
         }
 
-        return new CoreServer(runtime.DuelFactory, cardRepository, options);
+        return new CoreServer(runtime.DuelFactory, cardRepository, options, scriptProvider as IDisposable);
     }
+
+    private static IScriptProvider BuildScriptProvider(ServerOptions options, DiscoveredAssets assets, ILogger logger)
+    {
+        List<IScriptProvider> providers = new();
+
+        // 1. 最高优先级：代码级注入的脚本 provider（例如内存 DIY 规则脚本）
+        for (int i = 0; i < options.AdditionalScriptProviders.Count; i++)
+        {
+            if (options.AdditionalScriptProviders[i] is not null)
+                providers.Add(options.AdditionalScriptProviders[i]);
+        }
+
+        // 2. 分层目录：显式 ExtraScriptDirectories -> diy/script -> expansions/script -> 基础 script/
+        if (assets.ScriptDirectories.Count > 0)
+            providers.Add(new FileScriptProvider(assets.ScriptDirectories));
+
+        // 3. 压缩扩展包：.ypk / .zip（高优先级在前）
+        for (int i = 0; i < assets.ScriptArchives.Count; i++)
+        {
+            string archivePath = assets.ScriptArchives[i];
+            try
+            {
+                providers.Add(new ZipArchiveScriptProvider(archivePath));
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to open script archive {ArchivePath}; skipping.", archivePath);
+            }
+        }
+
+        if (providers.Count == 1)
+            return providers[0];
+
+        // 仅释放内部创建的 ZipArchiveScriptProvider，不错误释放调用方外部持有的 AdditionalScriptProviders。
+        return new CompositeScriptProvider(providers, disposeChildren: options.AdditionalScriptProviders.Count == 0);
+    }
+
+    private static DiscoveredAssets DiscoverAssets(ServerOptions options)
+    {
+        string rootFullPath = Path.GetFullPath(options.RootPath);
+        string primaryDbPath = ResolvePath(rootFullPath, options.DatabaseFile);
+        string baseScriptDir = ResolvePath(rootFullPath, options.ScriptDirectory);
+        string primaryBanlistPath = ResolveBanlistPath(rootFullPath, options.BanlistFile);
+
+        List<string> expansionRoots = new();
+        if (options.AutoLoadExpansions)
+        {
+            string defaultExpansions = Path.Combine(rootFullPath, "expansions");
+            if (Directory.Exists(defaultExpansions))
+                expansionRoots.Add(defaultExpansions);
+
+            string defaultDiy = Path.Combine(rootFullPath, "diy");
+            if (Directory.Exists(defaultDiy))
+                expansionRoots.Add(defaultDiy);
+        }
+
+        foreach (string extraRoot in options.ExpansionDirectories)
+        {
+            if (string.IsNullOrWhiteSpace(extraRoot))
+                continue;
+
+            string resolved = ResolvePath(rootFullPath, extraRoot);
+            if (Directory.Exists(resolved))
+                expansionRoots.Add(resolved);
+        }
+
+        expansionRoots = expansionRoots.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        // 数据库顺序：基础 cards.cdb -> expansions/*.cdb -> diy/*.cdb -> 显式 ExtraDatabases（后者覆盖前者）
+        List<string> databasePaths = new();
+        if (File.Exists(primaryDbPath))
+            databasePaths.Add(primaryDbPath);
+
+        foreach (string expansionRoot in expansionRoots)
+        {
+            foreach (string cdb in Directory.EnumerateFiles(expansionRoot, "*.cdb", SearchOption.TopDirectoryOnly).OrderBy(static p => p, StringComparer.OrdinalIgnoreCase))
+                databasePaths.Add(Path.GetFullPath(cdb));
+        }
+
+        foreach (string extraDb in options.ExtraDatabases)
+        {
+            if (string.IsNullOrWhiteSpace(extraDb))
+                continue;
+
+            string resolved = ResolvePath(rootFullPath, extraDb);
+            if (File.Exists(resolved))
+                databasePaths.Add(resolved);
+        }
+
+        databasePaths = databasePaths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        // 脚本目录顺序（前者优先）：显式 ExtraScriptDirectories -> expansionRoots 倒序中的 script/ -> 基础 script/
+        List<string> scriptDirs = new();
+        foreach (string extraDir in options.ExtraScriptDirectories)
+        {
+            if (string.IsNullOrWhiteSpace(extraDir))
+                continue;
+
+            string resolved = ResolvePath(rootFullPath, extraDir);
+            if (Directory.Exists(resolved))
+                scriptDirs.Add(resolved);
+        }
+
+        for (int i = expansionRoots.Count - 1; i >= 0; i--)
+        {
+            string expScriptDir = Path.Combine(expansionRoots[i], "script");
+            if (Directory.Exists(expScriptDir))
+                scriptDirs.Add(Path.GetFullPath(expScriptDir));
+        }
+
+        scriptDirs.Add(baseScriptDir);
+        scriptDirs = scriptDirs.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        // 脚本压缩包顺序（前者优先）：显式 ExtraScriptArchives -> expansionRoots 倒序中的 *.ypk/*.zip
+        List<string> scriptArchives = new();
+        foreach (string extraArchive in options.ExtraScriptArchives)
+        {
+            if (string.IsNullOrWhiteSpace(extraArchive))
+                continue;
+
+            string resolved = ResolvePath(rootFullPath, extraArchive);
+            if (File.Exists(resolved))
+                scriptArchives.Add(resolved);
+        }
+
+        for (int i = expansionRoots.Count - 1; i >= 0; i--)
+        {
+            IEnumerable<string> archives = Directory
+                .EnumerateFiles(expansionRoots[i], "*.*", SearchOption.TopDirectoryOnly)
+                .Where(static p => p.EndsWith(".ypk", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(static p => p, StringComparer.OrdinalIgnoreCase);
+
+            foreach (string archive in archives)
+                scriptArchives.Add(Path.GetFullPath(archive));
+        }
+
+        scriptArchives = scriptArchives.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        // 禁限表顺序（前者靠前，作为 index 0）：显式 ExtraBanlistFiles -> expansionRoots 倒序中的 lflist.conf -> 基础 lflist.conf
+        List<string> banlistPaths = new();
+        foreach (string extraBanlist in options.ExtraBanlistFiles)
+        {
+            if (string.IsNullOrWhiteSpace(extraBanlist))
+                continue;
+
+            string resolved = ResolveBanlistPath(rootFullPath, extraBanlist);
+            if (File.Exists(resolved))
+                banlistPaths.Add(resolved);
+        }
+
+        for (int i = expansionRoots.Count - 1; i >= 0; i--)
+        {
+            string expBanlist = Path.Combine(expansionRoots[i], "lflist.conf");
+            if (File.Exists(expBanlist))
+                banlistPaths.Add(Path.GetFullPath(expBanlist));
+        }
+
+        if (File.Exists(primaryBanlistPath))
+            banlistPaths.Add(primaryBanlistPath);
+
+        banlistPaths = banlistPaths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        return new DiscoveredAssets(
+            primaryDbPath,
+            primaryBanlistPath,
+            databasePaths,
+            scriptDirs,
+            scriptArchives,
+            banlistPaths);
+    }
+
+    private static string ResolvePath(string rootFullPath, string path)
+    {
+        return Path.IsPathRooted(path)
+            ? Path.GetFullPath(path)
+            : Path.GetFullPath(Path.Combine(rootFullPath, path));
+    }
+
+    private static string ResolveBanlistPath(string rootFullPath, string banlistFile)
+    {
+        string resolved = ResolvePath(rootFullPath, banlistFile);
+        if (!File.Exists(resolved) && File.Exists(banlistFile))
+            return Path.GetFullPath(banlistFile);
+        return resolved;
+    }
+
+    private sealed record DiscoveredAssets(
+        string PrimaryDatabasePath,
+        string PrimaryBanlistPath,
+        List<string> DatabasePaths,
+        List<string> ScriptDirectories,
+        List<string> ScriptArchives,
+        List<string> BanlistPaths);
 }
