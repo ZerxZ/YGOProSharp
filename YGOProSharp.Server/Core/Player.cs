@@ -26,6 +26,10 @@ namespace YGOProSharp.Server
             Deck = deck;
         }
         public string JoinPassword { get; private set; } = string.Empty;
+        public string RawPlayerInfoName { get; private set; } = string.Empty;
+        public string? Vpass { get; private set; }
+        public string SeatOrigin { get; set; } = "human";
+        public string? RemoteAddress => _client.RemoteIPAddress?.ToString();
         private readonly CoreServer? _server;
         private YGOClient _client;
         private readonly ILogger<Player> _logger;
@@ -171,7 +175,19 @@ namespace YGOProSharp.Server
         {
             if (Name != null)
                 return;
-            Name = packet.ReadUnicode(20);
+            string rawName = packet.ReadUnicode(20);
+            RawPlayerInfoName = rawName;
+            int dollarIndex = rawName.IndexOf('$');
+            if (dollarIndex > 0)
+            {
+                Name = rawName[..dollarIndex].Trim();
+                Vpass = rawName[(dollarIndex + 1)..];
+            }
+            else
+            {
+                Name = rawName;
+                Vpass = null;
+            }
             _logger.LogInformation("Player identified as {PlayerName}.", Name);
         }
 

@@ -349,7 +349,20 @@ public sealed class OperationalDatabaseManager
 
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        // 2. 检查是否已存在有效的超级管理员账号
+        // 2. 解析可选显式指定的管理员用户名与密码（未填则走默认策略）
+        string? explicitAdminUser = ResolveBootstrapSetting(_options.BootstrapAdminUser, "YGOPRO_ADMIN_USER", "YGOPRO_BOOTSTRAP_ADMIN_USER");
+        string? configuredPassword = ResolveBootstrapSetting(_options.BootstrapAdminPassword, "YGOPRO_ADMIN_PASSWORD", "YGOPRO_BOOTSTRAP_ADMIN_PASSWORD");
+
+        if (!string.IsNullOrWhiteSpace(explicitAdminUser) && explicitAdminUser.Trim().Length < 2)
+            throw new ArgumentException("自定义管理员用户名长度至少需要 2 个字符。");
+
+        if (!string.IsNullOrWhiteSpace(configuredPassword))
+        {
+            (bool pwValid, string? pwErr) = Argon2PasswordHasher.ValidatePasswordStrength(configuredPassword, explicitAdminUser);
+            if (!pwValid)
+                throw new ArgumentException(pwErr ?? "自定义管理员密码不符合要求。");
+        }
+
         bool hasSuperAdmin = await db.PanelUserRoles
             .AnyAsync(ur => ur.Role.Code == BuiltInRoleCodes.SuperAdmin && ur.User.Enabled, cancellationToken)
             .ConfigureAwait(false);
@@ -357,14 +370,87 @@ public sealed class OperationalDatabaseManager
         if (hasSuperAdmin)
         {
             PanelUserEntity firstAdmin = await db.PanelUsers
+                .Include(u => u.UserRoles)
                 .Where(u => u.Enabled && u.UserRoles.Any(ur => ur.Role.Code == BuiltInRoleCodes.SuperAdmin))
+                .OrderBy(u => u.CreatedAt)
                 .FirstAsync(cancellationToken)
                 .ConfigureAwait(false);
-            return new BootstrapAdminResult(false, firstAdmin.Username, null, firstAdmin.MustChangePassword);
+
+            // 若未在命令行/环境变量显式指定自定义用户名或密码，则保留已有管理员配置不变
+            if (string.IsNullOrWhiteSpace(explicitAdminUser) && string.IsNullOrWhiteSpace(configuredPassword))
+                return new BootstrapAdminResult(false, firstAdmin.Username, null, firstAdmin.MustChangePassword);
+
+            PanelUserEntity targetAdmin = firstAdmin;
+            if (!string.IsNullOrWhiteSpace(explicitAdminUser))
+            {
+                string trimmedTarget = explicitAdminUser.Trim();
+                string normTarget = trimmedTarget.ToLowerInvariant();
+                PanelUserEntity? matchedByName = await db.PanelUsers
+                    .Include(u => u.UserRoles)
+                    .FirstOrDefaultAsync(u => u.NormalizedUsername == normTarget, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (matchedByName is not null && matchedByName.Id != firstAdmin.Id)
+                {
+                    targetAdmin = matchedByName;
+                    targetAdmin.Enabled = true;
+                    if (superAdminRole is not null && targetAdmin.UserRoles.All(ur => ur.RoleId != superAdminRole.Id))
+                    {
+                        db.PanelUserRoles.Add(new PanelUserRoleEntity
+                        {
+                            UserId = targetAdmin.Id,
+                            RoleId = superAdminRole.Id
+                        });
+                    }
+                }
+                else
+                {
+                    string previousUsername = targetAdmin.Username;
+                    targetAdmin.Username = trimmedTarget;
+                    targetAdmin.NormalizedUsername = normTarget;
+                    if (string.Equals(targetAdmin.DisplayName, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(targetAdmin.DisplayName, previousUsername, StringComparison.OrdinalIgnoreCase))
+                    {
+                        targetAdmin.DisplayName = trimmedTarget;
+                    }
+
+                    List<McpTokenEntity> ownedTokens = await db.McpTokens
+                        .Where(t => t.OwnerUserId == targetAdmin.Id)
+                        .ToListAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                    foreach (McpTokenEntity t in ownedTokens)
+                        t.OwnerUsername = trimmedTarget;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(configuredPassword))
+            {
+                targetAdmin.PasswordHash = passwordHasher.HashPassword(configuredPassword);
+                targetAdmin.MustChangePassword = false;
+                targetAdmin.FailedLoginCount = 0;
+                targetAdmin.LockedUntil = null;
+            }
+
+            db.AuditLogs.Add(new AuditLogEntity
+            {
+                ActorType = "system",
+                ActorName = "bootstrap",
+                Action = "auth.configure_admin",
+                Target = targetAdmin.Username,
+                Result = "ok",
+                DetailJson = $"{{\"passwordUpdated\":{(!string.IsNullOrWhiteSpace(configuredPassword) ? "true" : "false")}}}"
+            });
+
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            _logger.LogInformation(
+                "Applied custom super_admin configuration for '{AdminUsername}' (PasswordUpdated={PasswordUpdated}).",
+                targetAdmin.Username,
+                !string.IsNullOrWhiteSpace(configuredPassword));
+
+            return new BootstrapAdminResult(false, targetAdmin.Username, null, targetAdmin.MustChangePassword);
         }
 
-        string adminUsername = ResolveBootstrapSetting(_options.BootstrapAdminUser, "YGOPRO_BOOTSTRAP_ADMIN_USER") ?? "admin";
-        string? configuredPassword = ResolveBootstrapSetting(_options.BootstrapAdminPassword, "YGOPRO_BOOTSTRAP_ADMIN_PASSWORD");
+        string adminUsername = explicitAdminUser ?? "admin";
         string? generatedPassword = null;
         bool mustChangePassword;
         string passwordToHash;
@@ -506,13 +592,19 @@ public sealed class OperationalDatabaseManager
         }
     }
 
-    private static string? ResolveBootstrapSetting(string? explicitValue, string envVarName)
+    private static string? ResolveBootstrapSetting(string? explicitValue, params string[] envVarNames)
     {
         if (!string.IsNullOrWhiteSpace(explicitValue))
             return explicitValue.Trim();
 
-        string? env = Environment.GetEnvironmentVariable(envVarName);
-        return string.IsNullOrWhiteSpace(env) ? null : env.Trim();
+        foreach (string name in envVarNames)
+        {
+            string? env = Environment.GetEnvironmentVariable(name);
+            if (!string.IsNullOrWhiteSpace(env))
+                return env.Trim();
+        }
+
+        return null;
     }
 
     private static string NormalizeConnectionString(PersistenceOptions options)

@@ -370,9 +370,11 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
         Guid userId,
         Guid currentSessionId,
         string currentPassword,
-        string newPassword,
+        string? newPassword,
         string? ip,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? newUsername = null,
+        string? newDisplayName = null)
     {
         await using OperationalDbContext db = _dbManager.CreateDbContext();
         PanelUserEntity? user = await db.PanelUsers
@@ -388,27 +390,77 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
             return (false, "当前原密码不正确。");
         }
 
-        if (string.Equals(currentPassword, newPassword, StringComparison.Ordinal))
-            return (false, "新密码不能与当前密码相同。");
+        bool hasNewUsername = !string.IsNullOrWhiteSpace(newUsername);
+        bool hasNewDisplayName = !string.IsNullOrWhiteSpace(newDisplayName);
+        bool hasNewPassword = !string.IsNullOrWhiteSpace(newPassword);
 
-        (bool valid, string? strengthErr) = Argon2PasswordHasher.ValidatePasswordStrength(newPassword, user.Username);
-        if (!valid)
-            return (false, strengthErr ?? "新密码不符合安全要求。");
+        if (!user.MustChangePassword && !hasNewUsername && !hasNewDisplayName && !hasNewPassword)
+            return (false, $"请填写新的自定义用户名或新密码（密码至少 {Argon2PasswordHasher.MinPasswordLength} 位字符）。");
 
-        user.PasswordHash = _passwordHasher.HashPassword(newPassword);
+        if (hasNewUsername)
+        {
+            string trimmedUser = newUsername!.Trim();
+            if (trimmedUser.Length < 2 || trimmedUser.Length > 64)
+                return (false, "用户名长度需在 2 到 64 个字符之间。");
+
+            string normUser = trimmedUser.ToLowerInvariant();
+            if (!string.Equals(normUser, user.NormalizedUsername, StringComparison.Ordinal))
+            {
+                bool taken = await db.PanelUsers
+                    .AnyAsync(u => u.Id != userId && u.NormalizedUsername == normUser, cancellationToken)
+                    .ConfigureAwait(false);
+                if (taken)
+                    return (false, $"用户名 '{trimmedUser}' 已被占用。");
+            }
+
+            string oldUsername = user.Username;
+            user.Username = trimmedUser;
+            user.NormalizedUsername = normUser;
+            if (!hasNewDisplayName &&
+                (string.Equals(user.DisplayName, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(user.DisplayName, oldUsername, StringComparison.OrdinalIgnoreCase)))
+            {
+                user.DisplayName = trimmedUser;
+            }
+
+            List<McpTokenEntity> myTokens = await db.McpTokens
+                .Where(t => t.OwnerUserId == user.Id)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+            foreach (McpTokenEntity t in myTokens)
+                t.OwnerUsername = trimmedUser;
+        }
+
+        if (hasNewDisplayName)
+            user.DisplayName = newDisplayName!.Trim();
+
+        if (hasNewPassword)
+        {
+            (bool valid, string? strengthErr) = Argon2PasswordHasher.ValidatePasswordStrength(newPassword, user.Username);
+            if (!valid)
+                return (false, strengthErr ?? "新密码不符合要求。");
+
+            user.PasswordHash = _passwordHasher.HashPassword(newPassword!);
+        }
+
         user.MustChangePassword = false;
         user.FailedLoginCount = 0;
         user.LockedUntil = null;
 
-        // 吊销该账号除当前会话外的所有其他活跃会话，并刷新当前会话缓存
-        DateTime now = DateTime.UtcNow;
-        List<PanelSessionEntity> otherSessions = await db.PanelSessions
-            .Where(s => s.UserId == userId && s.Id != currentSessionId && s.RevokedAt == null)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+        int revokedCount = 0;
+        if (hasNewPassword)
+        {
+            // 吊销该账号除当前会话外的所有其他活跃会话，并刷新当前会话缓存
+            DateTime now = DateTime.UtcNow;
+            List<PanelSessionEntity> otherSessions = await db.PanelSessions
+                .Where(s => s.UserId == userId && s.Id != currentSessionId && s.RevokedAt == null)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
 
-        foreach (PanelSessionEntity other in otherSessions)
-            other.RevokedAt = now;
+            foreach (PanelSessionEntity other in otherSessions)
+                other.RevokedAt = now;
+            revokedCount = otherSessions.Count;
+        }
 
         db.AuditLogs.Add(new AuditLogEntity
         {
@@ -419,12 +471,12 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
             Target = user.Username,
             Ip = ip,
             Result = "ok",
-            DetailJson = $"{{\"revokedOtherSessions\":{otherSessions.Count}}}"
+            DetailJson = $"{{\"usernameUpdated\":{(hasNewUsername ? "true" : "false")},\"passwordUpdated\":{(hasNewPassword ? "true" : "false")},\"revokedOtherSessions\":{revokedCount}}}"
         });
 
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await _cache.FlushNamespaceAsync("auth", cancellationToken).ConfigureAwait(false);
-        return (true, "密码修改成功，已自动注销其他设备会话。");
+        return (true, "账号与密码设置已保存。");
     }
 
     // ==================== 2. 用户、角色与权限不放大管理 ====================
@@ -466,13 +518,31 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
         if (!actor.HasPermission(RbacPermissions.UserManage))
             return (false, "缺少 user:manage 权限。", null, null);
 
-        if (string.IsNullOrWhiteSpace(username) || username.Trim().Length < 2)
-            return (false, "用户名长度至少 2 个字符。", null, null);
-
-        string trimmedUsername = username.Trim();
-        string normalizedUsername = trimmedUsername.ToLowerInvariant();
-
         await using OperationalDbContext db = _dbManager.CreateDbContext();
+
+        string trimmedUsername;
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            // 未填写用户名时自动生成默认账号名
+            bool isAdminRole = roleCodes.Any(static r => string.Equals(r, BuiltInRoleCodes.SuperAdmin, StringComparison.OrdinalIgnoreCase));
+            string basePrefix = isAdminRole ? "admin" : (roleCodes.FirstOrDefault()?.Trim().ToLowerInvariant() ?? "user");
+            if (isAdminRole && !await db.PanelUsers.AnyAsync(u => u.NormalizedUsername == "admin", cancellationToken).ConfigureAwait(false))
+            {
+                trimmedUsername = "admin";
+            }
+            else
+            {
+                trimmedUsername = $"{basePrefix}_{TokenCrypto.GenerateShortCode(4).ToLowerInvariant()}";
+            }
+        }
+        else
+        {
+            trimmedUsername = username.Trim();
+            if (trimmedUsername.Length < 2 || trimmedUsername.Length > 64)
+                return (false, "用户名长度需在 2 到 64 个字符之间。", null, null);
+        }
+
+        string normalizedUsername = trimmedUsername.ToLowerInvariant();
         if (await db.PanelUsers.AnyAsync(u => u.NormalizedUsername == normalizedUsername, cancellationToken).ConfigureAwait(false))
             return (false, $"用户名 '{trimmedUsername}' 已存在。", null, null);
 
@@ -561,7 +631,8 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
         UserPermissionsOverride? permissionsOverride,
         bool updateOverride,
         string? ip,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? newUsername = null)
     {
         if (!actor.HasPermission(RbacPermissions.UserManage))
             return (false, "缺少 user:manage 权限。");
@@ -578,6 +649,40 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
 
         if (enabled == false && user.Id == actor.UserId)
             return (false, "不能停用当前登录的自身账号。");
+
+        if (!string.IsNullOrWhiteSpace(newUsername))
+        {
+            string trimmedNewUser = newUsername.Trim();
+            if (trimmedNewUser.Length < 2 || trimmedNewUser.Length > 64)
+                return (false, "用户名长度需在 2 到 64 个字符之间。");
+
+            string normNewUser = trimmedNewUser.ToLowerInvariant();
+            if (!string.Equals(normNewUser, user.NormalizedUsername, StringComparison.Ordinal))
+            {
+                bool exists = await db.PanelUsers
+                    .AnyAsync(u => u.Id != targetUserId && u.NormalizedUsername == normNewUser, cancellationToken)
+                    .ConfigureAwait(false);
+                if (exists)
+                    return (false, $"用户名 '{trimmedNewUser}' 已被占用。");
+            }
+
+            string prevName = user.Username;
+            user.Username = trimmedNewUser;
+            user.NormalizedUsername = normNewUser;
+            if (string.IsNullOrWhiteSpace(displayName) &&
+                (string.Equals(user.DisplayName, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(user.DisplayName, prevName, StringComparison.OrdinalIgnoreCase)))
+            {
+                user.DisplayName = trimmedNewUser;
+            }
+
+            List<McpTokenEntity> userTokens = await db.McpTokens
+                .Where(t => t.OwnerUserId == user.Id)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+            foreach (McpTokenEntity t in userTokens)
+                t.OwnerUsername = trimmedNewUser;
+        }
 
         List<PanelRoleEntity> nextRoles = roleCodes is not null
             ? await db.PanelRoles.Where(r => roleCodes.Contains(r.Code)).ToListAsync(cancellationToken).ConfigureAwait(false)
@@ -667,28 +772,61 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
         AuthenticatedPrincipal actor,
         Guid targetUserId,
         string? ip,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? customPassword = null,
+        bool? mustChangePassword = null)
     {
         if (!actor.HasPermission(RbacPermissions.UserManage))
             return (false, "缺少 user:manage 权限。", null);
 
         await using OperationalDbContext db = _dbManager.CreateDbContext();
         PanelUserEntity? user = await db.PanelUsers
+            .Include(u => u.UserRoles)
+            .ThenInclude(ur => ur.Role)
             .FirstOrDefaultAsync(u => u.Id == targetUserId, cancellationToken)
             .ConfigureAwait(false);
 
         if (user is null)
             return (false, "目标用户不存在。", null);
 
-        string tempPassword = TokenCrypto.GenerateBootstrapPassword(20);
-        user.PasswordHash = _passwordHasher.HashPassword(tempPassword);
-        user.MustChangePassword = true;
+        // 权限不放大保护：低权限管理员不可重置更高权限账号（如 super_admin）的密码
+        HashSet<string> targetEffective = RbacPolicyEvaluator.ComputeEffectivePermissions(
+            user.UserRoles.Where(static ur => ur.Role is not null).Select(static ur => RbacPolicyEvaluator.ParsePermissionsJson(ur.Role.PermissionsJson)),
+            RbacPolicyEvaluator.ParseOverrideJson(user.PermissionsOverrideJson));
+        if (!RbacPolicyEvaluator.IsSubsetOfActorPermissions(actor.EffectivePermissions, targetEffective))
+        {
+            await AppendAuditAsync("panel_user", actor.UserId.ToString(), actor.Username, "user.reset_password", RbacPermissions.UserManage, user.Username, ip, "privilege_escalation_blocked", null, cancellationToken).ConfigureAwait(false);
+            return (false, "权限不放大保护：无法重置拥有高于自身权限的账号密码。", null);
+        }
+
+        string? generatedTempPassword = null;
+        string rawPasswordToSet;
+        bool forceChange;
+
+        if (string.IsNullOrWhiteSpace(customPassword))
+        {
+            generatedTempPassword = TokenCrypto.GenerateBootstrapPassword(16);
+            rawPasswordToSet = generatedTempPassword;
+            forceChange = mustChangePassword ?? true;
+        }
+        else
+        {
+            (bool valid, string? pwErr) = Argon2PasswordHasher.ValidatePasswordStrength(customPassword, user.Username);
+            if (!valid)
+                return (false, pwErr ?? "自定义密码不符合要求。", null);
+
+            rawPasswordToSet = customPassword;
+            forceChange = mustChangePassword ?? false;
+        }
+
+        user.PasswordHash = _passwordHasher.HashPassword(rawPasswordToSet);
+        user.MustChangePassword = forceChange;
         user.FailedLoginCount = 0;
         user.LockedUntil = null;
 
         DateTime now = DateTime.UtcNow;
         List<PanelSessionEntity> sessions = await db.PanelSessions
-            .Where(s => s.UserId == user.Id && s.RevokedAt == null)
+            .Where(s => s.UserId == user.Id && s.Id != actor.SessionId && s.RevokedAt == null)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
         foreach (PanelSessionEntity s in sessions)
@@ -704,12 +842,16 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
             Target = user.Username,
             Ip = ip,
             Result = "ok",
-            DetailJson = $"{{\"revokedSessions\":{sessions.Count}}}"
+            DetailJson = $"{{\"customPassword\":{(generatedTempPassword is null ? "true" : "false")},\"revokedSessions\":{sessions.Count}}}"
         });
 
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await _cache.FlushNamespaceAsync("auth", cancellationToken).ConfigureAwait(false);
-        return (true, "已重置一次性密码并强制下次登录改密。", tempPassword);
+
+        string msg = generatedTempPassword is null
+            ? $"已将用户 '{user.Username}' 的密码更新为自定义密码。"
+            : "已重置为默认随机密码并要求下次登录确认。";
+        return (true, msg, generatedTempPassword);
     }
 
     public async Task<IReadOnlyList<PanelSessionEntity>> ListSessionsAsync(
@@ -1293,6 +1435,63 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
         return entity;
     }
 
+    public async Task<TournamentDeckEntity> SubmitPlayerTournamentDeckAsync(
+        string tournamentTag,
+        string playerName,
+        string ydkContent,
+        int mainCount,
+        int extraCount,
+        int sideCount,
+        string? ip,
+        CancellationToken cancellationToken = default)
+    {
+        string tag = string.IsNullOrWhiteSpace(tournamentTag) ? "default" : tournamentTag.Trim();
+        string normPlayer = playerName.Trim().ToLowerInvariant();
+        string hash = TokenCrypto.ComputeSha256Hex(ydkContent.Replace("\r\n", "\n").Trim());
+
+        await using OperationalDbContext db = _dbManager.CreateDbContext();
+        TournamentDeckEntity? entity = await db.TournamentDecks
+            .FirstOrDefaultAsync(d => d.TournamentTag == tag && d.NormalizedPlayerName == normPlayer, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (entity is null)
+        {
+            entity = new TournamentDeckEntity
+            {
+                TournamentTag = tag,
+                PlayerName = playerName.Trim(),
+                NormalizedPlayerName = normPlayer,
+                YdkContent = ydkContent,
+                DeckHash = hash,
+                MainCount = mainCount,
+                ExtraCount = extraCount,
+                SideCount = sideCount
+            };
+            db.TournamentDecks.Add(entity);
+        }
+        else
+        {
+            entity.PlayerName = playerName.Trim();
+            entity.YdkContent = ydkContent;
+            entity.DeckHash = hash;
+            entity.MainCount = mainCount;
+            entity.ExtraCount = extraCount;
+            entity.SideCount = sideCount;
+        }
+
+        db.AuditLogs.Add(new AuditLogEntity
+        {
+            ActorType = "anonymous",
+            ActorName = playerName.Trim(),
+            Action = "tournament_deck.player_submit",
+            Target = $"{tag}:{playerName.Trim()}",
+            Ip = ip,
+            Result = "ok"
+        });
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return entity;
+    }
+
     // ==================== 5. 对局战报落库与云录像 R#<id> ====================
 
     public async Task<DuelRecordEntity> SaveDuelRecordAsync(
@@ -1431,6 +1630,130 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
 
         string fullPath = ResolveReplayFilePath(record.ObserverFramesPath);
         return File.Exists(fullPath) ? await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false) : null;
+    }
+
+    // ==================== 6. DIY 提案门禁（Proposal Gate） ====================
+
+    public async Task<IReadOnlyList<DiyProposalEntity>> ListDiyProposalsAsync(
+        string? statusFilter = null,
+        string? packageId = null,
+        int limit = 100,
+        CancellationToken cancellationToken = default)
+    {
+        int clamped = Math.Clamp(limit, 1, 300);
+        await using OperationalDbContext db = _dbManager.CreateDbContext();
+        IQueryable<DiyProposalEntity> q = db.DiyProposals.AsNoTracking();
+
+        if (!string.IsNullOrWhiteSpace(statusFilter))
+        {
+            string normStatus = statusFilter.Trim().ToLowerInvariant();
+            q = q.Where(p => p.Status == normStatus);
+        }
+
+        if (!string.IsNullOrWhiteSpace(packageId))
+        {
+            string normPkg = packageId.Trim();
+            q = q.Where(p => p.PackageId == normPkg);
+        }
+
+        return await q.OrderByDescending(p => p.CreatedAt).Take(clamped).ToListAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<DiyProposalEntity?> GetDiyProposalByIdAsync(Guid proposalId, CancellationToken cancellationToken = default)
+    {
+        await using OperationalDbContext db = _dbManager.CreateDbContext();
+        return await db.DiyProposals.AsNoTracking().FirstOrDefaultAsync(p => p.Id == proposalId, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<DiyProposalEntity> CreateDiyProposalAsync(
+        string packageId,
+        string title,
+        string diffJson,
+        Guid? proposerTokenId,
+        string proposerName,
+        string actorType = "panel_user",
+        string? actorId = null,
+        string? ip = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(packageId))
+            throw new ArgumentException("PackageId cannot be empty.", nameof(packageId));
+
+        DiyProposalEntity entity = new()
+        {
+            PackageId = packageId.Trim(),
+            ProposerTokenId = proposerTokenId,
+            Title = string.IsNullOrWhiteSpace(title) ? $"DIY 提案 ({packageId.Trim()})" : title.Trim(),
+            DiffJson = string.IsNullOrWhiteSpace(diffJson) ? "{}" : diffJson,
+            Status = "pending"
+        };
+
+        await using OperationalDbContext db = _dbManager.CreateDbContext();
+        db.DiyProposals.Add(entity);
+        db.AuditLogs.Add(new AuditLogEntity
+        {
+            ActorType = actorType,
+            ActorId = actorId,
+            ActorName = string.IsNullOrWhiteSpace(proposerName) ? "unknown" : proposerName.Trim(),
+            Action = "diy.proposal_create",
+            Target = $"{entity.PackageId}:{entity.Title}",
+            Ip = ip,
+            Result = "ok"
+        });
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return entity;
+    }
+
+    public async Task<(bool Success, string Message, DiyProposalEntity? Proposal)> ReviewDiyProposalAsync(
+        AuthenticatedPrincipal reviewer,
+        Guid proposalId,
+        bool approve,
+        string? reviewComment,
+        Func<DiyProposalEntity, CancellationToken, Task<(bool Applied, string? ErrorMessage)>>? applyApprovedChangesAsync,
+        string? ip,
+        CancellationToken cancellationToken = default)
+    {
+        if (!reviewer.HasPermission(RbacPermissions.DiyReviewProposal))
+            return (false, "缺少 diy:review_proposal 审批权限。", null);
+
+        await using OperationalDbContext db = _dbManager.CreateDbContext();
+        DiyProposalEntity? proposal = await db.DiyProposals.FirstOrDefaultAsync(p => p.Id == proposalId, cancellationToken).ConfigureAwait(false);
+        if (proposal is null)
+            return (false, "提案不存在。", null);
+
+        if (!string.Equals(proposal.Status, "pending", StringComparison.OrdinalIgnoreCase))
+            return (false, $"该提案当前已处于 '{proposal.Status}' 状态，无法重复审批。", proposal);
+
+        if (approve && applyApprovedChangesAsync is not null)
+        {
+            (bool applied, string? applyErr) = await applyApprovedChangesAsync(proposal, cancellationToken).ConfigureAwait(false);
+            if (!applied)
+            {
+                await AppendAuditAsync("panel_user", reviewer.UserId.ToString(), reviewer.Username, "diy.proposal_approve", RbacPermissions.DiyReviewProposal, proposal.Id.ToString(), ip, "error", applyErr, cancellationToken).ConfigureAwait(false);
+                return (false, $"应用提案变更失败：{applyErr}", proposal);
+            }
+        }
+
+        proposal.Status = approve ? "approved" : "rejected";
+        proposal.ReviewerUserId = reviewer.UserId;
+        proposal.ReviewComment = string.IsNullOrWhiteSpace(reviewComment) ? null : reviewComment.Trim();
+        proposal.ReviewedAt = DateTime.UtcNow;
+
+        db.AuditLogs.Add(new AuditLogEntity
+        {
+            ActorType = "panel_user",
+            ActorId = reviewer.UserId.ToString(),
+            ActorName = reviewer.Username,
+            Action = approve ? "diy.proposal_approve" : "diy.proposal_reject",
+            PermissionChecked = RbacPermissions.DiyReviewProposal,
+            Target = $"{proposal.PackageId}:{proposal.Title}",
+            Ip = ip,
+            Result = "ok",
+            DetailJson = proposal.ReviewComment is null ? null : JsonSerializer.Serialize(new { comment = proposal.ReviewComment })
+        });
+
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return (true, approve ? "提案已批准并原子生效。" : "提案已驳回。", proposal);
     }
 
     // ==================== 6. 全链路审计日志 ====================

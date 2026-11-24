@@ -3,8 +3,10 @@ using WindBot.Game.AI.Lua;
 using YGOProSharp.Abstractions.Scripting;
 using YGOProSharp.Core;
 using YGOProSharp.Core.Cards;
+using YGOProSharp.Persistence;
 using YGOProSharp.Protocol;
 using YGOProSharp.Server;
+using YGOProSharp.Web;
 
 namespace YGOProSharp.Cli;
 
@@ -296,6 +298,183 @@ public static class CliOptionsFactory
             if (!string.IsNullOrWhiteSpace(trimmed))
                 target.Add(trimmed);
         }
+    }
+
+    public static bool ShouldEnableAdminPanel(CliConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        if (configuration.Has("EnableAdmin"))
+            return configuration.GetBool("EnableAdmin");
+
+        if (configuration.Has("EnableWeb"))
+            return configuration.GetBool("EnableWeb");
+
+        if (configuration.Has("AdminPort") || configuration.Has("AdminHost") ||
+            configuration.Has("WebPort") || configuration.Has("WebHost"))
+        {
+            return true;
+        }
+
+        return ParseEnvBool("YGOPRO_ENABLE_ADMIN") || ParseEnvBool("YGOPRO_ENABLE_WEB");
+    }
+
+    public static bool ShouldEnableUserPortal(CliConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        if (configuration.Has("EnablePortal"))
+            return configuration.GetBool("EnablePortal");
+
+        if (configuration.Has("PortalPort") || configuration.Has("PortalHost"))
+            return true;
+
+        if (configuration.Has("EnableWeb"))
+            return configuration.GetBool("EnableWeb");
+
+        return ParseEnvBool("YGOPRO_ENABLE_PORTAL") || ParseEnvBool("YGOPRO_ENABLE_WEB");
+    }
+
+    public static bool ShouldEnableWeb(CliConfiguration configuration)
+    {
+        return ShouldEnableAdminPanel(configuration) || ShouldEnableUserPortal(configuration);
+    }
+
+    public static bool ShouldEnablePersistence(CliConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        if (ShouldEnableAdminPanel(configuration) || ShouldEnableUserPortal(configuration))
+            return true;
+
+        if (configuration.Has("EnablePersistence"))
+            return configuration.GetBool("EnablePersistence");
+
+        return configuration.Has("DbProvider") ||
+               configuration.Has("DbConnectionString") ||
+               configuration.Has("RedisUrl") ||
+               configuration.Has("AdminUser") ||
+               configuration.Has("AdminPassword") ||
+               configuration.Has("BootstrapAdminUser") ||
+               configuration.Has("BootstrapAdminPassword") ||
+               !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("YGOPRO_DB_PROVIDER")) ||
+               !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("YGOPRO_DB_CONNECTION_STRING")) ||
+               !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("YGOPRO_REDIS_URL")) ||
+               !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("YGOPRO_ADMIN_USER")) ||
+               !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("YGOPRO_ADMIN_PASSWORD"));
+    }
+
+    private static bool ParseEnvBool(string envVarName)
+    {
+        string? env = Environment.GetEnvironmentVariable(envVarName);
+        return !string.IsNullOrWhiteSpace(env) &&
+               (env.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+                env.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                env.Equals("yes", StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static PersistenceOptions CreatePersistenceOptions(CliConfiguration configuration, ServerOptions serverOptions)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(serverOptions);
+
+        string? rawProvider = configuration.GetString("DbProvider") ?? Environment.GetEnvironmentVariable("YGOPRO_DB_PROVIDER");
+        OperationalDbProvider provider = PersistenceOptions.ParseProvider(rawProvider);
+
+        string defaultSqlitePath = Path.Combine(serverOptions.RootPath, "data", "db", "ygoprosharp.db");
+        string connectionString = configuration.GetString("DbConnectionString")
+                                  ?? Environment.GetEnvironmentVariable("YGOPRO_DB_CONNECTION_STRING")
+                                  ?? $"Data Source={defaultSqlitePath}";
+
+        string? redisUrl = configuration.GetString("RedisUrl") ?? Environment.GetEnvironmentVariable("YGOPRO_REDIS_URL");
+        string replayDirectory = configuration.GetString("ReplayDirectory")
+                                 ?? Path.Combine(serverOptions.RootPath, "data", "replays");
+
+        string? adminUser = configuration.GetString("AdminUser") ?? configuration.GetString("BootstrapAdminUser");
+        string? adminPassword = configuration.GetString("AdminPassword") ?? configuration.GetString("BootstrapAdminPassword");
+
+        return new PersistenceOptions
+        {
+            DbProvider = provider,
+            ConnectionString = connectionString,
+            RedisUrl = string.IsNullOrWhiteSpace(redisUrl) ? null : redisUrl.Trim(),
+            ReplayDirectory = replayDirectory,
+            BootstrapAdminUser = string.IsNullOrWhiteSpace(adminUser) ? null : adminUser.Trim(),
+            BootstrapAdminPassword = string.IsNullOrWhiteSpace(adminPassword) ? null : adminPassword.Trim(),
+            SessionTtlHours = configuration.GetInt("SessionTtlHours", 24),
+            MaxLoginFailures = configuration.GetInt("MaxLoginFailures", 5),
+            LockoutMinutes = configuration.GetInt("LockoutMinutes", 15)
+        };
+    }
+
+    public static WebControlOptions CreateWebControlOptions(
+        CliConfiguration configuration,
+        Func<Game, string?, string?, int, IReadOnlyList<string>>? windBotSpawner = null,
+        Func<IReadOnlyList<string>>? availableBotDecksProvider = null,
+        Func<INamedCardRepository>? namedCardRepositoryProvider = null)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        string host = configuration.GetString("AdminHost")
+                      ?? configuration.GetString("WebHost")
+                      ?? Environment.GetEnvironmentVariable("YGOPRO_ADMIN_HOST")
+                      ?? Environment.GetEnvironmentVariable("YGOPRO_WEB_HOST")
+                      ?? "127.0.0.1";
+
+        int port = 7912;
+        if (configuration.Has("AdminPort"))
+            port = configuration.GetInt("AdminPort", 7912);
+        else if (configuration.Has("WebPort"))
+            port = configuration.GetInt("WebPort", 7912);
+        else if (int.TryParse(Environment.GetEnvironmentVariable("YGOPRO_ADMIN_PORT") ?? Environment.GetEnvironmentVariable("YGOPRO_WEB_PORT"), out int envPort))
+            port = envPort;
+
+        int? portalPort = ShouldEnableUserPortal(configuration)
+            ? ResolvePortalPort(configuration)
+            : null;
+
+        return new WebControlOptions
+        {
+            Host = host,
+            Port = port,
+            PortalPort = portalPort,
+            RequireHttpsCookie = configuration.GetBool("RequireHttpsCookie", false),
+            StaticFilesRoot = configuration.GetString("WebStaticRoot"),
+            WindBotSpawner = windBotSpawner,
+            AvailableBotDecksProvider = availableBotDecksProvider,
+            NamedCardRepositoryProvider = namedCardRepositoryProvider
+        };
+    }
+
+    public static UserPortalOptions CreateUserPortalOptions(
+        CliConfiguration configuration,
+        Func<INamedCardRepository>? namedCardRepositoryProvider = null)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        string host = configuration.GetString("PortalHost")
+                      ?? Environment.GetEnvironmentVariable("YGOPRO_PORTAL_HOST")
+                      ?? "127.0.0.1";
+
+        int port = ResolvePortalPort(configuration);
+
+        return new UserPortalOptions
+        {
+            Host = host,
+            Port = port,
+            PublicGameHost = configuration.GetString("PublicGameHost") ?? Environment.GetEnvironmentVariable("YGOPRO_PUBLIC_GAME_HOST"),
+            StaticFilesRoot = configuration.GetString("WebStaticRoot"),
+            NamedCardRepositoryProvider = namedCardRepositoryProvider
+        };
+    }
+
+    private static int ResolvePortalPort(CliConfiguration configuration)
+    {
+        if (configuration.Has("PortalPort"))
+            return configuration.GetInt("PortalPort", 7913);
+        if (int.TryParse(Environment.GetEnvironmentVariable("YGOPRO_PORTAL_PORT"), out int envPort))
+            return envPort;
+        return 7913;
     }
 
     public static WindBotServerModeOptions CreateWindBotServerModeOptions(CliConfiguration configuration, WindBotRuntimeOptions runtimeOptions)

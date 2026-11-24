@@ -110,6 +110,11 @@ public sealed record ServerOptions
     /// </summary>
     public bool RandomDeckRerollPerMatchDuel { get; init; } = true;
 
+    /// <summary>
+    /// 可选的玩家入房准入拦截器（用于接入外部封禁表、vpass 核验或 <c>R#&lt;id&gt;</c> 云录像处理，保持 Server 不依赖持久化层）。
+    /// </summary>
+    public Func<PlayerJoinAccessContext, PlayerJoinAccessDecision>? JoinAccessValidator { get; init; }
+
     public GameOptions Game { get; init; } = new();
 }
 

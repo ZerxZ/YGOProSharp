@@ -20,6 +20,10 @@
         <ProjectReference Include="..\YGOProSharp.WindBot\YGOProSharp.WindBot.csproj" />
     </ItemGroup>
 
+    <ItemGroup Condition="Exists('wwwroot')">
+        <Content Include="wwwroot\**\*" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+
     <ItemGroup>
         <None Include="..\LICENSE" Pack="true" PackagePath="\" />
     </ItemGroup>

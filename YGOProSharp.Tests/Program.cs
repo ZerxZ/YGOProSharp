@@ -3,10 +3,12 @@ using System.Buffers.Binary;
 using System.Collections.Specialized;
 using System.IO.Compression;
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using YGOProSharp.Abstractions.Ocg;
@@ -16,12 +18,19 @@ using YGOProSharp.Core;
 using YGOProSharp.Core.Cards;
 using YGOProSharp.Abstractions.Logging;
 using YGOProSharp.Cli;
+using YGOProSharp.Persistence;
+using YGOProSharp.Persistence.Caching;
+using YGOProSharp.Persistence.Entities;
+using YGOProSharp.Persistence.Security;
 using YGOProSharp.Protocol;
 using YGOProSharp.Protocol.Enums;
 using YGOProSharp.Protocol.Utils;
 using YGOProSharp.NativeApi;
 using YGOProSharp.Server;
 using YGOProSharp.Server.Addons;
+using YGOProSharp.Web;
+using YGOProSharp.Web.Logging;
+using YGOProSharp.Web.Services;
 
 ListLoggerProvider logProvider = TestLog.Provider;
 using ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
@@ -117,6 +126,13 @@ await RunAsync("Four WindBots complete an in-memory 2v2 Tag duel end-to-end", Fo
 Run("Core YDK serializer, preset pool, and random deck generator enforce rules and 1v1/2v2 mirror symmetry", CoreYdkPresetPoolAndRandomDeckGeneratorEnforceRulesAndMirrorSymmetry);
 Run("Core reloadable providers and DiyPackageManager enforce sandbox checks and atomic hot reload", CoreReloadableProvidersAndDiyPackageManagerValidateAndHotSwap);
 await RunAsync("Server random deck rooms support deckless ready, BO3 siding, sudden death ED, and maintenance mode", ServerRandomDeckMatchSidingSuddenDeathAndMaintenanceModeWorkAsync);
+Run("Project boundaries isolate operational persistence, web, and zero built-in LLM SDKs", ProjectBoundariesIsolatePersistenceWebAndForbidLlmSdks);
+Run("CLI maps persistence and Web control plane options", CliMapsPersistenceAndWebControlOptions);
+await RunAsync("Persistence store enforces SQLite WAL, Argon2id lockout, RBAC ceiling, HybridCache tickets, and bans", PersistenceStoreEnforcesSqliteWalArgon2RbacCeilingTicketsAndBansAsync);
+await RunAsync("Web control host enforces auth, mandatory password change, CSRF, streamer IP redaction, WS tickets, and R# cloud replays", WebControlHostEnforcesAuthMustChangePasswordCsrfStreamerRedactionAndJoinHooksAsync);
+Run("Core DIY card editor, strings.conf parser, multi-package conflict analyzer, and .ypk export work", CoreDiyCardEditorConflictAnalyzerStringsConfAndYpkExportWork);
+await RunAsync("Web DIY Studio sandbox, proposal approval hot-reload, .ypk export, and DIYRD live duel work end-to-end", WebDiyStudioSandboxProposalsHotReloadAndDiyDuelEndToEndAsync);
+await RunAsync("Empty catalog startup and three-port isolation between game server, admin panel, and user portal work", EmptyCatalogStartupAndThreePortAdminPortalIsolationWorkAsync);
 
 static void AppLogParsesLogLevels()
 {
@@ -4835,6 +4851,1260 @@ static void PumpServerAndClients(CoreServer server, params YGOClient[] clients)
         server.Tick();
         for (int i = 0; i < clients.Length; i++)
             clients[i].Update();
+    }
+}
+
+static void ProjectBoundariesIsolatePersistenceWebAndForbidLlmSdks()
+{
+    string root = FindRepositoryRoot();
+    string[] coreDomainProjects =
+    [
+        Path.Combine(root, "YGOProSharp.Abstractions"),
+        Path.Combine(root, "YGOProSharp.Core"),
+        Path.Combine(root, "YGOProSharp.Protocol"),
+        Path.Combine(root, "YGOProSharp.NativeApi"),
+        Path.Combine(root, "YGOProSharp.Server"),
+        Path.Combine(root, "YGOProSharp.WindBot")
+    ];
+
+    string[] forbiddenOperationalRefs =
+    [
+        "YGOProSharp.Persistence",
+        "YGOProSharp.Web",
+        "Microsoft.EntityFrameworkCore",
+        "Npgsql",
+        "StackExchange.Redis",
+        "Konscious.Security.Cryptography"
+    ];
+
+    foreach (string projectDir in coreDomainProjects)
+    {
+        AssertDoesNotContainAny(
+            ProjectText(projectDir),
+            forbiddenOperationalRefs,
+            $"{Path.GetFileName(projectDir)} operational isolation");
+    }
+
+    string persistenceDir = Path.Combine(root, "YGOProSharp.Persistence");
+    AssertDoesNotContainAny(
+        ProjectText(persistenceDir),
+        ["YGOProSharp.Protocol", "YGOProSharp.Server", "YGOProSharp.NativeApi", "YGOProSharp.WindBot", "YGOProSharp.Web"],
+        "Persistence upward dependency isolation");
+
+    string[] forbiddenLlmSdkTokens =
+    [
+        "PackageReference Include=\"OpenAI",
+        "PackageReference Include=\"Anthropic",
+        "PackageReference Include=\"Google.GenAI",
+        "PackageReference Include=\"Microsoft.SemanticKernel",
+        "PackageReference Include=\"Microsoft.Extensions.AI.OpenAI"
+    ];
+    foreach (string csproj in Directory.EnumerateFiles(root, "*.csproj", SearchOption.AllDirectories)
+                 .Where(IsRepositorySourcePath))
+    {
+        string xml = File.ReadAllText(csproj);
+        AssertDoesNotContainAny(xml, forbiddenLlmSdkTokens, Path.GetRelativePath(root, csproj));
+    }
+}
+
+static void CliMapsPersistenceAndWebControlOptions()
+{
+    CliConfiguration defaultCfg = CliConfiguration.Load(["Port=7911"]);
+    AssertFalse(CliOptionsFactory.ShouldEnableWeb(defaultCfg));
+    AssertFalse(CliOptionsFactory.ShouldEnablePersistence(defaultCfg));
+
+    CliConfiguration webCfg = CliConfiguration.Load([
+        "RootPath=./srvroot",
+        "EnableWeb=true",
+        "AdminHost=127.0.0.1",
+        "AdminPort=8090",
+        "PortalHost=0.0.0.0",
+        "PortalPort=8091",
+        "PublicGameHost=play.example.com",
+        "RequireHttpsCookie=true",
+        "DbProvider=Postgres",
+        "DbConnectionString=Host=pg;Database=ygoprosharp",
+        "RedisUrl=redis:6379",
+        "AdminUser=ops_root",
+        "AdminPassword=123456",
+        "SessionTtlHours=12"
+    ]);
+
+    AssertTrue(CliOptionsFactory.ShouldEnableWeb(webCfg));
+    AssertTrue(CliOptionsFactory.ShouldEnableAdminPanel(webCfg));
+    AssertTrue(CliOptionsFactory.ShouldEnableUserPortal(webCfg));
+    AssertTrue(CliOptionsFactory.ShouldEnablePersistence(webCfg));
+
+    ServerOptions srvOpts = CliOptionsFactory.CreateServerOptions(webCfg);
+    PersistenceOptions pOpts = CliOptionsFactory.CreatePersistenceOptions(webCfg, srvOpts);
+    WebControlOptions wOpts = CliOptionsFactory.CreateWebControlOptions(webCfg);
+    UserPortalOptions uOpts = CliOptionsFactory.CreateUserPortalOptions(webCfg);
+
+    AssertEqual((int)OperationalDbProvider.Postgres, (int)pOpts.DbProvider);
+    AssertEqual("Host=pg;Database=ygoprosharp", pOpts.ConnectionString);
+    AssertEqual("redis:6379", pOpts.RedisUrl!);
+    AssertEqual("ops_root", pOpts.BootstrapAdminUser!);
+    AssertEqual("123456", pOpts.BootstrapAdminPassword!);
+    AssertEqual(12, pOpts.SessionTtlHours);
+
+    AssertEqual("127.0.0.1", wOpts.Host);
+    AssertEqual(8090, wOpts.Port);
+    AssertEqual(8091, wOpts.PortalPort!.Value);
+    AssertTrue(wOpts.RequireHttpsCookie);
+
+    AssertEqual("0.0.0.0", uOpts.Host);
+    AssertEqual(8091, uOpts.Port);
+    AssertEqual("play.example.com", uOpts.PublicGameHost!);
+}
+
+static async Task PersistenceStoreEnforcesSqliteWalArgon2RbacCeilingTicketsAndBansAsync()
+{
+    string tempDir = Path.Combine(Path.GetTempPath(), "YGOProSharpPersistTest_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(tempDir);
+
+    try
+    {
+        PersistenceOptions options = new()
+        {
+            DbProvider = OperationalDbProvider.Sqlite,
+            ConnectionString = $"Data Source={Path.Combine(tempDir, "ygoprosharp.db")}",
+            ReplayDirectory = Path.Combine(tempDir, "replays"),
+            Argon2MemoryKb = 4096,
+            Argon2Iterations = 1,
+            Argon2Parallelism = 1,
+            MaxLoginFailures = 3,
+            LockoutMinutes = 10,
+            LoginRateLimitCount = 50
+        };
+
+        await using (OperationalStore store = new(options))
+        {
+            BootstrapAdminResult boot = await store.InitializeAsync();
+            AssertTrue(boot.CreatedNewAdmin);
+            AssertTrue(boot.MustChangePassword);
+            AssertTrue(!string.IsNullOrWhiteSpace(boot.GeneratedOneTimePassword) && boot.GeneratedOneTimePassword!.Length >= 20);
+
+            DatabaseHealthSnapshot dbHealth = await store.Database.CheckHealthAsync();
+            AssertTrue(dbHealth.IsHealthy);
+            AssertEqual("wal", dbHealth.JournalMode.ToLowerInvariant());
+            AssertEqual(5, (await store.ListRolesAsync()).Count);
+
+            // 1. 初始管理员登录、密码最少 6 位校验与自定义用户名/密码设置（未填项保持默认）
+            LoginResult firstLogin = await store.LoginAsync("admin", boot.GeneratedOneTimePassword!, "127.0.0.1", "UnitTest");
+            AssertTrue(firstLogin.Success && firstLogin.Principal is not null && firstLogin.Principal.MustChangePassword);
+
+            // 少于 6 位字符被拒绝
+            (bool tooShortRejected, _) = await store.ChangeOwnPasswordAsync(
+                firstLogin.Principal!.UserId,
+                firstLogin.Principal.SessionId,
+                boot.GeneratedOneTimePassword!,
+                "12345",
+                "127.0.0.1");
+            AssertFalse(tooShortRejected);
+
+            // 6 位自定义密码通过，且支持同时自定义管理员用户名
+            (bool changedOk, _) = await store.ChangeOwnPasswordAsync(
+                firstLogin.Principal!.UserId,
+                firstLogin.Principal.SessionId,
+                boot.GeneratedOneTimePassword!,
+                "123456",
+                "127.0.0.1",
+                newUsername: "custom_admin");
+            AssertTrue(changedOk);
+
+            AuthenticatedPrincipal? adminPrincipal = await store.ValidateSessionAsync(firstLogin.SessionToken);
+            AssertTrue(adminPrincipal is not null && !adminPrincipal.MustChangePassword);
+            AssertEqual("custom_admin", adminPrincipal!.Username);
+
+            // 创建用户时未填写用户名与密码则自动采用默认值
+            (bool defaultUserCreated, _, PanelUserEntity? autoUser, string? autoGenPw) = await store.CreateUserAsync(
+                adminPrincipal,
+                "",
+                "",
+                null,
+                [BuiltInRoleCodes.AiOperator],
+                null,
+                mustChangePassword: true,
+                ip: "127.0.0.1");
+            AssertTrue(defaultUserCreated && autoUser is not null && !string.IsNullOrWhiteSpace(autoGenPw));
+            AssertTrue(autoUser!.Username.StartsWith("ai_operator_", StringComparison.OrdinalIgnoreCase));
+
+            // 管理员直接为该用户指定 6 位自定义密码与自定义用户名
+            (bool renameOk, _) = await store.UpdateUserAsync(
+                adminPrincipal,
+                autoUser.Id,
+                displayName: null,
+                enabled: null,
+                unlockAccount: true,
+                roleCodes: null,
+                permissionsOverride: null,
+                updateOverride: false,
+                ip: "127.0.0.1",
+                newUsername: "player_custom");
+            AssertTrue(renameOk);
+
+            (bool customResetOk, _, string? noTempPw) = await store.ResetUserPasswordAsync(
+                adminPrincipal,
+                autoUser.Id,
+                "127.0.0.1",
+                customPassword: "654321");
+            AssertTrue(customResetOk && noTempPw is null);
+            LoginResult customUserLogin = await store.LoginAsync("player_custom", "654321", "127.0.0.1", "UnitTest");
+            AssertTrue(customUserLogin.Success && customUserLogin.Principal is not null && !customUserLogin.Principal.MustChangePassword);
+
+            // 2. 创建附加了 user:manage 的子管理员，验证权限不放大铁律（不能创建 super_admin 或超出自身权限的账号）
+            (bool subCreated, _, _, _) = await store.CreateUserAsync(
+                adminPrincipal!,
+                "sub_judge",
+                "Sub Judge",
+                "Judge#Strong2026!",
+                [BuiltInRoleCodes.Judge],
+                new UserPermissionsOverride([RbacPermissions.UserManage], []),
+                mustChangePassword: false,
+                ip: "127.0.0.1");
+            AssertTrue(subCreated);
+
+            LoginResult subLogin = await store.LoginAsync("sub_judge", "Judge#Strong2026!", "127.0.0.1", "UnitTest");
+            AssertTrue(subLogin.Success && subLogin.Principal is not null);
+
+            (bool escalatedUserOk, _, _, _) = await store.CreateUserAsync(
+                subLogin.Principal!,
+                "evil_root",
+                "Evil Root",
+                "Evil#Strong2026!",
+                [BuiltInRoleCodes.SuperAdmin],
+                null,
+                mustChangePassword: false,
+                ip: "127.0.0.1");
+            AssertFalse(escalatedUserOk);
+
+            IReadOnlyList<AuditLogEntity> escalationAudits = await store.QueryAuditLogsAsync(limit: 10, actionFilter: "user.create");
+            AssertTrue(escalationAudits.Any(a => a.Result == "privilege_escalation_blocked"));
+
+            // 3. 创建 streamer 只读直播员，验证仅能签发 spectator 级 MCP Token，严禁越权签发 player / admin
+            (bool streamerCreated, _, _, _) = await store.CreateUserAsync(
+                adminPrincipal!,
+                "obs_caster",
+                "OBS Caster",
+                "Stream#Strong2026!",
+                [BuiltInRoleCodes.Streamer],
+                null,
+                mustChangePassword: false,
+                ip: "127.0.0.1");
+            AssertTrue(streamerCreated);
+
+            LoginResult streamerLogin = await store.LoginAsync("obs_caster", "Stream#Strong2026!", "127.0.0.1", "UnitTest");
+            AssertTrue(streamerLogin.Success && streamerLogin.Principal is not null && streamerLogin.Principal.IsStreamerOnly);
+
+            (bool issuePlayerBlocked, _, _) = await store.IssueMcpTokenAsync(
+                streamerLogin.Principal!,
+                "IllegalPlayer",
+                McpRoleCodes.Player,
+                null,
+                1,
+                true,
+                12,
+                "127.0.0.1");
+            AssertFalse(issuePlayerBlocked);
+
+            (bool issueSpectatorOk, _, IssuedMcpTokenResult? specIssued) = await store.IssueMcpTokenAsync(
+                streamerLogin.Principal!,
+                "LegalSpectator",
+                McpRoleCodes.Spectator,
+                ["ShowMatch"],
+                2,
+                false,
+                12,
+                "127.0.0.1");
+            AssertTrue(issueSpectatorOk && specIssued is not null);
+
+            ValidatedMcpToken? firstValidated = await store.ValidateMcpTokenAsync(specIssued!.RawToken);
+            ValidatedMcpToken? secondValidated = await store.ValidateMcpTokenAsync(specIssued.RawToken);
+            AssertTrue(firstValidated is not null && secondValidated is not null);
+            AssertEqual(McpRoleCodes.Spectator, secondValidated!.McpRole);
+            AssertTrue(store.Cache.GetStats().L1Hits >= 1);
+
+            AssertTrue(await store.RevokeMcpTokenAsync(streamerLogin.Principal!, specIssued.Entity.Id, "127.0.0.1"));
+            AssertTrue(await store.ValidateMcpTokenAsync(specIssued.RawToken) is null);
+
+            // 4. 验证连续输错密码触发账号防爆破锁定
+            for (int i = 0; i < 3; i++)
+            {
+                LoginResult bad = await store.LoginAsync("sub_judge", "WrongPassword!", "127.0.0.1", "UnitTest");
+                AssertFalse(bad.Success);
+            }
+            LoginResult lockedAttempt = await store.LoginAsync("sub_judge", "Judge#Strong2026!", "127.0.0.1", "UnitTest");
+            AssertFalse(lockedAttempt.Success);
+            AssertTrue(lockedAttempt.StatusCode.Contains("locked", StringComparison.OrdinalIgnoreCase));
+
+            // 5. 验证原子一次性 Ticket（GETDEL 语义）与滑动窗口限流
+            string wsTicket = await store.Cache.IssueOneTimeTicketAsync("ws", "session-xyz", TimeSpan.FromSeconds(30));
+            AssertEqual("session-xyz", (await store.Cache.ConsumeOneTimeTicketAsync("ws", wsTicket))!);
+            AssertTrue(await store.Cache.ConsumeOneTimeTicketAsync("ws", wsTicket) is null);
+
+            AssertTrue((await store.Cache.CheckSlidingWindowAsync("test:ip1", 2, TimeSpan.FromSeconds(60))).Allowed);
+            AssertTrue((await store.Cache.CheckSlidingWindowAsync("test:ip1", 2, TimeSpan.FromSeconds(60))).Allowed);
+            AssertFalse((await store.Cache.CheckSlidingWindowAsync("test:ip1", 2, TimeSpan.FromSeconds(60))).Allowed);
+
+            // 6. 验证 CIDR 封禁匹配、玩家昵称$密码 (vpass) 保护与云录像落库
+            (bool banOk, _, _) = await store.CreateBanAsync(adminPrincipal!, "cidr", "10.88.0.0/16", "Abuse subnet", 60, "127.0.0.1");
+            AssertTrue(banOk);
+            AssertTrue(await store.CheckBanMatchAsync("10.88.12.34", "NormalPlayer", null) is not null);
+            AssertTrue(await store.CheckBanMatchAsync("10.89.0.1", "NormalPlayer", null) is null);
+
+            AssertTrue((await store.VerifyPlayerVpassAsync("Kaiba", "BlueEyes")).Allowed);
+            AssertFalse((await store.VerifyPlayerVpassAsync("Kaiba", null)).Allowed);
+            AssertFalse((await store.VerifyPlayerVpassAsync("Kaiba", "WrongPass")).Allowed);
+            AssertTrue((await store.VerifyPlayerVpassAsync("Kaiba", "BlueEyes")).Allowed);
+
+            byte[] sampleYrp = [0x59, 0x52, 0x50, 0x32, 0x01, 0x02];
+            DuelRecordEntity savedDuel = await store.SaveDuelRecordAsync(new SaveDuelRecordRequest(
+                RoomName: "FinalTable",
+                RoomIdentifier: "M#FinalTable",
+                Mode: 1,
+                Region: 0,
+                MasterRule: 5,
+                StartLp: 8000,
+                HostInfoJson: "{}",
+                RandomDeckMode: "None",
+                IsSuddenDeath: false,
+                DuelCount: 2,
+                TurnCount: 7,
+                WinnerTeam: 0,
+                WinReason: 1,
+                Seed: 42U,
+                StartedAt: DateTime.UtcNow.AddMinutes(-5),
+                EndedAt: DateTime.UtcNow,
+                YrpBytes: sampleYrp,
+                ObserverPacketFrames: null,
+                Players:
+                [
+                    new SaveDuelPlayerSlot(0, 0, "Yugi", "Yugi", "human", "127.0.0.1", "#main\n89631139", null, true),
+                    new SaveDuelPlayerSlot(1, 1, "Kaiba", "Kaiba", "human", "127.0.0.1", "#main\n46986414", null, false)
+                ]));
+            AssertEqual(1L, savedDuel.Id);
+            byte[]? loadedYrp = await store.GetReplayYrpBytesAsync(1L);
+            AssertTrue(loadedYrp is not null);
+            AssertSequenceEqual(sampleYrp, loadedYrp!);
+        }
+
+        // 7. 验证已有数据库二次启动：未传 AdminUser/AdminPassword 保留原设置；显式传入时覆盖自定义管理员用户名与密码
+        await using (OperationalStore reopenDefault = new(options))
+        {
+            BootstrapAdminResult bootKeep = await reopenDefault.InitializeAsync();
+            AssertFalse(bootKeep.CreatedNewAdmin);
+            AssertEqual("custom_admin", bootKeep.Username);
+        }
+
+        await using (OperationalStore reopenCustom = new(options with { BootstrapAdminUser = "boss", BootstrapAdminPassword = "888888" }))
+        {
+            BootstrapAdminResult bootOverride = await reopenCustom.InitializeAsync();
+            AssertEqual("boss", bootOverride.Username);
+            AssertFalse(bootOverride.MustChangePassword);
+            LoginResult bossLogin = await reopenCustom.LoginAsync("boss", "888888", "127.0.0.1", "UnitTest");
+            AssertTrue(bossLogin.Success && bossLogin.Principal is not null && !bossLogin.Principal.MustChangePassword);
+        }
+    }
+    finally
+    {
+        Directory.Delete(tempDir, recursive: true);
+    }
+}
+
+static async Task WebControlHostEnforcesAuthMustChangePasswordCsrfStreamerRedactionAndJoinHooksAsync()
+{
+    string tempDir = Path.Combine(Path.GetTempPath(), "YGOProSharpWebTest_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(tempDir);
+
+    try
+    {
+        PersistenceOptions persistenceOptions = new()
+        {
+            DbProvider = OperationalDbProvider.Sqlite,
+            ConnectionString = $"Data Source={Path.Combine(tempDir, "webops.db")}",
+            ReplayDirectory = Path.Combine(tempDir, "replays"),
+            Argon2MemoryKb = 4096,
+            Argon2Iterations = 1,
+            Argon2Parallelism = 1,
+            LoginRateLimitCount = 50
+        };
+
+        await using (OperationalStore store = new(persistenceOptions))
+        {
+            BootstrapAdminResult boot = await store.InitializeAsync();
+            OperationalServerCoordinator coordinator = new(store);
+
+            ICardRepository cards = TestRepository(TestCard(89631139), TestCard(46986414));
+            ServerOptions serverOptions = new()
+            {
+                RootPath = tempDir,
+                EnableNetworkListener = false,
+                EnableMultiRoom = true,
+                Game = new GameOptions { MasterRule = 5, NoCheckDeck = true },
+                AddonFactories = [coordinator.CreateRoomAddonFactory()],
+                JoinAccessValidator = coordinator.CreateJoinAccessValidator()
+            };
+
+            LogRingBuffer logBuffer = new(200);
+            logBuffer.Append(LogLevel.Information, "TestCategory", "Internal server diagnostic line");
+
+            await using YGOProSharpServerHost serverHost = new(duelFactory: null, cardRepository: cards, options: serverOptions);
+            serverHost.StartBackgroundLoop(tickDelayMilliseconds: 2, embedded: true);
+
+            await using WebControlHost webHost = new(
+                serverHost,
+                store,
+                coordinator,
+                new WebControlOptions { Host = "127.0.0.1", Port = 0 },
+                logBuffer);
+            await webHost.StartAsync();
+
+            string baseUrl = webHost.BoundAddresses.First();
+            Uri baseUri = new(baseUrl);
+
+            CookieContainer adminCookies = new();
+            using HttpClient adminHttp = new(new HttpClientHandler { CookieContainer = adminCookies, UseCookies = true })
+            {
+                BaseAddress = baseUri
+            };
+
+            // 1. /healthz 公开探针与未登录拦截
+            using (HttpResponseMessage healthRes = await adminHttp.GetAsync("/healthz"))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)healthRes.StatusCode);
+                using JsonDocument healthDoc = JsonDocument.Parse(await healthRes.Content.ReadAsStringAsync());
+                AssertEqual("healthy", healthDoc.RootElement.GetProperty("status").GetString()!);
+                AssertEqual("wal", healthDoc.RootElement.GetProperty("database").GetProperty("journalMode").GetString()!.ToLowerInvariant());
+            }
+
+            using (HttpResponseMessage unauthRes = await adminHttp.GetAsync("/api/v1/server/status"))
+            {
+                AssertEqual((int)HttpStatusCode.Unauthorized, (int)unauthRes.StatusCode);
+            }
+
+            // 2. 初始超管登录、首次强制改密门禁与 Cookie CSRF 防护校验
+            string adminCsrf;
+            using (HttpResponseMessage loginRes = await adminHttp.PostAsync(
+                       "/api/v1/auth/login",
+                       new StringContent(JsonSerializer.Serialize(new { username = "admin", password = boot.GeneratedOneTimePassword }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)loginRes.StatusCode);
+                using JsonDocument loginDoc = JsonDocument.Parse(await loginRes.Content.ReadAsStringAsync());
+                adminCsrf = loginDoc.RootElement.GetProperty("csrfToken").GetString()!;
+                AssertTrue(loginDoc.RootElement.GetProperty("user").GetProperty("mustChangePassword").GetBoolean());
+            }
+
+            using (HttpResponseMessage blockedByMustChange = await adminHttp.GetAsync("/api/v1/server/status"))
+            {
+                AssertEqual((int)HttpStatusCode.Forbidden, (int)blockedByMustChange.StatusCode);
+                using JsonDocument errDoc = JsonDocument.Parse(await blockedByMustChange.Content.ReadAsStringAsync());
+                AssertEqual("must_change_password", errDoc.RootElement.GetProperty("error").GetString()!);
+            }
+
+            // 未携带 X-CSRF-Token 的 Cookie 写操作必须被拒绝
+            using (HttpResponseMessage csrfFail = await adminHttp.PostAsync(
+                       "/api/v1/auth/change-password",
+                       new StringContent(JsonSerializer.Serialize(new { currentPassword = boot.GeneratedOneTimePassword, newPassword = "Stardust#Dragon2026!" }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.Forbidden, (int)csrfFail.StatusCode);
+                using JsonDocument csrfDoc = JsonDocument.Parse(await csrfFail.Content.ReadAsStringAsync());
+                AssertEqual("csrf_invalid", csrfDoc.RootElement.GetProperty("error").GetString()!);
+            }
+
+            adminHttp.DefaultRequestHeaders.Add("X-CSRF-Token", adminCsrf);
+            using (HttpResponseMessage changeOk = await adminHttp.PostAsync(
+                       "/api/v1/auth/change-password",
+                       new StringContent(JsonSerializer.Serialize(new { currentPassword = boot.GeneratedOneTimePassword, newPassword = "Stardust#Dragon2026!" }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)changeOk.StatusCode);
+            }
+
+            using (HttpResponseMessage statusOk = await adminHttp.GetAsync("/api/v1/server/status"))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)statusOk.StatusCode);
+            }
+
+            // 3. 面板预创建房间（自动签发 2 枚斗蛐蛐 player Token）并让一名模拟玩家进入房间
+            using (HttpResponseMessage createRoomRes = await adminHttp.PostAsync(
+                       "/api/v1/rooms",
+                       new StringContent(JsonSerializer.Serialize(new { roomName = "ShowMatch1", rulePrefix = "RD", issuePlayerTokens = true }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)createRoomRes.StatusCode);
+                using JsonDocument roomDoc = JsonDocument.Parse(await createRoomRes.Content.ReadAsStringAsync());
+                AssertEqual(2, roomDoc.RootElement.GetProperty("issuedPlayerTokens").GetArrayLength());
+            }
+
+            YGOClient humanClient = serverHost.ConnectLocalClient();
+            SendPlayerJoin(humanClient, "PlayerAlpha$secretpw", "ShowMatch1");
+            DateTime joinDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+            while (DateTime.UtcNow < joinDeadline)
+            {
+                humanClient.Update();
+                if (serverHost.Server.TryGetRoom("ShowMatch1", out Game? g) && g is not null && g.CreateSnapshot().DuelistCount == 1)
+                    break;
+                await Task.Delay(10);
+            }
+
+            // 4. 创建 streamer 账号，验证直播防窥（剥离玩家 IP、隐藏私密房口令、脱敏系统日志）与禁止越权签发 player Token
+            using (HttpResponseMessage createStreamerRes = await adminHttp.PostAsync(
+                       "/api/v1/users",
+                       new StringContent(JsonSerializer.Serialize(new
+                       {
+                           username = "live_obs",
+                           displayName = "Live Streamer",
+                           initialPassword = "StreamerPassword#2026!",
+                           roleCodes = new[] { BuiltInRoleCodes.Streamer },
+                           mustChangePassword = false
+                       }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)createStreamerRes.StatusCode);
+            }
+
+            CookieContainer streamerCookies = new();
+            using HttpClient streamerHttp = new(new HttpClientHandler { CookieContainer = streamerCookies, UseCookies = true })
+            {
+                BaseAddress = baseUri
+            };
+            using (HttpResponseMessage sLoginRes = await streamerHttp.PostAsync(
+                       "/api/v1/auth/login",
+                       new StringContent(JsonSerializer.Serialize(new { username = "live_obs", password = "StreamerPassword#2026!" }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)sLoginRes.StatusCode);
+                using JsonDocument sDoc = JsonDocument.Parse(await sLoginRes.Content.ReadAsStringAsync());
+                streamerHttp.DefaultRequestHeaders.Add("X-CSRF-Token", sDoc.RootElement.GetProperty("csrfToken").GetString()!);
+            }
+
+            // Admin 可见完整房间密码与席位 IP；Streamer 响应中两者均被剥离
+            using (HttpResponseMessage adminRoomsRes = await adminHttp.GetAsync("/api/v1/rooms"))
+            using (HttpResponseMessage streamerRoomsRes = await streamerHttp.GetAsync("/api/v1/rooms"))
+            {
+                using JsonDocument aRooms = JsonDocument.Parse(await adminRoomsRes.Content.ReadAsStringAsync());
+                using JsonDocument sRooms = JsonDocument.Parse(await streamerRoomsRes.Content.ReadAsStringAsync());
+
+                JsonElement aRoom = aRooms.RootElement.GetProperty("rooms")[0];
+                JsonElement sRoom = sRooms.RootElement.GetProperty("rooms")[0];
+
+                AssertEqual("RD#ShowMatch1", aRoom.GetProperty("joinPassword").GetString()!);
+                AssertEqual("127.0.0.1", aRoom.GetProperty("slots")[0].GetProperty("clientIp").GetString()!);
+                AssertEqual("PlayerAlpha", aRoom.GetProperty("slots")[0].GetProperty("playerName").GetString()!);
+
+                AssertFalse(sRoom.TryGetProperty("joinPassword", out JsonElement sPw) && sPw.ValueKind != JsonValueKind.Null);
+                AssertFalse(sRoom.GetProperty("slots")[0].TryGetProperty("clientIp", out JsonElement sIp) && sIp.ValueKind != JsonValueKind.Null);
+            }
+
+            using (HttpResponseMessage streamerLogsRes = await streamerHttp.GetAsync("/api/v1/system/logs"))
+            {
+                using JsonDocument lDoc = JsonDocument.Parse(await streamerLogsRes.Content.ReadAsStringAsync());
+                AssertTrue(lDoc.RootElement.GetProperty("redactedForStreamer").GetBoolean());
+                AssertEqual(0, lDoc.RootElement.GetProperty("entries").GetArrayLength());
+            }
+
+            using (HttpResponseMessage streamerEscalation = await streamerHttp.PostAsync(
+                       "/api/v1/mcp/tokens",
+                       new StringContent(JsonSerializer.Serialize(new { name = "TryPlayer", mcpRole = "player" }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.Forbidden, (int)streamerEscalation.StatusCode);
+            }
+
+            // 5. 验证一次性 WebSocket Ticket 握手与防重放
+            string wsTicket;
+            using (HttpResponseMessage ticketRes = await adminHttp.PostAsync("/api/v1/auth/ws-ticket", new StringContent("{}", Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)ticketRes.StatusCode);
+                using JsonDocument tDoc = JsonDocument.Parse(await ticketRes.Content.ReadAsStringAsync());
+                wsTicket = tDoc.RootElement.GetProperty("ticket").GetString()!;
+            }
+
+            Uri wsUri = new($"ws://{baseUri.Host}:{baseUri.Port}/ws/events?ticket={Uri.EscapeDataString(wsTicket)}");
+            using (ClientWebSocket ws = new())
+            {
+                await ws.ConnectAsync(wsUri, CancellationToken.None);
+                byte[] buf = new byte[4096];
+                WebSocketReceiveResult recv = await ws.ReceiveAsync(buf, CancellationToken.None);
+                string welcomeJson = Encoding.UTF8.GetString(buf, 0, recv.Count);
+                using JsonDocument wsDoc = JsonDocument.Parse(welcomeJson);
+                AssertEqual("connected", wsDoc.RootElement.GetProperty("type").GetString()!);
+                await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+            }
+
+            // 同一枚一次性 Ticket 重放必须失败
+            using (ClientWebSocket replayWs = new())
+            {
+                bool rejected = false;
+                try
+                {
+                    await replayWs.ConnectAsync(wsUri, CancellationToken.None);
+                }
+                catch (WebSocketException)
+                {
+                    rejected = true;
+                }
+                AssertTrue(rejected);
+            }
+
+            // 6. 验证客户端输入 R#1 口令直接下发云录像 (.yrp) 以及封禁名单实时拦截进房
+            byte[] cloudYrp = [0x59, 0x52, 0x50, 0x31, 0xAA, 0xBB, 0xCC];
+            await store.SaveDuelRecordAsync(new SaveDuelRecordRequest(
+                RoomName: "CloudRoom",
+                RoomIdentifier: "CloudRoom",
+                Mode: 0,
+                Region: 0,
+                MasterRule: 5,
+                StartLp: 8000,
+                HostInfoJson: "{}",
+                RandomDeckMode: "None",
+                IsSuddenDeath: false,
+                DuelCount: 1,
+                TurnCount: 3,
+                WinnerTeam: 0,
+                WinReason: 2,
+                Seed: 7U,
+                StartedAt: DateTime.UtcNow.AddMinutes(-2),
+                EndedAt: DateTime.UtcNow,
+                YrpBytes: cloudYrp,
+                ObserverPacketFrames: null,
+                Players: []));
+
+            YGOClient replayClient = serverHost.ConnectLocalClient();
+            List<byte[]> replayPackets = new();
+            replayClient.PacketReceivedRaw += p => replayPackets.Add(p.ToArray());
+            SendPlayerJoin(replayClient, "ReplayWatcher", "R#1");
+
+            DateTime replayDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+            while (DateTime.UtcNow < replayDeadline && !replayPackets.Any(p => p.Length > 1 && p[0] == (byte)StocMessage.Replay))
+            {
+                replayClient.Update();
+                await Task.Delay(10);
+            }
+
+            byte[]? receivedReplayPkt = replayPackets.FirstOrDefault(p => p.Length > 1 && p[0] == (byte)StocMessage.Replay);
+            AssertTrue(receivedReplayPkt is not null);
+            AssertSequenceEqual(cloudYrp, receivedReplayPkt!.AsSpan(1).ToArray());
+
+            // 面板添加昵称封禁，验证新连接立即被拦截无法进入房间
+            using (HttpResponseMessage banRes = await adminHttp.PostAsync(
+                       "/api/v1/bans",
+                       new StringContent(JsonSerializer.Serialize(new { targetType = "name", targetValue = "ToxicCheater", reason = "Cheating" }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)banRes.StatusCode);
+            }
+
+            YGOClient bannedClient = serverHost.ConnectLocalClient();
+            List<byte[]> bannedPackets = new();
+            bannedClient.PacketReceivedRaw += p => bannedPackets.Add(p.ToArray());
+            SendPlayerJoin(bannedClient, "ToxicCheater", "ShowMatch1");
+
+            DateTime banDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+            while (DateTime.UtcNow < banDeadline && !bannedPackets.Any(p => p.Length >= 1 && p[0] == (byte)StocMessage.ErrorMsg))
+            {
+                bannedClient.Update();
+                await Task.Delay(10);
+            }
+
+            AssertTrue(bannedPackets.Any(p => p.Length >= 1 && p[0] == (byte)StocMessage.ErrorMsg));
+            AssertTrue(serverHost.Server.TryGetRoom("ShowMatch1", out Game? roomAfterBan) && roomAfterBan!.CreateSnapshot().DuelistCount == 1);
+
+            humanClient.Close();
+            await serverHost.StopAsync();
+        }
+    }
+    finally
+    {
+        Directory.Delete(tempDir, recursive: true);
+    }
+}
+
+static void CoreDiyCardEditorConflictAnalyzerStringsConfAndYpkExportWork()
+{
+    string tempDir = Path.Combine(Path.GetTempPath(), "YGOProSharpDiyPhase2Core_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(tempDir);
+
+    try
+    {
+        SqliteCardDatabaseManager dbMgr = new();
+        DiyPackageManager pkgMgr = new(tempDir, dbMgr);
+        pkgMgr.UpsertManifest(new DiyPackageManifest { Id = "pack-one", Name = "Pack One", Enabled = true });
+
+        // 1. Working Copy 单卡写入（覆盖效果怪兽、灵摆左右刻度、Link 箭头与提示字符串）
+        CardDatabaseValidationResult r1 = pkgMgr.UpsertCard(
+            "pack-one",
+            new DiyCardEntry
+            {
+                Id = 99000101,
+                Ot = 0x4,
+                Setcode = 0xa100,
+                Type = (int)(CardType.Monster | CardType.Effect | CardType.Pendulum),
+                Level = 7,
+                LScale = 2,
+                RScale = 8,
+                Race = (int)CardRace.Warrior,
+                Attribute = (int)CardAttribute.Dark,
+                Attack = 2500,
+                Defense = 2000,
+                Name = "星辉灵摆魔导",
+                Desc = "灵摆与怪兽效果",
+                Strings = ["灵摆回血", "检索星辉"]
+            },
+            "local s,id=GetID()\nfunction s.initial_effect(c)\nend\n");
+        AssertTrue(r1.IsValid);
+
+        CardDatabaseValidationResult r2 = pkgMgr.UpsertCard(
+            "pack-one",
+            new DiyCardEntry
+            {
+                Id = 99000102,
+                Ot = 0x4,
+                Type = (int)(CardType.Monster | CardType.Effect | CardType.Link),
+                Level = 2,
+                LinkMarker = 0x05,
+                Race = (int)CardRace.Cyberse,
+                Attribute = (int)CardAttribute.Light,
+                Attack = 1800,
+                Name = "星辉连接者",
+                Desc = "效果怪兽2只"
+            },
+            "local s,id=GetID()\nfunction s.initial_effect(c)\nend\n");
+        AssertTrue(r2.IsValid);
+
+        DiyCardDetail? pendDetail = pkgMgr.GetCardDetail("pack-one", 99000101);
+        AssertTrue(pendDetail is not null && pendDetail.Card.LScale == 2 && pendDetail.Card.RScale == 8);
+        AssertEqual("灵摆回血", pendDetail!.Card.Strings[0]);
+
+        DiyCardDetail? linkDetail = pkgMgr.GetCardDetail("pack-one", 99000102);
+        AssertTrue(linkDetail is not null && linkDetail.Card.LinkMarker == 0x05 && linkDetail.Card.Defense == 0);
+
+        // 2. strings.conf 与 PNG 卡图魔数头校验
+        StringsConfSummary conf = pkgMgr.SaveStringsConf("pack-one", "!setname 0xa100 星辉\n!counter 0x1999 星辉指示物\n");
+        AssertEqual(1, conf.Setnames.Count);
+        AssertEqual(1, conf.Counters.Count);
+        AssertEqual("星辉", conf.Setnames[0].Name);
+
+        AssertThrows<InvalidOperationException>(() => pkgMgr.SaveCardImage("pack-one", 99000101, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]));
+        byte[] minimalPng = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D];
+        string savedImg = pkgMgr.SaveCardImage("pack-one", 99000101, minimalPng);
+        AssertEqual("99000101.png", savedImg);
+        var readImg = pkgMgr.TryReadCardImage("pack-one", 99000101);
+        AssertTrue(readImg is not null && readImg.Value.ContentType == "image/png");
+
+        // 3. 跨包重复卡密冲突巡检与 .ypk 客户端扩展包导出
+        pkgMgr.UpsertManifest(new DiyPackageManifest { Id = "pack-two", Name = "Pack Two", Enabled = true });
+        pkgMgr.UpsertCard("pack-two", new DiyCardEntry { Id = 99000101, Type = (int)(CardType.Monster | CardType.Normal), Name = "同名冲突卡" });
+
+        DiyGlobalConflictReport conflicts = pkgMgr.AnalyzeAllPackageConflicts();
+        AssertTrue(conflicts.Conflicts.Any(c => c.CardId == 99000101 && c.DefinedInPackages.Count == 2));
+        AssertTrue(conflicts.MissingImagesByPackage.ContainsKey("pack-one")); // 99000102 尚未上传卡图
+
+        byte[] ypkBytes = pkgMgr.ExportPackageAsYpk("pack-one");
+        using (MemoryStream ypkStream = new(ypkBytes))
+        {
+            AssertEqual(0, DiyPackageManager.AuditArchiveEntries(ypkStream).Count);
+        }
+
+        string ypkFile = Path.Combine(tempDir, "pack-one.ypk");
+        File.WriteAllBytes(ypkFile, ypkBytes);
+        using (ZipArchiveScriptProvider zipScripts = new(ypkFile, copyToMemory: true))
+        {
+            AssertTrue(zipScripts.TryGetScript("./script/c99000101.lua", out _));
+        }
+
+        AssertTrue(pkgMgr.DeleteCard("pack-one", 99000102));
+        AssertTrue(pkgMgr.GetCardDetail("pack-one", 99000102) is null);
+    }
+    finally
+    {
+        Directory.Delete(tempDir, recursive: true);
+    }
+}
+
+static async Task WebDiyStudioSandboxProposalsHotReloadAndDiyDuelEndToEndAsync()
+{
+    string tempDir = Path.Combine(Path.GetTempPath(), "YGOProSharpDiyE2E_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(tempDir);
+    Directory.CreateDirectory(Path.Combine(tempDir, "script"));
+
+    try
+    {
+        // 准备基础卡库与最小标准 Lua 常量脚本，使真实 ocgcore 对局与沙盒均可运行
+        List<(int Id, int Ot, int Alias, long Setcode, int Type, int Level, int Race, int Attr, int Atk, int Def, string Name, string Desc)> baseCards = new();
+        for (int i = 1; i <= 15; i++)
+            baseCards.Add((1000 + i, 3, 0, 0, (int)(CardType.Monster | CardType.Normal), 4, 1, 1, 1800, 1000, $"BaseWarrior{i}", "vanilla"));
+        CreateTestCardDb(Path.Combine(tempDir, "cards.cdb"), baseCards);
+
+        await File.WriteAllTextAsync(Path.Combine(tempDir, "script", "constant.lua"), """
+            EFFECT_TYPE_ACTIVATE = 0x0010
+            EFFECT_TYPE_IGNITION = 0x0040
+            EVENT_FREE_CHAIN = 1002
+            LOCATION_MZONE = 0x04
+            CATEGORY_RECOVER = 0x100000
+            REASON_EFFECT = 0x40
+            """);
+        await File.WriteAllTextAsync(Path.Combine(tempDir, "script", "utility.lua"), """
+            function GetID()
+                return self_table, self_code, 1
+            end
+            """);
+        await File.WriteAllTextAsync(Path.Combine(tempDir, "script", "procedure.lua"), "-- procedure stub\n");
+        await File.WriteAllTextAsync(Path.Combine(tempDir, "lflist.conf"), "!TestBanlist\n");
+
+        PersistenceOptions persistenceOptions = new()
+        {
+            DbProvider = OperationalDbProvider.Sqlite,
+            ConnectionString = $"Data Source={Path.Combine(tempDir, "diy_e2e.db")}",
+            ReplayDirectory = Path.Combine(tempDir, "replays"),
+            Argon2MemoryKb = 4096,
+            Argon2Iterations = 1,
+            Argon2Parallelism = 1,
+            LoginRateLimitCount = 50
+        };
+
+        await using (OperationalStore store = new(persistenceOptions))
+        {
+            BootstrapAdminResult boot = await store.InitializeAsync();
+            OperationalServerCoordinator coordinator = new(store);
+
+            ServerOptions serverOptions = new()
+            {
+                RootPath = tempDir,
+                DatabaseFile = "cards.cdb",
+                ScriptDirectory = "script",
+                BanlistFile = "lflist.conf",
+                EnableNetworkListener = false,
+                EnableMultiRoom = true,
+                AutoLoadExpansions = true,
+                AddonFactories = [coordinator.CreateRoomAddonFactory()],
+                JoinAccessValidator = coordinator.CreateJoinAccessValidator(),
+                Game = new GameOptions
+                {
+                    MasterRule = 5,
+                    DeckRules = new DeckRules(MainDeckMinSize: 10, MainDeckMaxSize: 40)
+                }
+            };
+
+            using NativeOcgRuntime runtime = new();
+            await using YGOProSharpServerHost serverHost = YGOProSharpServerHost.Create(serverOptions, runtime);
+            serverHost.StartBackgroundLoop(tickDelayMilliseconds: 2, embedded: true);
+
+            await using WebControlHost webHost = new(
+                serverHost,
+                store,
+                coordinator,
+                new WebControlOptions { Host = "127.0.0.1", Port = 0 });
+            await webHost.StartAsync();
+
+            Uri baseUri = new(webHost.BoundAddresses.First());
+            CookieContainer cookies = new();
+            using HttpClient http = new(new HttpClientHandler { CookieContainer = cookies, UseCookies = true })
+            {
+                BaseAddress = baseUri
+            };
+
+            // 登录并完成首次改密
+            using (HttpResponseMessage loginRes = await http.PostAsync(
+                       "/api/v1/auth/login",
+                       new StringContent(JsonSerializer.Serialize(new { username = "admin", password = boot.GeneratedOneTimePassword }), Encoding.UTF8, "application/json")))
+            {
+                using JsonDocument doc = JsonDocument.Parse(await loginRes.Content.ReadAsStringAsync());
+                http.DefaultRequestHeaders.Add("X-CSRF-Token", doc.RootElement.GetProperty("csrfToken").GetString()!);
+            }
+
+            using (HttpResponseMessage pwRes = await http.PostAsync(
+                       "/api/v1/auth/change-password",
+                       new StringContent(JsonSerializer.Serialize(new { currentPassword = boot.GeneratedOneTimePassword, newPassword = "Starlight#Road2026!" }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)pwRes.StatusCode);
+            }
+
+            var diyHealSpellCard = new
+            {
+                id = 99000001,
+                ot = 4,
+                type = (int)CardType.Spell,
+                name = "星辉回复术",
+                desc = "①：自己回复1000基本分。"
+            };
+
+            string validSpellLua = """
+                local s,id=GetID()
+                function s.initial_effect(c)
+                    local e1=Effect.CreateEffect(c)
+                    e1:SetType(EFFECT_TYPE_ACTIVATE)
+                    e1:SetCode(EVENT_FREE_CHAIN)
+                    e1:SetTarget(s.rectg)
+                    e1:SetOperation(s.recop)
+                    c:RegisterEffect(e1)
+                end
+                function s.rectg(e,tp,eg,ep,ev,re,r,rp,chk)
+                    if chk==0 then return true end
+                    Duel.SetOperationInfo(0,CATEGORY_RECOVER,nil,0,tp,1000)
+                end
+                function s.recop(e,tp,eg,ep,ev,re,r,rp)
+                    Duel.Recover(tp,1000,REASON_EFFECT)
+                end
+                """;
+
+            // 1. 验证 /api/v1/diy/sandbox-test 拦截危险调用、捕获 Lua 运行时崩溃，以及验证有效 DIY 卡在 ocgcore 中发动使 P0 LP 从 8000 升至 9000
+            using (HttpResponseMessage unsafeSandboxRes = await http.PostAsync(
+                       "/api/v1/diy/sandbox-test",
+                       new StringContent(JsonSerializer.Serialize(new { card = diyHealSpellCard, luaScript = "os.execute('calc')" }), Encoding.UTF8, "application/json")))
+            {
+                using JsonDocument d = JsonDocument.Parse(await unsafeSandboxRes.Content.ReadAsStringAsync());
+                JsonElement r = d.RootElement.GetProperty("result");
+                AssertFalse(r.GetProperty("success").GetBoolean());
+                AssertFalse(r.GetProperty("nativeExecuted").GetBoolean());
+                AssertTrue(r.GetProperty("staticAuditViolations").GetArrayLength() > 0);
+            }
+
+            using (HttpResponseMessage brokenLuaRes = await http.PostAsync(
+                       "/api/v1/diy/sandbox-test",
+                       new StringContent(JsonSerializer.Serialize(new { card = diyHealSpellCard, luaScript = "local s,id=GetID()\nfunction s.initial_effect(c)\n call_nonexistent_api()\nend\n" }), Encoding.UTF8, "application/json")))
+            {
+                using JsonDocument d = JsonDocument.Parse(await brokenLuaRes.Content.ReadAsStringAsync());
+                JsonElement r = d.RootElement.GetProperty("result");
+                AssertFalse(r.GetProperty("success").GetBoolean());
+                AssertTrue(r.GetProperty("nativeExecuted").GetBoolean());
+                AssertTrue(r.GetProperty("luaErrors").GetArrayLength() > 0);
+            }
+
+            using (HttpResponseMessage okSandboxRes = await http.PostAsync(
+                       "/api/v1/diy/sandbox-test",
+                       new StringContent(JsonSerializer.Serialize(new { card = diyHealSpellCard, luaScript = validSpellLua, testExecuteFirstActivation = true }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)okSandboxRes.StatusCode);
+                using JsonDocument d = JsonDocument.Parse(await okSandboxRes.Content.ReadAsStringAsync());
+                JsonElement r = d.RootElement.GetProperty("result");
+                AssertTrue(r.GetProperty("success").GetBoolean());
+                AssertTrue(r.GetProperty("nativeExecuted").GetBoolean());
+                AssertEqual(0, r.GetProperty("luaErrors").GetArrayLength());
+                AssertTrue(r.GetProperty("activatableCount").GetInt32() >= 1);
+                AssertEqual(9000, r.GetProperty("postPlayer0Lp").GetInt32());
+            }
+
+            // 2. 通过 Proposal 门禁提交新 DIY 卡 + 主题预组 .ydk，审批后自动落盘并触发免重启热重载
+            string diyPresetYdk = string.Join("\n", ["#main", .. Enumerable.Repeat("99000001", 10), "#extra", "!side"]);
+            Guid proposalId;
+            using (HttpResponseMessage submitPropRes = await http.PostAsync(
+                       "/api/v1/diy/proposals",
+                       new StringContent(JsonSerializer.Serialize(new
+                       {
+                           packageId = "star-diy",
+                           title = "新增星辉回复术与测试盲盒预组",
+                           payload = new
+                           {
+                               cards = new[] { new { card = diyHealSpellCard, luaScript = validSpellLua } },
+                               decks = new[] { new { name = "StarHealPreset", ydkContent = diyPresetYdk } },
+                               stringsConf = "!setname 0xa100 星辉\n"
+                           }
+                       }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)submitPropRes.StatusCode);
+                using JsonDocument d = JsonDocument.Parse(await submitPropRes.Content.ReadAsStringAsync());
+                proposalId = d.RootElement.GetProperty("proposal").GetProperty("id").GetGuid();
+            }
+
+            using (HttpResponseMessage approveRes = await http.PostAsync(
+                       $"/api/v1/diy/proposals/{proposalId}/review",
+                       new StringContent(JsonSerializer.Serialize(new { approve = true, comment = "沙盒已验证通过，准予合并" }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)approveRes.StatusCode);
+                using JsonDocument d = JsonDocument.Parse(await approveRes.Content.ReadAsStringAsync());
+                AssertEqual("approved", d.RootElement.GetProperty("proposal").GetProperty("status").GetString()!);
+                AssertEqual(2L, d.RootElement.GetProperty("reload").GetProperty("catalogVersion").GetInt64());
+                AssertEqual(1, d.RootElement.GetProperty("reload").GetProperty("presetDeckCount").GetInt32());
+            }
+
+            AssertTrue(serverHost.Server.CardRepository.TryGetCard(99000001, out Card hotLoadedCard));
+            AssertEqual(4, hotLoadedCard.Ot);
+
+            // 上传卡图并验证一键导出 .ypk
+            using (MultipartFormDataContent imgForm = new())
+            {
+                ByteArrayContent pngPart = new([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D]);
+                imgForm.Add(pngPart, "image", "99000001.png");
+                using HttpResponseMessage imgRes = await http.PostAsync("/api/v1/diy/packages/star-diy/cards/99000001/image", imgForm);
+                AssertEqual((int)HttpStatusCode.OK, (int)imgRes.StatusCode);
+            }
+
+            using (HttpResponseMessage exportRes = await http.GetAsync("/api/v1/diy/packages/star-diy/export.ypk"))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)exportRes.StatusCode);
+                byte[] ypkBytes = await exportRes.Content.ReadAsByteArrayAsync();
+                using MemoryStream ms = new(ypkBytes);
+                using ZipArchive zip = new(ms, ZipArchiveMode.Read);
+                AssertTrue(zip.GetEntry("cards.cdb") is not null);
+                AssertTrue(zip.GetEntry("script/c99000001.lua") is not null);
+                AssertTrue(zip.GetEntry("pics/99000001.png") is not null);
+                AssertTrue(zip.GetEntry("decks/StarHealPreset.ydk") is not null);
+            }
+
+            // 3. 端到端对局：两名客户端使用 DIYRD,NC#LiveDiyRoom 免传卡组进房，随机抽到刚热重载的 DIY 魔法卡并在实战中成功发动 (+1000 LP)
+            YGOClient p0 = serverHost.ConnectLocalClient();
+            YGOClient p1 = serverHost.ConnectLocalClient();
+            bool sawSelectIdle = false;
+
+            p0.PacketReceivedRaw += pkt =>
+            {
+                if (pkt.Length >= 2 && pkt.Span[0] == (byte)StocMessage.GameMsg)
+                {
+                    GameMessage gm = (GameMessage)pkt.Span[1];
+                    if (gm == GameMessage.SelectIdleCmd)
+                    {
+                        sawSelectIdle = true;
+                    }
+                    else if (gm == GameMessage.SelectPlace)
+                    {
+                        p0.Send([(byte)CtosMessage.Response, 0, (byte)CardLocation.SpellZone, 2]);
+                    }
+                }
+            };
+
+            SendPlayerJoin(p0, "DiyTesterA", "DIYRD,NC#DiyRoom");
+            SendPlayerJoin(p1, "DiyTesterB", "DIYRD,NC#DiyRoom");
+
+            DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(4);
+            Game? diyRoom = null;
+            while (DateTime.UtcNow < deadline)
+            {
+                p0.Update();
+                p1.Update();
+                if (serverHost.Server.TryGetRoom("DiyRoom", out diyRoom) && diyRoom is not null && diyRoom.CreateSnapshot().DuelistCount == 2)
+                    break;
+                await Task.Delay(10);
+            }
+            AssertTrue(diyRoom is not null);
+
+            SendSimpleCtos(p0, CtosMessage.HsReady);
+            SendSimpleCtos(p1, CtosMessage.HsReady);
+            deadline = DateTime.UtcNow + TimeSpan.FromSeconds(4);
+            while (DateTime.UtcNow < deadline && !(diyRoom!.IsReady[0] && diyRoom.IsReady[1]))
+            {
+                p0.Update();
+                p1.Update();
+                await Task.Delay(10);
+            }
+
+            SendSimpleCtos(p0, CtosMessage.HsStart);
+            deadline = DateTime.UtcNow + TimeSpan.FromSeconds(4);
+            while (DateTime.UtcNow < deadline && diyRoom!.State != GameState.Hand)
+            {
+                p0.Update();
+                p1.Update();
+                await Task.Delay(10);
+            }
+
+            SendByteCtos(p0, CtosMessage.HandResult, 2);
+            SendByteCtos(p1, CtosMessage.HandResult, 1);
+            deadline = DateTime.UtcNow + TimeSpan.FromSeconds(4);
+            while (DateTime.UtcNow < deadline && diyRoom!.State != GameState.Starting)
+            {
+                p0.Update();
+                p1.Update();
+                await Task.Delay(10);
+            }
+
+            SendByteCtos(p0, CtosMessage.TpResult, 1);
+
+            deadline = DateTime.UtcNow + TimeSpan.FromSeconds(4);
+            while (DateTime.UtcNow < deadline && !sawSelectIdle)
+            {
+                p0.Update();
+                p1.Update();
+                await Task.Delay(10);
+            }
+
+            AssertTrue(sawSelectIdle);
+            AssertEqual((int)GameState.Duel, (int)diyRoom!.State);
+            AssertTrue(diyRoom.Players[0].Deck.Main.Contains(99000001));
+            AssertEqual(8000, diyRoom.LifePoints[0]);
+
+            // 先攻 Main1 直接发动手牌第 0 张「星辉回复术」((0 << 16) | 5)，验证实战 LP 变为 9000
+            using (MemoryStream actStream = new())
+            using (BinaryWriter w = new(actStream))
+            {
+                w.Write((byte)CtosMessage.Response);
+                w.Write((0 << 16) | 5);
+                p0.Send(actStream.ToArray());
+            }
+
+            deadline = DateTime.UtcNow + TimeSpan.FromSeconds(4);
+            while (DateTime.UtcNow < deadline && diyRoom.LifePoints[0] == 8000)
+            {
+                p0.Update();
+                p1.Update();
+                await Task.Delay(10);
+            }
+
+            AssertEqual(9000, diyRoom.LifePoints[0]);
+
+            p0.Close();
+            p1.Close();
+            await serverHost.StopAsync();
+        }
+    }
+    finally
+    {
+        Directory.Delete(tempDir, recursive: true);
+    }
+}
+
+static async Task EmptyCatalogStartupAndThreePortAdminPortalIsolationWorkAsync()
+{
+    string emptyRoot = Path.Combine(Path.GetTempPath(), "YGOProSharpThreePort_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(emptyRoot);
+
+    try
+    {
+        PersistenceOptions persistenceOptions = new()
+        {
+            DbProvider = OperationalDbProvider.Sqlite,
+            ConnectionString = $"Data Source={Path.Combine(emptyRoot, "data", "db", "ops.db")}",
+            ReplayDirectory = Path.Combine(emptyRoot, "data", "replays"),
+            Argon2MemoryKb = 4096,
+            Argon2Iterations = 1,
+            Argon2Parallelism = 1,
+            LoginRateLimitCount = 50
+        };
+
+        await using (OperationalStore store = new(persistenceOptions))
+        {
+            BootstrapAdminResult boot = await store.InitializeAsync();
+            OperationalServerCoordinator coordinator = new(store);
+
+            // 1. 验证完全空白目录（无 cards.cdb、无 lflist.conf、无 script/）下服务端可平滑启动，不抛 FileNotFoundException
+            ServerOptions serverOptions = new()
+            {
+                RootPath = emptyRoot,
+                Port = 7911,
+                EnableNetworkListener = false,
+                EnableMultiRoom = true,
+                AddonFactories = [coordinator.CreateRoomAddonFactory()],
+                JoinAccessValidator = coordinator.CreateJoinAccessValidator()
+            };
+
+            using ServerTestFakeOcgRuntime fakeRuntime = new();
+            await using YGOProSharpServerHost serverHost = YGOProSharpServer.CreateHost(serverOptions, fakeRuntime);
+            serverHost.StartBackgroundLoop(tickDelayMilliseconds: 2, embedded: true);
+
+            // 2. 在两个完全独立的端口上分别启动后台管理面板 (WebControlHost) 与前台用户面板 (UserPortalHost)
+            await using WebControlHost adminHost = new(
+                serverHost,
+                store,
+                coordinator,
+                new WebControlOptions { Host = "127.0.0.1", Port = 0 });
+            await adminHost.StartAsync();
+
+            await using UserPortalHost portalHost = new(
+                serverHost,
+                store,
+                coordinator,
+                new UserPortalOptions { Host = "127.0.0.1", Port = 0, PublicGameHost = "duel.local" });
+            await portalHost.StartAsync();
+
+            Uri adminUri = new(adminHost.BoundAddresses.First());
+            Uri portalUri = new(portalHost.BoundAddresses.First());
+            AssertTrue(adminUri.Port != portalUri.Port);
+
+            using HttpClient portalHttp = new() { BaseAddress = portalUri };
+            CookieContainer adminCookies = new();
+            using HttpClient adminHttp = new(new HttpClientHandler { CookieContainer = adminCookies, UseCookies = true })
+            {
+                BaseAddress = adminUri
+            };
+
+            // 3. 验证两个端口各自宣告独立角色，且前台用户面板端口物理不存在任何管理后台接口 (404)
+            using (HttpResponseMessage pSurface = await portalHttp.GetAsync("/api/surface"))
+            using (HttpResponseMessage aSurface = await adminHttp.GetAsync("/api/surface"))
+            {
+                using JsonDocument pDoc = JsonDocument.Parse(await pSurface.Content.ReadAsStringAsync());
+                using JsonDocument aDoc = JsonDocument.Parse(await aSurface.Content.ReadAsStringAsync());
+                AssertEqual("portal", pDoc.RootElement.GetProperty("surface").GetString()!);
+                AssertEqual("admin", aDoc.RootElement.GetProperty("surface").GetString()!);
+            }
+
+            foreach (string adminOnlyPath in new[] { "/api/v1/auth/login", "/api/v1/users", "/api/v1/bans", "/api/v1/server/status" })
+            {
+                using HttpResponseMessage res = await portalHttp.GetAsync(adminOnlyPath);
+                AssertEqual((int)HttpStatusCode.NotFound, (int)res.StatusCode);
+            }
+
+            // 4. 模拟玩家进房，验证前台用户面板公开大厅剥离玩家 IP 与私密密码
+            YGOClient p0 = serverHost.ConnectLocalClient();
+            SendPlayerJoin(p0, "PublicDuelist", "M#OpenTable1");
+            DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+            while (DateTime.UtcNow < deadline)
+            {
+                p0.Update();
+                if (serverHost.Server.TryGetRoom("OpenTable1", out Game? g) && g is not null && g.CreateSnapshot().DuelistCount == 1)
+                    break;
+                await Task.Delay(10);
+            }
+
+            using (HttpResponseMessage portalRoomsRes = await portalHttp.GetAsync("/api/portal/rooms"))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)portalRoomsRes.StatusCode);
+                using JsonDocument doc = JsonDocument.Parse(await portalRoomsRes.Content.ReadAsStringAsync());
+                JsonElement room = doc.RootElement.GetProperty("rooms")[0];
+                AssertEqual("OpenTable1", room.GetProperty("roomName").GetString()!);
+                AssertFalse(room.TryGetProperty("joinPassword", out _));
+                AssertFalse(room.GetProperty("slots")[0].TryGetProperty("clientIp", out _));
+            }
+
+            // 5. 验证玩家在前台用户面板自助绑定 $vpass、提交赛事 .ydk 卡组及投递 DIY 新卡提案，并在管理后台收到待审提案
+            using (HttpResponseMessage vpassRes = await portalHttp.PostAsync(
+                       "/api/portal/player/vpass",
+                       new StringContent(JsonSerializer.Serialize(new { playerName = "Yusei", vpass = "Stardust" }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)vpassRes.StatusCode);
+            }
+
+            string fortyCardYdk = string.Join("\n", ["#main", .. Enumerable.Repeat("89631139", 40), "#extra", "!side"]);
+            using (HttpResponseMessage deckRes = await portalHttp.PostAsync(
+                       "/api/portal/tournament-decks",
+                       new StringContent(JsonSerializer.Serialize(new { tournamentTag = "cup01", playerName = "Yusei", ydkContent = fortyCardYdk }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)deckRes.StatusCode);
+            }
+
+            using (HttpResponseMessage propRes = await portalHttp.PostAsync(
+                       "/api/portal/diy/proposals",
+                       new StringContent(JsonSerializer.Serialize(new
+                       {
+                           packageId = "community-diy",
+                           authorName = "Yusei",
+                           card = new { id = 99200001, ot = 4, type = 0x21, name = "社区投稿新星", desc = "测试投稿" },
+                           luaScript = "local s,id=GetID()\nfunction s.initial_effect(c)\nend\n"
+                       }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)propRes.StatusCode);
+            }
+
+            // 登录管理后台端口，确认收到来自玩家面板投递的待审提案
+            using (HttpResponseMessage loginRes = await adminHttp.PostAsync(
+                       "/api/v1/auth/login",
+                       new StringContent(JsonSerializer.Serialize(new { username = "admin", password = boot.GeneratedOneTimePassword }), Encoding.UTF8, "application/json")))
+            {
+                using JsonDocument lDoc = JsonDocument.Parse(await loginRes.Content.ReadAsStringAsync());
+                adminHttp.DefaultRequestHeaders.Add("X-CSRF-Token", lDoc.RootElement.GetProperty("csrfToken").GetString()!);
+            }
+            using (await adminHttp.PostAsync(
+                       "/api/v1/auth/change-password",
+                       new StringContent(JsonSerializer.Serialize(new { currentPassword = boot.GeneratedOneTimePassword, newPassword = "Shooting#Quasar2026!" }), Encoding.UTF8, "application/json")))
+            {
+            }
+
+            using (HttpResponseMessage adminPropsRes = await adminHttp.GetAsync("/api/v1/diy/proposals?status=pending"))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)adminPropsRes.StatusCode);
+                using JsonDocument aDoc = JsonDocument.Parse(await adminPropsRes.Content.ReadAsStringAsync());
+                AssertEqual(1, aDoc.RootElement.GetProperty("proposals").GetArrayLength());
+            }
+
+            p0.Close();
+            await serverHost.StopAsync();
+        }
+    }
+    finally
+    {
+        Directory.Delete(emptyRoot, recursive: true);
     }
 }
 

@@ -376,12 +376,12 @@ flowchart LR
 
 ### 6.3 管理面板：用户、密码安全与细粒度权限（RBAC）设计
 
-#### 1. 首次启动安全引导与密码规范（杜绝默认弱口令）
-- **零硬编码弱密码**：彻底摒弃旧版 `srvpro` 默认 `123456` 的做法。首次建库无超管时：
-  - 若提供环境变量 `YGOPRO_BOOTSTRAP_ADMIN_USER` 与 `YGOPRO_BOOTSTRAP_ADMIN_PASSWORD`，自动创建初始超管；
-  - 若未提供，自动创建 `admin` 账号并生成 **24 位高熵一次性随机密码** 输出至启动结构化日志（同时标记 `must_change_password = true`，首次登录 Web 面板必须完成改密才放行其余接口）。
+#### 1. 首次启动安全引导与密码规范（支持自定义与默认回退）
+- **自定义与默认双模式**：
+  - 支持通过启动参数 `AdminUser` / `AdminPassword`（或环境变量 `YGOPRO_ADMIN_USER` / `YGOPRO_ADMIN_PASSWORD` / `YGOPRO_BOOTSTRAP_ADMIN_*`）自定义管理员用户名与密码（未填用户名默认 `admin`，未填密码在首次建库时自动生成 24 位高熵一次性随机密码并标记 `must_change_password = true`，后续也可通过传入 `AdminUser` / `AdminPassword` 直接更新管理员用户名或密码）；
+  - 首次登录 Web 引导页与后台账号管理均支持自定义管理员用户名或新密码，未填写项自动保留默认值。
 - **密码学与会话防护**：
-  - 密码使用 **Argon2id**（独立 16B 随机 Salt，抗 GPU 破解）单向哈希入库；校验密码长度 ≥ 10 且拒绝常见弱密码字典；
+  - 密码使用 **Argon2id**（独立 16B 随机 Salt，抗 GPU 破解）单向哈希入库；最小密码长度为 **6 位字符**；
   - Web 面板默认采用 `HttpOnly + SameSite=Strict + Secure(HTTPS)` 会话 Cookie + CSRF Token（同时支持 API 调用方通过登录换取短效 Bearer Access Token）；
   - 输错密码连续达阈值（默认 5 次）自动锁定账号 `15 分钟` 并记录来源 IP 审计日志；修改密码或禁用账号时，**同步吊销其所有活跃 Web 会话并可选冻结其名下签发的 MCP Token**。
 
@@ -591,15 +591,15 @@ flowchart LR
 - [x] `YGOProSharp.Server` & `Cli`：扩展 `RoomPasswordParser`（`RD` / `RDM` / `CHAOS` / `CHAOS60` / `PURECHAOS` / `DIYRD` / `DIYCHAOS` / `ED`）、`ChatCommandAddon`（`/randmode`、`/randdeck`、`/death`）、CLI `/ai [fill] random`、免改客户端 `.ydk` 准备放行、开局随机发牌注入、Match 换副兼容、额外回合猝死规则（`ED`）、停服维护开关（`SetMaintenanceMode`）、热重载入口（`ReloadAssets`）与 `CoreServer.CreateRoom(...)`。
 - [x] 单元测试与对局回归测试覆盖：混沌组卡配比与禁限表/异画同名/衍生物过滤、1v1 与 2v2 镜像对称一致性、原子热重载、DIY 包安全校验、无卡组准备与 BO3 换副兼容、额外回合猝死结算及停服维护拦截。
 
-### Phase 1：数据库（SQLite/PostgreSQL）、Redis 多级缓存与认证权限管理面板
-- [ ] 新增 `YGOProSharp.Persistence`：实现 SQLite (默认 WAL) / PostgreSQL 双引擎 DbContext 与自动迁移，落地 `panel_users`（Argon2id）、`panel_roles`（五级预设角色 + 细粒度权限集）、`panel_sessions`、`bans`、`duel_records`（支持 `R#<id>` 云录像）与 `audit_logs`；封装 `HybridCache`（L1 内存 + 可选 L2 Redis + Pub/Sub 失效广播 + 命中率指标 + 滑动窗口限流 + 一次性 Ticket）。
-- [ ] 新增 `YGOProSharp.Web`：认证登录/首次强制改密、RBAC 权限码中间件、IP 脱敏过滤、房间与裁判管理 REST API、缓存健康监控 API、WebSocket 实时事件与 `/healthz`。
-- [ ] 新增 `web/` 前端：登录/首次改密向导、总览仪表盘（含 DB 状态与 L1/Redis 命中率卡片）、房间大厅与裁判/围观面板、用户/角色权限矩阵/封禁/审计管理中心。
+### Phase 1：数据库（SQLite/PostgreSQL）、Redis 多级缓存与认证权限管理面板（已完成）
+- [x] 新增 `YGOProSharp.Persistence`：实现 SQLite (默认 WAL) / PostgreSQL 双引擎 DbContext 与自动迁移，落地 `panel_users`（Argon2id）、`panel_roles`（预设角色 + 细粒度权限集）、`panel_sessions`、`bans`、`duel_records`（支持 `R#<id>` 云录像）与 `audit_logs`；封装 `HybridCache`（L1 内存 + 可选 L2 Redis + Pub/Sub 失效广播 + 命中率指标 + 滑动窗口限流 + 一次性 Ticket）。
+- [x] 新增 `YGOProSharp.Web`：认证登录/首次强制改密、RBAC 权限码中间件、IP 脱敏过滤、房间与裁判管理 REST API、缓存健康监控 API、WebSocket 实时事件与 `/healthz`，并接入 `YGOProSharp.Cli` 组合根启动流程。
+- [x] 新增 `web/` 前端：登录/首次改密向导、总览仪表盘（含 DB 状态与 L1/Redis 命中率卡片）、房间大厅与裁判/围观面板、DIY 与盲盒工作室基础视图、MCP Token 中心及用户/角色权限矩阵/封禁/审计管理中心。
 
-### Phase 2：DIY 多工作面编辑器、引擎沙盒与免重启热重载
-- [ ] 实现 `/api/v1/diy/*` 上传、`Working Copy` 冲突预检、`ocgcore` 进程内单卡沙盒试跑（`/sandbox-test`）、Proposal 审批流、回收站、`.ypk` 导出与原子热重载（联动刷新 Redis 卡库缓存版本号）。
-- [ ] 前端完成 Studio 页面（参考 `DataEditorY` & `YGODIY`：盲盒卡组池管理 + 左侧虚拟化筛选卡表 + 右侧 `Card / Monaco Script / Image / Proposals` 四面板联动）。
-- [ ] 端到端验证：上传 DIY 卡与 `.ydk` → 沙盒预检通过 → 热重载 → 客户端用 `DIYRD#Test` 或 `DIYCHAOS#Test` 进房随机抽到并打出新卡。
+### Phase 2：DIY 多工作面编辑器、引擎沙盒与免重启热重载（已完成）
+- [x] 实现 `/api/v1/diy/*` 上传、单卡在线读写、`strings.conf` 管理、`Working Copy` 跨包冲突预检、`ocgcore` 进程内线程隔离单卡沙盒试跑（`/sandbox-test`）、Proposal 审批流、回收站、`.ypk` 导出与原子热重载（联动刷新卡库缓存版本号）。
+- [x] 前端完成 Studio 页面（参考 `DataEditorY` & `YGODIY`：盲盒卡组池管理 + 左侧筛选卡表与字段配置 + 右侧 `Card / Script + Sandbox / Image / Proposals` 四面板联动）。
+- [x] 端到端验证：提交 DIY 卡与 `.ydk` 提案 → `ocgcore` 沙盒预检通过 → 审批并热重载 → 导出 `.ypk` → 客户端用 `DIYRD,NC#Test` 进房免传卡组随机抽到并在实战中发动新卡。
 
 ### Phase 3：受限视角协议代理（`YGOProSharp.AgentBridge`）、WindBot Lua 创作闭环与 MCP Server（`YGOProSharp.Mcp`）
 - [ ] 加固 [NLuaRuntime.cs](../YGOProSharp.Cli/NLuaRuntime.cs) 沙箱（移除危险全局表 + 指令计数/超时熔断），在 `YGOProSharp.WindBot` 为 `LuaDeckExecutor` 新增 `EmitThought(summary)` 与可选 `AskExternalAgent(...)` 双脑挂起桥接接口。

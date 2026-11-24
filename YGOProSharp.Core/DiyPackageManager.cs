@@ -41,6 +41,39 @@ public sealed record DiyPackageValidationReport(
     IReadOnlyList<int> MissingScriptCardIds,
     IReadOnlyList<string> Errors);
 
+public sealed record DiyCardSummary(
+    DiyCardEntry Card,
+    bool HasScript,
+    bool HasImage);
+
+public sealed record DiyCardDetail(
+    string PackageId,
+    DiyCardEntry Card,
+    string? ScriptContent,
+    bool HasImage,
+    string? ImageFileName);
+
+public sealed record StringsConfEntry(
+    string Kind,
+    string CodeHex,
+    string Name);
+
+public sealed record StringsConfSummary(
+    string RawContent,
+    IReadOnlyList<StringsConfEntry> Setnames,
+    IReadOnlyList<StringsConfEntry> Counters);
+
+public sealed record DiyCardConflictItem(
+    int CardId,
+    string CardName,
+    IReadOnlyList<string> DefinedInPackages,
+    bool OverridesBaseCatalog);
+
+public sealed record DiyGlobalConflictReport(
+    IReadOnlyList<DiyCardConflictItem> Conflicts,
+    IReadOnlyDictionary<string, IReadOnlyList<int>> MissingScriptsByPackage,
+    IReadOnlyDictionary<string, IReadOnlyList<int>> MissingImagesByPackage);
+
 /// <summary>
 /// 管理 <c>&lt;diyRoot&gt;/packages/&lt;package-id&gt;</c> 的目录规范、<c>Working Copy -&gt; 预检 -&gt; 原子替换</c>、
 /// Lua 静态安全审计、多包冲突分析与 <c>.trash</c> 回收站恢复。
@@ -297,6 +330,398 @@ public sealed partial class DiyPackageManager
         Directory.CreateDirectory(Path.GetDirectoryName(safeFile)!);
         WriteFileAtomically(safeFile, Encoding.UTF8.GetBytes(ydkContent));
         TouchManifestIfExists(packageId);
+    }
+
+    /// <summary>
+    /// 列出指定 DIY 包内的全部可编辑卡片及脚本/卡图齐备状态。
+    /// </summary>
+    public IReadOnlyList<DiyCardSummary> ListPackageCards(string packageId)
+    {
+        EnsureValidPackageId(packageId);
+        string pkgDir = GetPackageDirectory(packageId);
+        if (!Directory.Exists(pkgDir))
+            return [];
+
+        Dictionary<int, DiyCardEntry> byId = new();
+        foreach (string cdbPath in Directory.EnumerateFiles(pkgDir, "*.cdb", SearchOption.TopDirectoryOnly).OrderBy(static p => p, StringComparer.OrdinalIgnoreCase))
+        {
+            foreach (DiyCardEntry c in _databaseManager.LoadEditableCards(cdbPath))
+                byId[c.Id] = c;
+        }
+
+        string scriptDir = Path.Combine(pkgDir, "script");
+        string picsDir = Path.Combine(pkgDir, "pics");
+
+        return byId.Values
+            .OrderBy(static c => c.Id)
+            .Select(c => new DiyCardSummary(
+                c,
+                HasScript: File.Exists(Path.Combine(scriptDir, $"c{c.Id}.lua")),
+                HasImage: FindCardImagePath(picsDir, c.Id) is not null))
+            .ToArray();
+    }
+
+    public DiyCardDetail? GetCardDetail(string packageId, int cardId)
+    {
+        EnsureValidPackageId(packageId);
+        string pkgDir = GetPackageDirectory(packageId);
+        if (!Directory.Exists(pkgDir))
+            return null;
+
+        DiyCardEntry? found = null;
+        foreach (string cdbPath in Directory.EnumerateFiles(pkgDir, "*.cdb", SearchOption.TopDirectoryOnly).OrderBy(static p => p, StringComparer.OrdinalIgnoreCase))
+        {
+            foreach (DiyCardEntry c in _databaseManager.LoadEditableCards(cdbPath))
+            {
+                if (c.Id == cardId)
+                    found = c;
+            }
+        }
+
+        if (found is null)
+            return null;
+
+        string scriptPath = Path.Combine(pkgDir, "script", $"c{cardId}.lua");
+        string? scriptContent = File.Exists(scriptPath) ? File.ReadAllText(scriptPath, Encoding.UTF8) : null;
+        string? imgPath = FindCardImagePath(Path.Combine(pkgDir, "pics"), cardId);
+
+        return new DiyCardDetail(
+            packageId,
+            found,
+            scriptContent,
+            imgPath is not null,
+            imgPath is not null ? Path.GetFileName(imgPath) : null);
+    }
+
+    /// <summary>
+    /// 通过 Working Copy 原子保存单张 DIY 卡属性与可选配套 <c>c&lt;id&gt;.lua</c> 脚本。
+    /// </summary>
+    public CardDatabaseValidationResult UpsertCard(
+        string packageId,
+        DiyCardEntry card,
+        string? luaScript = null,
+        string cdbFileName = "cards.cdb")
+    {
+        EnsureValidPackageId(packageId);
+        ArgumentNullException.ThrowIfNull(card);
+        if (card.Id <= 0)
+            throw new ArgumentOutOfRangeException(nameof(card), "Card ID must be positive.");
+
+        if (luaScript is not null)
+        {
+            LuaScriptSecurityAudit audit = AuditLuaScript(luaScript);
+            if (!audit.IsSafe)
+                throw new InvalidOperationException("Lua script failed security audit: " + string.Join(" ", audit.Violations));
+        }
+
+        string pkgDir = GetPackageDirectory(packageId);
+        Directory.CreateDirectory(pkgDir);
+        string safeCdb = EnsureSafeChildPath(pkgDir, cdbFileName, ".cdb");
+
+        CardDatabaseValidationResult dbResult = _databaseManager.UpsertCard(safeCdb, card);
+        if (!dbResult.IsValid)
+            return dbResult;
+
+        if (luaScript is not null)
+        {
+            string scriptDir = Path.Combine(pkgDir, "script");
+            Directory.CreateDirectory(scriptDir);
+            string scriptPath = EnsureSafeChildPath(scriptDir, $"c{card.Id}.lua", ".lua");
+            if (string.IsNullOrWhiteSpace(luaScript))
+            {
+                if (File.Exists(scriptPath))
+                    File.Delete(scriptPath);
+            }
+            else
+            {
+                WriteFileAtomically(scriptPath, Encoding.UTF8.GetBytes(luaScript));
+            }
+        }
+
+        TouchManifestIfExists(packageId);
+        return dbResult;
+    }
+
+    public bool DeleteCard(string packageId, int cardId, bool deleteAssets = true)
+    {
+        EnsureValidPackageId(packageId);
+        string pkgDir = GetPackageDirectory(packageId);
+        if (!Directory.Exists(pkgDir))
+            return false;
+
+        bool removedAny = false;
+        foreach (string cdbPath in Directory.EnumerateFiles(pkgDir, "*.cdb", SearchOption.TopDirectoryOnly))
+        {
+            IReadOnlyList<DiyCardEntry> before = _databaseManager.LoadEditableCards(cdbPath);
+            if (before.All(c => c.Id != cardId))
+                continue;
+
+            CardDatabaseValidationResult res = _databaseManager.DeleteCard(cdbPath, cardId);
+            if (res.IsValid)
+                removedAny = true;
+        }
+
+        if (deleteAssets)
+        {
+            string scriptPath = Path.Combine(pkgDir, "script", $"c{cardId}.lua");
+            if (File.Exists(scriptPath))
+            {
+                File.Delete(scriptPath);
+                removedAny = true;
+            }
+
+            string? imgPath = FindCardImagePath(Path.Combine(pkgDir, "pics"), cardId);
+            if (imgPath is not null && File.Exists(imgPath))
+            {
+                File.Delete(imgPath);
+                removedAny = true;
+            }
+        }
+
+        if (removedAny)
+            TouchManifestIfExists(packageId);
+
+        return removedAny;
+    }
+
+    public string? ReadScript(string packageId, string scriptFileName)
+    {
+        EnsureValidPackageId(packageId);
+        string normalized = scriptFileName.EndsWith(".lua", StringComparison.OrdinalIgnoreCase) ? scriptFileName : scriptFileName + ".lua";
+        string safeFile = EnsureSafeChildPath(Path.Combine(GetPackageDirectory(packageId), "script"), normalized, ".lua");
+        return File.Exists(safeFile) ? File.ReadAllText(safeFile, Encoding.UTF8) : null;
+    }
+
+    /// <summary>
+    /// 校验 PNG / JPEG 魔数头与体积上限（8MB）后，原子保存卡图至 <c>pics/&lt;cardId&gt;.&lt;ext&gt;</c>。
+    /// </summary>
+    public string SaveCardImage(string packageId, int cardId, ReadOnlySpan<byte> imageBytes)
+    {
+        EnsureValidPackageId(packageId);
+        if (cardId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(cardId), "Card ID must be positive.");
+        if (imageBytes.Length < 8)
+            throw new InvalidOperationException("Image file is empty or truncated.");
+        if (imageBytes.Length > 8 * 1024 * 1024)
+            throw new InvalidOperationException("Card image exceeds 8MB limit.");
+
+        string ext;
+        if (imageBytes[0] == 0x89 && imageBytes[1] == 0x50 && imageBytes[2] == 0x4E && imageBytes[3] == 0x47)
+            ext = ".png";
+        else if (imageBytes[0] == 0xFF && imageBytes[1] == 0xD8 && imageBytes[2] == 0xFF)
+            ext = ".jpg";
+        else
+            throw new InvalidOperationException("Only valid PNG or JPEG card images are allowed.");
+
+        string picsDir = Path.Combine(GetPackageDirectory(packageId), "pics");
+        Directory.CreateDirectory(picsDir);
+
+        foreach (string oldExt in new[] { ".png", ".jpg", ".jpeg" })
+        {
+            string existing = Path.Combine(picsDir, $"{cardId}{oldExt}");
+            if (!oldExt.Equals(ext, StringComparison.OrdinalIgnoreCase) && File.Exists(existing))
+                File.Delete(existing);
+        }
+
+        string fileName = $"{cardId}{ext}";
+        string targetPath = EnsureSafeChildPath(picsDir, fileName, ext);
+        WriteFileAtomically(targetPath, imageBytes.ToArray());
+        TouchManifestIfExists(packageId);
+        return fileName;
+    }
+
+    public (byte[] Bytes, string ContentType, string FileName)? TryReadCardImage(string packageId, int cardId)
+    {
+        EnsureValidPackageId(packageId);
+        if (cardId <= 0)
+            return null;
+
+        string? imgPath = FindCardImagePath(Path.Combine(GetPackageDirectory(packageId), "pics"), cardId);
+        if (imgPath is null || !File.Exists(imgPath))
+            return null;
+
+        string ext = Path.GetExtension(imgPath).ToLowerInvariant();
+        string contentType = ext == ".png" ? "image/png" : "image/jpeg";
+        return (File.ReadAllBytes(imgPath), contentType, Path.GetFileName(imgPath));
+    }
+
+    public static StringsConfSummary ParseStringsConf(string? rawContent)
+    {
+        string content = rawContent ?? string.Empty;
+        List<StringsConfEntry> setnames = new();
+        List<StringsConfEntry> counters = new();
+
+        foreach (string rawLine in content.Split('\n'))
+        {
+            string line = rawLine.Trim();
+            if (line.Length == 0 || line.StartsWith('#'))
+                continue;
+
+            if (line.StartsWith("!setname ", StringComparison.OrdinalIgnoreCase))
+            {
+                string[] parts = line[9..].Trim().Split([' ', '\t'], 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 2)
+                    setnames.Add(new StringsConfEntry("setname", parts[0], parts[1].Trim()));
+            }
+            else if (line.StartsWith("!counter ", StringComparison.OrdinalIgnoreCase))
+            {
+                string[] parts = line[9..].Trim().Split([' ', '\t'], 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 2)
+                    counters.Add(new StringsConfEntry("counter", parts[0], parts[1].Trim()));
+            }
+        }
+
+        return new StringsConfSummary(content, setnames, counters);
+    }
+
+    public StringsConfSummary ReadStringsConf(string packageId)
+    {
+        EnsureValidPackageId(packageId);
+        string confPath = Path.Combine(GetPackageDirectory(packageId), "strings.conf");
+        string content = File.Exists(confPath) ? File.ReadAllText(confPath, Encoding.UTF8) : string.Empty;
+        return ParseStringsConf(content);
+    }
+
+    public StringsConfSummary SaveStringsConf(string packageId, string content)
+    {
+        EnsureValidPackageId(packageId);
+        ArgumentNullException.ThrowIfNull(content);
+        string pkgDir = GetPackageDirectory(packageId);
+        Directory.CreateDirectory(pkgDir);
+        string safePath = EnsureSafeChildPath(pkgDir, "strings.conf", ".conf");
+        WriteFileAtomically(safePath, Encoding.UTF8.GetBytes(content));
+        TouchManifestIfExists(packageId);
+        return ParseStringsConf(content);
+    }
+
+    /// <summary>
+    /// 跨所有已启用 DIY 包与可选基础卡库执行多包卡密覆盖冲突、缺失脚本与缺失卡图巡检（参考 DataEditorY）。
+    /// </summary>
+    public DiyGlobalConflictReport AnalyzeAllPackageConflicts(ICardRepository? baselineRepository = null)
+    {
+        IReadOnlyList<DiyPackageManifest> enabledPackages = ListPackages(enabledOnly: true);
+        Dictionary<int, (string Name, List<string> Packages)> cardMap = new();
+        Dictionary<string, IReadOnlyList<int>> missingScripts = new(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, IReadOnlyList<int>> missingImages = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (DiyPackageManifest pkg in enabledPackages)
+        {
+            IReadOnlyList<DiyCardSummary> cards = ListPackageCards(pkg.Id);
+            List<int> pkgMissingScripts = new();
+            List<int> pkgMissingImages = new();
+
+            foreach (DiyCardSummary summary in cards)
+            {
+                DiyCardEntry c = summary.Card;
+                if (!cardMap.TryGetValue(c.Id, out (string Name, List<string> Packages) entry))
+                {
+                    entry = (c.Name, new List<string>());
+                    cardMap[c.Id] = entry;
+                }
+                else if (string.IsNullOrWhiteSpace(entry.Name) && !string.IsNullOrWhiteSpace(c.Name))
+                {
+                    entry = (c.Name, entry.Packages);
+                    cardMap[c.Id] = entry;
+                }
+
+                if (!entry.Packages.Contains(pkg.Id, StringComparer.OrdinalIgnoreCase))
+                    entry.Packages.Add(pkg.Id);
+
+                bool isNormalOrToken = (c.Type & (int)CardType.Normal) != 0 || (c.Type & (int)CardType.Token) != 0;
+                if (!isNormalOrToken && !summary.HasScript)
+                    pkgMissingScripts.Add(c.Id);
+
+                if (!summary.HasImage)
+                    pkgMissingImages.Add(c.Id);
+            }
+
+            if (pkgMissingScripts.Count > 0)
+                missingScripts[pkg.Id] = pkgMissingScripts;
+            if (pkgMissingImages.Count > 0)
+                missingImages[pkg.Id] = pkgMissingImages;
+        }
+
+        List<DiyCardConflictItem> conflicts = new();
+        foreach ((int cardId, (string name, List<string> pkgs)) in cardMap.OrderBy(static kv => kv.Key))
+        {
+            bool overridesBase = baselineRepository is not null && baselineRepository.TryGetCard(cardId, out _);
+            if (pkgs.Count > 1 || overridesBase)
+            {
+                conflicts.Add(new DiyCardConflictItem(cardId, name, pkgs.ToArray(), overridesBase));
+            }
+        }
+
+        return new DiyGlobalConflictReport(conflicts, missingScripts, missingImages);
+    }
+
+    /// <summary>
+    /// 将受管 DIY 包打包导出为标准客户端可直接放入 <c>expansions/</c> 的 <c>.ypk</c> 压缩包字节数组。
+    /// </summary>
+    public byte[] ExportPackageAsYpk(string packageId)
+    {
+        EnsureValidPackageId(packageId);
+        string pkgDir = GetPackageDirectory(packageId);
+        if (!Directory.Exists(pkgDir))
+            throw new DirectoryNotFoundException($"DIY package '{packageId}' does not exist.");
+
+        using MemoryStream ms = new();
+        using (ZipArchive zip = new(ms, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            foreach (string topFile in Directory.EnumerateFiles(pkgDir, "*.*", SearchOption.TopDirectoryOnly))
+            {
+                string ext = Path.GetExtension(topFile);
+                string fileName = Path.GetFileName(topFile);
+                if (fileName.Equals("manifest.json", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (ext.Equals(".cdb", StringComparison.OrdinalIgnoreCase) ||
+                    ext.Equals(".conf", StringComparison.OrdinalIgnoreCase))
+                {
+                    AddFileToZip(zip, topFile, fileName);
+                }
+            }
+
+            foreach (string subFolder in new[] { "script", "pics", "decks" })
+            {
+                string subPath = Path.Combine(pkgDir, subFolder);
+                if (!Directory.Exists(subPath))
+                    continue;
+
+                foreach (string file in Directory.EnumerateFiles(subPath, "*.*", SearchOption.AllDirectories))
+                {
+                    string ext = Path.GetExtension(file);
+                    if (!AllowedExtensions.Contains(ext))
+                        continue;
+
+                    string rel = Path.GetRelativePath(pkgDir, file).Replace('\\', '/');
+                    AddFileToZip(zip, file, rel);
+                }
+            }
+        }
+
+        return ms.ToArray();
+    }
+
+    private static void AddFileToZip(ZipArchive zip, string sourceFilePath, string entryName)
+    {
+        ZipArchiveEntry entry = zip.CreateEntry(entryName, CompressionLevel.Optimal);
+        using Stream entryStream = entry.Open();
+        byte[] bytes = File.ReadAllBytes(sourceFilePath);
+        entryStream.Write(bytes, 0, bytes.Length);
+    }
+
+    private static string? FindCardImagePath(string picsDirectory, int cardId)
+    {
+        if (!Directory.Exists(picsDirectory))
+            return null;
+
+        foreach (string ext in new[] { ".png", ".jpg", ".jpeg" })
+        {
+            string p = Path.Combine(picsDirectory, $"{cardId}{ext}");
+            if (File.Exists(p))
+                return p;
+        }
+
+        return null;
     }
 
     /// <summary>

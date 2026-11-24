@@ -32,6 +32,12 @@ dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- server
 dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- server RootPath=. DatabaseFile=cards.cdb ScriptDirectory=script Port=7911 Mode=2v2
 ```
 
+启动多房间服务端并同时开启三端口物理隔离的 **游戏服 (`7911`) + 后台管理面板 (`7912`) + 前台玩家用户面板 (`7913`)**（可选指定 `AdminUser` / `AdminPassword` 自定义管理员账号密码，密码最少 6 位字符；不填则默认账号 `admin` 并在首次建库时自动生成初始密码）：
+
+```bash
+dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- server RootPath=. Port=7911 MultiRoom=true EnableWeb=true AdminPort=7912 PortalPort=7913 AdminUser=admin AdminPassword=123456
+```
+
 启动 WindBot 客户端：
 
 ```bash
@@ -50,7 +56,8 @@ dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- windbo
 
 - `LogLevel=Trace|Debug|Information|Warning|Error|Critical`
 - `Config=server.conf`
-- 服务端：`RootPath`、`ScriptDirectory`、`DatabaseFile`、`BanlistFile`、`Port`、`ClientVersion`、`StandardStreamProtocol`、`AddBot`（或指定 `BotDeck`/`BotDeckFile` 自动启用）、`BotName`、`BotDeck`、`BotDeckFile`、`BotDialog`、`BotChat`、`BotDebug`
+- 服务端：`RootPath`、`ScriptDirectory`、`DatabaseFile`、`BanlistFile`、`Port`、`ClientVersion`、`StandardStreamProtocol`、`MultiRoom`、`RandomDeck`、`SuddenDeath`、`AddBot`（或指定 `BotDeck`/`BotDeckFile` 自动启用）、`BotName`、`BotDeck`、`BotDeckFile`、`BotDialog`、`BotChat`、`BotDebug`
+- 控制面、用户面板与持久化：`EnableWeb`（一键同时开启管理面板与用户面板）、`EnableAdmin`、`AdminHost`（默认 `127.0.0.1`）、`AdminPort`（默认 `7912`，兼容别名 `WebPort`）、`EnablePortal`、`PortalHost`（默认 `127.0.0.1`）、`PortalPort`（默认 `7913`）、`PublicGameHost`、`EnablePersistence`、`DbProvider`（`Sqlite` 或 `Postgres`）、`DbConnectionString`、`RedisUrl`、`ReplayDirectory`、`AdminUser`（可选自定义管理员用户名，不填默认 `admin`，兼容 `BootstrapAdminUser`）、`AdminPassword`（可选自定义管理员密码，最少 6 位字符，不填首次建库自动生成随机密码，兼容 `BootstrapAdminPassword`）
 - WindBot：`DbPath`、`DbPaths`、`Databases`、`Host`、`Port`、`Deck`、`DeckFile`、`Dialog`、`ServerMode`、`BotListPath`
 
 ## 边界

@@ -207,3 +207,19 @@ public sealed record ServerReloadResult(
     int DatabaseCount,
     int BanlistCount,
     int PresetDeckCount);
+
+/// <summary>
+/// 玩家入房/建房前置准入检查上下文（用于解耦对接外部 IP/昵称封禁表、vpass 校验或云录像回放拦截）。
+/// </summary>
+public sealed record PlayerJoinAccessContext(
+    Player Player,
+    string RoomPassword,
+    bool IsCreateGame);
+
+/// <summary>
+/// 玩家入房准入检查决策。当 <see cref="HandledCustomSession"/> 为 <c>true</c> 时（如云录像直接下发完成），不再进入常规房间。
+/// </summary>
+public sealed record PlayerJoinAccessDecision(
+    bool Allowed,
+    string? RejectionMessage = null,
+    bool HandledCustomSession = false);

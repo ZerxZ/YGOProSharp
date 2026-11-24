@@ -81,18 +81,34 @@ public static class YGOProSharpServer
         ICardRepository initialRepository;
         try
         {
-            if (assets.DatabasePaths.Count == 0 || !File.Exists(assets.PrimaryDatabasePath))
-                throw new FileNotFoundException("Could not find the cards database.", assets.PrimaryDatabasePath);
+            ICardRepository diskRepository;
+            if (assets.DatabasePaths.Count == 0)
+            {
+                logger.LogWarning(
+                    "No card database (.cdb) found yet (Primary={DatabasePath}). Starting with an empty card catalog; place cards.cdb or upload a DIY package and trigger hot-reload.",
+                    assets.PrimaryDatabasePath);
+                diskRepository = EmptyCardRepository.Instance;
+            }
+            else
+            {
+                if (!File.Exists(assets.PrimaryDatabasePath))
+                {
+                    logger.LogWarning(
+                        "Primary database {DatabasePath} was not found; loading {DatabaseCount} discovered expansion/DIY database(s) only.",
+                        assets.PrimaryDatabasePath,
+                        assets.DatabasePaths.Count);
+                }
 
-            ICardRepository diskRepository = assets.DatabasePaths.Count == 1
-                ? cardDatabaseManager.LoadCards(assets.DatabasePaths[0])
-                : cardDatabaseManager.LoadCards(assets.DatabasePaths);
+                diskRepository = assets.DatabasePaths.Count == 1
+                    ? cardDatabaseManager.LoadCards(assets.DatabasePaths[0])
+                    : cardDatabaseManager.LoadCards(assets.DatabasePaths);
+
+                logger.LogInformation("Loaded {DatabaseCount} card database(s). Primary={DatabasePath}.", assets.DatabasePaths.Count, assets.PrimaryDatabasePath);
+            }
 
             initialRepository = options.AdditionalCardRepositories.Count == 0
                 ? diskRepository
                 : new CompositeCardRepository(options.AdditionalCardRepositories.Concat([diskRepository]));
-
-            logger.LogInformation("Loaded {DatabaseCount} card database(s). Primary={DatabasePath}.", assets.DatabasePaths.Count, assets.PrimaryDatabasePath);
         }
         catch (Exception ex)
         {
@@ -102,14 +118,11 @@ public static class YGOProSharpServer
 
         ReloadableCardRepository reloadableCards = new(initialRepository);
 
-        if (assets.BanlistPaths.Count == 1)
-            BanlistManager.Init(assets.BanlistPaths[0]);
-        else if (assets.BanlistPaths.Count > 1)
-            BanlistManager.Init(assets.BanlistPaths);
+        BanlistManager.Init(assets.BanlistPaths);
+        if (assets.BanlistPaths.Count == 0)
+            logger.LogWarning("No banlist file (lflist.conf) found yet; starting with an empty banlist list.");
         else
-            BanlistManager.Init(assets.PrimaryBanlistPath);
-
-        logger.LogInformation("Loaded {BanlistCount} banlist(s) from {BanlistFileCount} file(s).", BanlistManager.Banlists.Count, assets.BanlistPaths.Count);
+            logger.LogInformation("Loaded {BanlistCount} banlist(s) from {BanlistFileCount} file(s).", BanlistManager.Banlists.Count, assets.BanlistPaths.Count);
 
         PresetDeckPool presetDeckPool = options.PresetDeckPool ?? new PresetDeckPool();
         if (assets.PresetDeckDirectories.Count > 0)
@@ -125,8 +138,8 @@ public static class YGOProSharpServer
                 rootPath,
                 scriptDirectory,
                 databaseFile,
-                new RepositoryCardDataProvider(reloadableCards),
-                reloadableScripts));
+                new SandboxOverlayCardDataProvider(new RepositoryCardDataProvider(reloadableCards)),
+                new SandboxOverlayScriptProvider(reloadableScripts)));
             logger.LogInformation("Native OCG runtime initialized.");
         }
         catch (Exception ex)
@@ -152,12 +165,12 @@ public static class YGOProSharpServer
         ILogger logger)
     {
         DiscoveredAssets assets = DiscoverAssets(options);
-        if (assets.DatabasePaths.Count == 0 || !File.Exists(assets.PrimaryDatabasePath))
-            throw new FileNotFoundException("Could not find the cards database during reload.", assets.PrimaryDatabasePath);
-
-        ICardRepository diskRepository = assets.DatabasePaths.Count == 1
-            ? cardDatabaseManager.LoadCards(assets.DatabasePaths[0])
-            : cardDatabaseManager.LoadCards(assets.DatabasePaths);
+        ICardRepository diskRepository = assets.DatabasePaths.Count switch
+        {
+            0 => EmptyCardRepository.Instance,
+            1 => cardDatabaseManager.LoadCards(assets.DatabasePaths[0]),
+            _ => cardDatabaseManager.LoadCards(assets.DatabasePaths)
+        };
 
         ICardRepository nextRepo = options.AdditionalCardRepositories.Count == 0
             ? diskRepository
@@ -165,12 +178,7 @@ public static class YGOProSharpServer
 
         long catalogVersion = reloadableCards.Reload(nextRepo);
 
-        if (assets.BanlistPaths.Count == 1)
-            BanlistManager.Init(assets.BanlistPaths[0]);
-        else if (assets.BanlistPaths.Count > 1)
-            BanlistManager.Init(assets.BanlistPaths);
-        else
-            BanlistManager.Init(assets.PrimaryBanlistPath);
+        BanlistManager.Init(assets.BanlistPaths);
 
         IScriptProvider nextScripts = BuildScriptProvider(options, assets, logger);
         long scriptVersion = reloadableScripts.Reload(nextScripts, disposePreviousImmediately: false);

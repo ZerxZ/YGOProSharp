@@ -151,6 +151,14 @@ namespace YGOProSharp.Server
         }
 
         /// <summary>
+        /// 使用服务端当前 <c>ocgcore</c> 工厂对草稿 DIY 卡与 Lua 脚本执行线程隔离的单卡情景沙盒预检。
+        /// </summary>
+        public CardSandboxResult RunCardSandboxTest(CardSandboxRequest request)
+        {
+            return CardSandboxRunner.Run(_duelFactory, request);
+        }
+
+        /// <summary>
         /// 在多房间模式下通过控制面 API 预创建指定名称与规则的房间。
         /// </summary>
         public bool TryCreateRoom(string roomName, out Game? room, GameOptions? optionsOverride = null)
@@ -421,6 +429,18 @@ namespace YGOProSharp.Server
 
         internal Game? ResolveGameForJoin(Player player, string rawPassword)
         {
+            if (_options.JoinAccessValidator is not null)
+            {
+                PlayerJoinAccessDecision access = _options.JoinAccessValidator(new PlayerJoinAccessContext(player, rawPassword, IsCreateGame: false));
+                if (access.HandledCustomSession)
+                    return null;
+                if (!access.Allowed)
+                {
+                    SendJoinRejection(player, access.RejectionMessage ?? "Access denied.");
+                    return null;
+                }
+            }
+
             if (IsMaintenanceMode)
             {
                 SendMaintenanceRejection(player);
@@ -481,6 +501,18 @@ namespace YGOProSharp.Server
 
         internal Game? ResolveGameForCreate(Player player, HostInfo hostInfo, string hostName, string password)
         {
+            if (_options.JoinAccessValidator is not null)
+            {
+                PlayerJoinAccessDecision access = _options.JoinAccessValidator(new PlayerJoinAccessContext(player, password, IsCreateGame: true));
+                if (access.HandledCustomSession)
+                    return null;
+                if (!access.Allowed)
+                {
+                    SendJoinRejection(player, access.RejectionMessage ?? "Access denied.");
+                    return null;
+                }
+            }
+
             if (IsMaintenanceMode)
             {
                 SendMaintenanceRejection(player);
@@ -713,12 +745,28 @@ namespace YGOProSharp.Server
         private void SendMaintenanceRejection(Player player)
         {
             string suffix = string.IsNullOrWhiteSpace(MaintenanceReason) ? string.Empty : $"（原因：{MaintenanceReason}）";
-            string text = $"[Server] 服务器当前处于维护模式，暂不接受新连接{suffix}。";
-            using BinaryWriter packet = GamePacketFactory.Create(StocMessage.Chat);
-            packet.Write((short)PlayerType.Yellow);
-            packet.WriteUnicode(text, text.Length + 1);
-            player.Send(packet);
+            SendJoinRejection(player, $"[Server] 服务器当前处于维护模式，暂不接受新连接{suffix}。");
             _logger.LogInformation("Rejected connection from {PlayerName} because maintenance mode is active.", player.Name);
+        }
+
+        private static void SendJoinRejection(Player player, string message)
+        {
+            using (BinaryWriter packet = GamePacketFactory.Create(StocMessage.Chat))
+            {
+                packet.Write((short)PlayerType.Yellow);
+                packet.WriteUnicode(message, message.Length + 1);
+                player.Send(packet);
+            }
+
+            using (BinaryWriter err = GamePacketFactory.Create(StocMessage.ErrorMsg))
+            {
+                err.Write((byte)1);
+                err.Write((byte)0);
+                err.Write((byte)0);
+                err.Write((byte)0);
+                err.Write(0);
+                player.Send(err);
+            }
         }
 
         private void Listener_ClientConnected(NetworkClient client)

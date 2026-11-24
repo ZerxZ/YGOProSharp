@@ -386,7 +386,7 @@ public sealed class OperationalCacheService : IAsyncDisposable, IDisposable
     private void SubscribePubSubInvalidation(IConnectionMultiplexer multiplexer)
     {
         ISubscriber sub = multiplexer.GetSubscriber();
-        sub.Subscribe(RedisChannel.Literal(PubSubInvalidationChannel), (_, message) =>
+        sub.Subscribe(RedisChannel.Literal(PubSubInvalidationChannel), (_channel, message) =>
         {
             string? text = message.ToString();
             if (string.IsNullOrWhiteSpace(text))

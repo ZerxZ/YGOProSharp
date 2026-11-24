@@ -10,27 +10,9 @@ namespace YGOProSharp.Persistence.Security;
 /// </summary>
 public sealed class Argon2PasswordHasher
 {
+    public const int MinPasswordLength = 6;
     private const int SaltLengthBytes = 16;
     private const int HashLengthBytes = 32;
-
-    private static readonly HashSet<string> WeakPasswords = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "1234567890",
-        "12345678901",
-        "123456789012",
-        "0000000000",
-        "password123",
-        "password1234",
-        "admin12345",
-        "admin123456",
-        "qwertyuiop",
-        "qwerty12345",
-        "ygopro12345",
-        "ygoprosharp",
-        "changeme123",
-        "letmein1234",
-        "welcome1234"
-    };
 
     private readonly int _memoryKb;
     private readonly int _iterations;
@@ -99,29 +81,12 @@ public sealed class Argon2PasswordHasher
 
     public static (bool IsValid, string? ErrorMessage) ValidatePasswordStrength(string? password, string? username = null)
     {
-        if (string.IsNullOrEmpty(password) || password.Length < 10)
-            return (false, "密码长度至少需要 10 位字符。");
+        _ = username;
+        if (string.IsNullOrWhiteSpace(password) || password.Length < MinPasswordLength)
+            return (false, $"密码长度至少需要 {MinPasswordLength} 位字符。");
 
         if (password.Length > 128)
             return (false, "密码长度不能超过 128 位字符。");
-
-        if (WeakPasswords.Contains(password.Trim()))
-            return (false, "禁止使用常见弱口令，请使用更高复杂度的密码。");
-
-        if (!string.IsNullOrWhiteSpace(username) &&
-            password.Contains(username.Trim(), StringComparison.OrdinalIgnoreCase))
-        {
-            return (false, "密码不能直接包含账号用户名。");
-        }
-
-        int categories = 0;
-        if (password.Any(char.IsUpper)) categories++;
-        if (password.Any(char.IsLower)) categories++;
-        if (password.Any(char.IsDigit)) categories++;
-        if (password.Any(static c => !char.IsLetterOrDigit(c))) categories++;
-
-        if (categories < 2)
-            return (false, "密码至少需要包含大写字母、小写字母、数字或特殊符号中的两类。");
 
         return (true, null);
     }

@@ -34,6 +34,62 @@ public sealed record CardDatabaseValidationResult(
     string? ErrorMessage = null);
 
 /// <summary>
+/// 用于 DIY 工作台读写完整卡片属性与文本的领域 DTO（覆盖标准 <c>datas</c> 与 <c>texts</c> 全部字段）。
+/// </summary>
+public sealed record DiyCardEntry
+{
+    public required int Id { get; init; }
+    public int Ot { get; init; } = 0x4;
+    public int Alias { get; init; }
+    public long Setcode { get; init; }
+    public int Type { get; init; } = 0x21;
+    public int Level { get; init; } = 4;
+    public int LScale { get; init; }
+    public int RScale { get; init; }
+    public int Race { get; init; } = 1;
+    public int Attribute { get; init; } = 1;
+    public int Attack { get; init; }
+    public int Defense { get; init; }
+    public int LinkMarker { get; init; }
+    public int Category { get; init; }
+    public string Name { get; init; } = string.Empty;
+    public string Desc { get; init; } = string.Empty;
+    public IReadOnlyList<string> Strings { get; init; } = [];
+
+    public Card ToCard() => new(
+        Id,
+        Ot,
+        Alias,
+        Setcode,
+        Type,
+        Level,
+        LScale,
+        RScale,
+        Race,
+        Attribute,
+        Attack,
+        Defense,
+        LinkMarker);
+
+    public NamedCard ToNamedCard() => new(
+        Id,
+        Ot,
+        Alias,
+        Setcode,
+        Type,
+        Level,
+        LScale,
+        RScale,
+        Race,
+        Attribute,
+        Attack,
+        Defense,
+        LinkMarker,
+        Name,
+        Desc);
+}
+
+/// <summary>
 /// 从持久化存储加载 card repository；SQLite 细节应留在该接口的实现内部。
 /// </summary>
 public interface ICardDatabaseManager
@@ -53,6 +109,21 @@ public interface ICardDatabaseManager
     /// 校验单个 <c>.cdb</c> 文件的表结构与数据可读性，并返回包含的卡密列表以供冲突分析。
     /// </summary>
     CardDatabaseValidationResult ValidateDatabase(string databaseFullPath);
+
+    /// <summary>
+    /// 读取单个 <c>.cdb</c> 内的全部可编辑卡片条目（含 <c>category</c> 与 <c>str1..str16</c> 提示文本）。
+    /// </summary>
+    IReadOnlyList<DiyCardEntry> LoadEditableCards(string databaseFullPath);
+
+    /// <summary>
+    /// 通过工作副本（Working Copy）创建或更新单张卡片记录，校验通过后原子替换目标 <c>.cdb</c>。
+    /// </summary>
+    CardDatabaseValidationResult UpsertCard(string databaseFullPath, DiyCardEntry card);
+
+    /// <summary>
+    /// 通过工作副本从目标 <c>.cdb</c> 删除指定卡密，校验通过后原子替换。
+    /// </summary>
+    CardDatabaseValidationResult DeleteCard(string databaseFullPath, int cardId);
 }
 
 /// <summary>
