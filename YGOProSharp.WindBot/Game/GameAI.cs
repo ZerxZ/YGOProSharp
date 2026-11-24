@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using System.Collections.Generic;
 using System.Threading;
@@ -6,13 +7,14 @@ using YGOProSharp.Abstractions.Ocg.Enums;
 
 namespace WindBot.Game
 {
-    public class GameAI
+    public class GameAI : IDisposable
     {
         public GameClient Game { get; private set; }
         public Duel Duel { get; private set; }
         public Executor Executor { get; set; }
 
         private Dialogs _dialogs;
+        private bool _disposed;
 
         // record activated count to prevent infinite actions
         private Dictionary<int, int> _activatedCards;
@@ -28,8 +30,18 @@ namespace WindBot.Game
             Game = game;
             Duel = duel;
 
-            _dialogs = new Dialogs(game);
+            _dialogs = new Dialogs(game, duel);
             _activatedCards = new Dictionary<int, int>();
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+            (Executor as IDisposable)?.Dispose();
+            _dialogs?.Dispose();
         }
 
         private void CheckSurrender()
@@ -64,6 +76,14 @@ namespace WindBot.Game
         /// Called when the AI join the game.
         /// </summary>
         public void OnJoinGame()
+        {
+            _dialogs.SendWelcome();
+        }
+
+        /// <summary>
+        /// 当其他玩家进入当前房间时触发欢迎语（解决 Bot 先于人类入房时欢迎语无人可见的问题）。
+        /// </summary>
+        public void OnPlayerEnter(string playerName)
         {
             _dialogs.SendWelcome();
         }

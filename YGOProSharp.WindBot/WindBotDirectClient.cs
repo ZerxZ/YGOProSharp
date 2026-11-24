@@ -30,7 +30,35 @@ public sealed class WindBotDirectClient : IDisposable
         _hostTransport.Disconnected += OnHostDisconnected;
         _hostTransport.BeginReceive();
 
-        Client = new GameClient(info, cardRepository ?? CardDatabase.Repository, _botTransport);
+        // 纯包级直调模式无后台 Tick 循环，默认关闭聊天节流延迟以保证同步 DrainCtosPackets 即时产出。
+        WindBotInfo effectiveInfo = info;
+        if (info.ChatIntervalMilliseconds == null || info.DuelStartChatDelayMilliseconds == null)
+        {
+            effectiveInfo = new WindBotInfo
+            {
+                Name = info.Name,
+                Deck = info.Deck,
+                DeckFile = info.DeckFile,
+                Dialog = info.Dialog,
+                Locale = info.Locale,
+                Host = info.Host,
+                Port = info.Port,
+                HostInfo = info.HostInfo,
+                Version = info.Version,
+                Hand = info.Hand,
+                Debug = info.Debug,
+                Chat = info.Chat,
+                ChatIntervalMilliseconds = info.ChatIntervalMilliseconds ?? 0,
+                DuelStartChatDelayMilliseconds = info.DuelStartChatDelayMilliseconds ?? 0,
+                MaxQueuedChatMessages = info.MaxQueuedChatMessages,
+                UseWebSocket = info.UseWebSocket,
+                WebSocketUseWss = info.WebSocketUseWss,
+                WebSocketPath = info.WebSocketPath,
+                WebSocketFramingMode = info.WebSocketFramingMode
+            };
+        }
+
+        Client = new GameClient(effectiveInfo, cardRepository ?? CardDatabase.Repository, _botTransport);
     }
 
     public GameClient Client { get; }

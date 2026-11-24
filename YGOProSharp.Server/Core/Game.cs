@@ -478,7 +478,8 @@ namespace YGOProSharp.Server
             else
             {
                 packet.WriteUnicode(msg, msg.Length + 1);
-                SendToAllBut(packet, player);
+                // 标准 YGOPro / MDPro3 客户端依赖服务端将 STOC_CHAT 广播给全体客户端（含发送者自身）以显示聊天内容。
+                SendToAll(packet);
             }
             if (OnPlayerChat != null)
             {
@@ -492,7 +493,7 @@ namespace YGOProSharp.Server
             BinaryWriter packet = GamePacketFactory.Create(StocMessage.Chat);
             packet.Write((short)PlayerType.Yellow);
             packet.WriteUnicode(finalmsg, finalmsg.Length + 1);
-            SendToAllBut(packet, player);
+            SendToAll(packet);
         }
 
         public void SetReady(Player player, bool ready)

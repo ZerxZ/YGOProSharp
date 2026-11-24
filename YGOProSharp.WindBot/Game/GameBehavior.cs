@@ -57,9 +57,9 @@ namespace WindBot.Game
             _duel = new Duel();
 
             _ai = new GameAI(Game, _duel);
-            _ai.Executor = DecksManager.Instantiate(_ai, _duel);
             try
             {
+                _ai.Executor = DecksManager.Instantiate(_ai, _duel);
                 Game.SetDeckContext(_ai.Executor.GetType().Name);
                 string deckName = Game.DeckFile ?? _ai.Executor.Deck;
                 Deck = Deck.Load(deckName, CardRepository);
@@ -84,7 +84,7 @@ namespace WindBot.Game
                 return;
 
             _disposed = true;
-            (_ai?.Executor as IDisposable)?.Dispose();
+            _ai?.Dispose();
         }
 
         public int GetLocalPlayer(int player)
@@ -276,8 +276,19 @@ namespace WindBot.Game
         {
             string name = packet.ReadUnicode(20);
             int pos = packet.ReadByte();
+            bool isNewOtherDuelist = pos >= 0 && pos < 4 && pos != _room.Position
+                && !string.IsNullOrWhiteSpace(name)
+                && string.IsNullOrWhiteSpace(_room.Names[pos]);
             if (pos < 8)
                 _room.Names[pos] = name;
+
+            // 当 Bot 已在房间内而新对手进入时，略微延后发送欢迎语以确保客户端房间界面就绪可见。
+            if (isNewOtherDuelist && _room.Position >= 0 && _room.Position < 4)
+            {
+                if (Game.ChatIntervalMilliseconds > 0)
+                    Game.DelayChat(Math.Min(800, Game.DuelStartChatDelayMilliseconds));
+                _ai.OnPlayerEnter(name);
+            }
         }
 
         private void OnPlayerChange(BinaryReader packet)
@@ -356,6 +367,7 @@ namespace WindBot.Game
 
         private void OnDuelEnd(BinaryReader packet)
         {
+            Game.ClearPendingChats();
             Thread.Sleep(500);
             Connection.Close();
         }
@@ -505,6 +517,9 @@ namespace WindBot.Game
             {
                 Logger.DebugWriteLine("Duel started: " + _room.Names[0] + " versus " + _room.Names[1]);
             }
+            // 对局刚开始时延迟首条聊天（默认 ~4.0s），等待客户端完成 3D 场景加载与开局过渡，避免首回合台词被截留或一次性倾倒。
+            Game.ClearPendingChats();
+            Game.DelayChat(Game.DuelStartChatDelayMilliseconds);
             _ai.OnStart();
         }
 

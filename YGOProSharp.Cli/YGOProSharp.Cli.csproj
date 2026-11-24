@@ -26,9 +26,6 @@
 
     <ItemGroup>
         <None Include="..\LICENSE" Pack="true" PackagePath="\" />
-        <None Update="LuaDecks\**\*">
-            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-        </None>
     </ItemGroup>
 
 </Project>

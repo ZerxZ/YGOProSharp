@@ -24,6 +24,7 @@ namespace WindBot.Game
         public string Deck;
         public string DeckFile;
         public string Dialog;
+        public string Locale;
         public int Hand;
         public bool Debug;
         public bool _chat;
@@ -40,9 +41,43 @@ namespace WindBot.Game
 
         private string _roomInfo;
 
+        private readonly object _chatQueueLock = new();
+        private readonly Queue<string> _pendingChats = new();
+        private DateTime _nextChatAllowedAtUtc = DateTime.MinValue;
+        private readonly int _chatIntervalMilliseconds;
+        private readonly int _duelStartChatDelayMilliseconds;
+        private readonly int _maxQueuedChatMessages;
+
         private GameBehavior _behavior;
         private bool _pendingInitialConnect;
         private bool _disposed;
+
+        /// <summary>
+        /// 当前客户端连续聊天最小间隔（毫秒，0 表示不节流立即发送）。
+        /// </summary>
+        public int ChatIntervalMilliseconds => _chatIntervalMilliseconds;
+
+        /// <summary>
+        /// 对局开始时延后首条聊天的时间（毫秒）。
+        /// </summary>
+        public int DuelStartChatDelayMilliseconds => _duelStartChatDelayMilliseconds;
+
+        /// <summary>
+        /// 待发送聊天队列上限。
+        /// </summary>
+        public int MaxQueuedChatMessages => _maxQueuedChatMessages;
+
+        /// <summary>
+        /// 当前尚未发出的排队聊天条数。
+        /// </summary>
+        public int PendingChatCount
+        {
+            get
+            {
+                lock (_chatQueueLock)
+                    return _pendingChats.Count;
+            }
+        }
 
         public GameClient(WindBotInfo Info)
             : this(Info, CardDatabase.Repository, null)
@@ -67,6 +102,7 @@ namespace WindBot.Game
             Deck = Info.Deck;
             DeckFile = Info.DeckFile;
             Dialog = Info.Dialog;
+            Locale = string.IsNullOrWhiteSpace(Info.Locale) ? WindBotRuntime.Locale : Info.Locale.Trim();
             Hand = Info.Hand;
             Debug = Info.Debug;
             _chat = Info.Chat;
@@ -81,6 +117,9 @@ namespace WindBot.Game
             _webSocketPath = Info.WebSocketPath;
             _webSocketFramingMode = Info.WebSocketFramingMode;
             _externalAddressHost = Info.Host;
+            _chatIntervalMilliseconds = Math.Max(0, Info.ChatIntervalMilliseconds ?? WindBotRuntime.ChatIntervalMilliseconds);
+            _duelStartChatDelayMilliseconds = Math.Max(0, Info.DuelStartChatDelayMilliseconds ?? WindBotRuntime.DuelStartChatDelayMilliseconds);
+            _maxQueuedChatMessages = Math.Max(1, Info.MaxQueuedChatMessages ?? WindBotRuntime.MaxQueuedChatMessages);
         }
 
         internal void SetDeckContext(string executorName)
@@ -256,9 +295,109 @@ namespace WindBot.Game
             }
 
             Connection.Update();
+            FlushPendingChats();
         }
 
+        /// <summary>
+        /// 发送一条聊天消息。启用节流（<see cref="ChatIntervalMilliseconds"/> &gt; 0）时，首条满足冷却立即发出，后续密集消息按间隔逐条平滑发出，避免一次性倾倒。
+        /// </summary>
         public void Chat(string message)
+        {
+            if (Connection == null || string.IsNullOrEmpty(message))
+                return;
+
+            DateTime nowUtc = DateTime.UtcNow;
+            bool sendNow = false;
+
+            lock (_chatQueueLock)
+            {
+                if (_chatIntervalMilliseconds <= 0 && nowUtc >= _nextChatAllowedAtUtc && _pendingChats.Count == 0)
+                {
+                    sendNow = true;
+                }
+                else if (_pendingChats.Count == 0 && nowUtc >= _nextChatAllowedAtUtc)
+                {
+                    sendNow = true;
+                    _nextChatAllowedAtUtc = nowUtc.AddMilliseconds(_chatIntervalMilliseconds);
+                }
+                else
+                {
+                    while (_pendingChats.Count >= _maxQueuedChatMessages)
+                        _pendingChats.Dequeue();
+                    _pendingChats.Enqueue(message);
+                }
+            }
+
+            if (sendNow)
+                SendChatPacket(message);
+        }
+
+        /// <summary>
+        /// 绕过节流队列立即发送一条聊天消息（用于显式立即通知或单元测试）。
+        /// </summary>
+        public void ChatImmediate(string message)
+        {
+            if (Connection == null || string.IsNullOrEmpty(message))
+                return;
+
+            SendChatPacket(message);
+        }
+
+        /// <summary>
+        /// 延后下一次聊天发送的允许时间（不阻塞线程），用于等待客户端完成切场加载。
+        /// </summary>
+        public void DelayChat(int delayMilliseconds)
+        {
+            if (delayMilliseconds <= 0)
+                return;
+
+            DateTime targetUtc = DateTime.UtcNow.AddMilliseconds(delayMilliseconds);
+            lock (_chatQueueLock)
+            {
+                if (targetUtc > _nextChatAllowedAtUtc)
+                    _nextChatAllowedAtUtc = targetUtc;
+            }
+        }
+
+        /// <summary>
+        /// 清空尚未发出的排队聊天消息（如对局结束或断线清理时调用）。
+        /// </summary>
+        public void ClearPendingChats()
+        {
+            lock (_chatQueueLock)
+            {
+                _pendingChats.Clear();
+                _nextChatAllowedAtUtc = DateTime.MinValue;
+            }
+        }
+
+        /// <summary>
+        /// 尝试按节流间隔推送最多一条已到期的排队聊天消息（由 <see cref="Tick"/> 自动调用）。
+        /// </summary>
+        public bool FlushPendingChats()
+        {
+            if (Connection == null || !Connection.IsConnected)
+                return false;
+
+            string nextMessage = null;
+            DateTime nowUtc = DateTime.UtcNow;
+
+            lock (_chatQueueLock)
+            {
+                if (_pendingChats.Count == 0 || nowUtc < _nextChatAllowedAtUtc)
+                    return false;
+
+                nextMessage = _pendingChats.Dequeue();
+                _nextChatAllowedAtUtc = _chatIntervalMilliseconds > 0
+                    ? nowUtc.AddMilliseconds(_chatIntervalMilliseconds)
+                    : nowUtc;
+            }
+
+            SendChatPacket(nextMessage);
+            return true;
+        }
+
+        private void SendChatPacket(string message)
         {
             if (Connection == null)
                 return;
@@ -297,6 +436,7 @@ namespace WindBot.Game
         private void CleanupRuntime()
         {
             _pendingInitialConnect = false;
+            ClearPendingChats();
 
             if (Connection != null)
             {

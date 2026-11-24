@@ -60,6 +60,16 @@ public static class CliOptionsFactory
             Deck = configuration.GetString("BotDeck") ?? configuration.GetString("Deck"),
             DeckFile = configuration.GetString("BotDeckFile") ?? configuration.GetString("DeckFile"),
             Dialog = configuration.GetString("BotDialog", configuration.GetString("Dialog", "default")),
+            Locale = configuration.GetString("BotLocale") ?? configuration.GetString("Locale"),
+            ChatIntervalMilliseconds = configuration.Has("BotChatIntervalMs")
+                ? configuration.GetInt("BotChatIntervalMs")
+                : (configuration.Has("ChatIntervalMs") ? configuration.GetInt("ChatIntervalMs") : null),
+            DuelStartChatDelayMilliseconds = configuration.Has("BotDuelStartChatDelayMs")
+                ? configuration.GetInt("BotDuelStartChatDelayMs")
+                : (configuration.Has("DuelStartChatDelayMs") ? configuration.GetInt("DuelStartChatDelayMs") : null),
+            MaxQueuedChatMessages = configuration.Has("MaxQueuedChatMessages")
+                ? configuration.GetInt("MaxQueuedChatMessages")
+                : null,
             Host = "127.0.0.1",
             Port = serverOptions.Port,
             Version = (int)serverOptions.ClientVersion,
@@ -90,6 +100,7 @@ public static class CliOptionsFactory
         info.Deck = configuration.GetString("Deck", info.Deck);
         info.DeckFile = configuration.GetString("DeckFile", info.DeckFile);
         info.Dialog = configuration.GetString("Dialog", info.Dialog);
+        info.Locale = configuration.GetString("Locale", info.Locale);
         info.Host = configuration.GetString("Host", info.Host);
         info.Port = configuration.GetInt("Port", info.Port);
         info.HostInfo = configuration.GetString("HostInfo", info.HostInfo);
@@ -114,9 +125,16 @@ public static class CliOptionsFactory
         ArgumentNullException.ThrowIfNull(configuration);
 
         bool enableLuaDecks = configuration.GetBool("EnableLuaDecks", true);
-        ILuaRuntime? luaRuntime = enableLuaDecks ? NLuaRuntime.Instance : null;
+        bool enableLuaDialogs = configuration.Has("EnableLuaDialogs")
+            ? configuration.GetBool("EnableLuaDialogs", true)
+            : enableLuaDecks;
+
+        ILuaRuntime? luaRuntime = (enableLuaDecks || enableLuaDialogs) ? NLuaRuntime.Instance : null;
         ILuaScriptSourceProvider? luaScriptProvider = enableLuaDecks
             ? CreateLuaDeckScriptProvider(configuration)
+            : null;
+        ILuaScriptSourceProvider? luaDialogScriptProvider = enableLuaDialogs
+            ? CreateLuaDialogScriptProvider(configuration)
             : null;
 
         return new WindBotRuntimeOptions
@@ -124,11 +142,17 @@ public static class CliOptionsFactory
             CardRepository = cardRepository,
             TickDelayMilliseconds = configuration.GetInt("TickDelayMilliseconds", 30),
             DefaultBot = CreateWindBotInfo(configuration),
+            Locale = configuration.GetString("BotLocale") ?? configuration.GetString("Locale"),
+            ChatIntervalMilliseconds = configuration.GetInt("ChatIntervalMs", 800),
+            DuelStartChatDelayMilliseconds = configuration.GetInt("DuelStartChatDelayMs", 4000),
+            MaxQueuedChatMessages = configuration.GetInt("MaxQueuedChatMessages", 6),
             UsePreErrataEffects = configuration.GetBool("UsePreErrataEffects", false),
             ServerMode = configuration.GetBool("ServerMode", false),
             LuaRuntime = luaRuntime,
             LuaScriptProvider = luaScriptProvider,
             PreferLuaDecks = configuration.GetBool("PreferLuaDecks", false),
+            LuaDialogScriptProvider = luaDialogScriptProvider,
+            PreferLuaDialogs = configuration.GetBool("PreferLuaDialogs", false),
             ThrowOnLuaScriptError = configuration.GetBool("ThrowOnLuaScriptError", false)
         };
     }
@@ -142,10 +166,35 @@ public static class CliOptionsFactory
         if (directories.Count == 0)
             return new FileSystemLuaDeckScriptProvider();
 
-        // 自定义目录优先，再回退默认目录
+        // 自定义目录优先，再回退集中目录 Decks/Lua（及兼容路径）
+        directories.Add(Path.Combine("Decks", "Lua"));
+        directories.Add(Path.Combine("Deck", "Lua"));
+        directories.Add(Path.Combine(AppContext.BaseDirectory, "Decks", "Lua"));
+        directories.Add(Path.Combine(AppContext.BaseDirectory, "Deck", "Lua"));
         directories.Add("LuaDecks");
         directories.Add(Path.Combine(AppContext.BaseDirectory, "LuaDecks"));
         return new FileSystemLuaDeckScriptProvider(directories.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+    }
+
+    private static FileSystemLuaDialogScriptProvider CreateLuaDialogScriptProvider(CliConfiguration configuration)
+    {
+        List<string> directories = new();
+        AddSplitPaths(directories, configuration.GetString("LuaDialogDir"));
+        AddSplitPaths(directories, configuration.GetString("LuaDialogDirs"));
+
+        if (directories.Count == 0)
+            return new FileSystemLuaDialogScriptProvider();
+
+        // 自定义目录优先，再回退集中目录 Dialogs/Lua（及兼容路径）
+        directories.Add(Path.Combine("Dialogs", "Lua"));
+        directories.Add(Path.Combine("Dialog", "Lua"));
+        directories.Add("Dialogs");
+        directories.Add(Path.Combine(AppContext.BaseDirectory, "Dialogs", "Lua"));
+        directories.Add(Path.Combine(AppContext.BaseDirectory, "Dialog", "Lua"));
+        directories.Add(Path.Combine(AppContext.BaseDirectory, "Dialogs"));
+        directories.Add("LuaDialogs");
+        directories.Add(Path.Combine(AppContext.BaseDirectory, "LuaDialogs"));
+        return new FileSystemLuaDialogScriptProvider(directories.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
     }
 
     private static void AddSplitPaths(List<string> target, string? raw)

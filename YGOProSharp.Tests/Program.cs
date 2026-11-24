@@ -65,6 +65,12 @@ Run("WindBot decks manager resolves registered, overriding, and dynamic Lua deck
 Run("WindBot GameBehavior disposes Lua deck executor when deck file is missing", WindBotGameBehaviorDisposesLuaExecutorOnFailure);
 Run("Project boundaries keep concrete Lua libraries out of Abstractions and WindBot", ProjectBoundariesKeepConcreteLuaLibrariesOut);
 Run("WindBot dialogs degrades gracefully when dialog file is missing", WindBotDialogsDegradesGracefullyWhenDialogFileIsMissing);
+Run("WindBot Lua dialog xmake-style DSL supports scopes, fallback, dynamic hooks, and disposal", WindBotLuaDialogXmakeStyleDslSupportsScopesFallbackAndDynamicHooks);
+Run("WindBot Lua dialog supports module table, override priority, error isolation, and GameBehavior disposal", WindBotLuaDialogSupportsModuleTablePriorityAndErrorIsolation);
+Run("CLI NLua runtime executes ExampleBlueEyes Lua dialog end-to-end", CliNLuaRuntimeExecutesExampleBlueEyesDialogEndToEnd);
+Run("WindBot dialogs supports localization for JSON, split Lua files, and default Decks/Lua & Dialogs/Lua folders", WindBotDialogsSupportsLocalizationAndConsolidatedFolders);
+Run("WindBot chat pacer paces bursts, caps queue, and respects duel-start delay", WindBotChatPacerPacesBurstsAndRespectsDelay);
+await RunAsync("Server broadcasts STOC_CHAT back to sender and opponent for MDPro3 compatibility", ServerBroadcastsChatToSenderAndOpponentAsync);
 Run("WindBot game behavior throws clear error when deck is missing", WindBotGameBehaviorThrowsClearErrorWhenDeckIsMissing);
 Run("WindBot bot list path logs missing file", WindBotBotListPathLogsMissingFile);
 Run("Protocol message enums include reference values", ProtocolMessageEnumsIncludeReferenceValues);
@@ -2102,7 +2108,7 @@ static void WindBotLuaXmakeStyleDslSupportsScopesRulesAndHooks()
 static void CliNLuaRuntimeExecutesExampleScriptAndLua54Features()
 {
     string root = FindRepositoryRoot();
-    string luaDecksDir = Path.Combine(root, "YGOProSharp.Cli", "LuaDecks");
+    string luaDecksDir = Path.Combine(root, "YGOProSharp.WindBot", "Decks", "Lua");
 
     // 1. 验证 CLI 默认自动装配 NLuaRuntime 并解析自定义 LuaDeckDir 与开关
     INamedCardRepository cardRepo = TestNamedRepository(
@@ -2654,6 +2660,752 @@ static async Task WindBotServiceStartBotCapturesStartupErrorAsync()
         threw = true;
     }
     AssertTrue(threw);
+}
+
+static List<string> CaptureDialogChatMessages(
+    WindBot.Game.GameClient client,
+    InMemoryNetworkTransport clientTransport,
+    InMemoryNetworkTransport serverTransport,
+    Action<WindBot.Game.GameClient> invokeDialogs)
+{
+    List<string> messages = new();
+    YGOClient serverPeer = new(serverTransport);
+    serverPeer.PacketReceivedRaw += packet =>
+    {
+        if (packet.Length > 1 && packet.Span[0] == (byte)CtosMessage.Chat)
+        {
+            string text = Encoding.Unicode.GetString(packet.Span.Slice(1)).TrimEnd('\0');
+            messages.Add(text);
+        }
+    };
+
+    client.Start(clientTransport);
+    // 排空初始握手包（ExternalAddress / PlayerInfo / JoinGame）
+    serverPeer.Update();
+    messages.Clear();
+
+    invokeDialogs(client);
+    serverPeer.Update();
+    serverPeer.Close();
+    return messages;
+}
+
+static void WindBotLuaDialogXmakeStyleDslSupportsScopesFallbackAndDynamicHooks()
+{
+    string previousDirectory = Environment.CurrentDirectory;
+    string tempDir = Path.Combine(Path.GetTempPath(), "YGOProSharpLuaDialogDsl_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(Path.Combine(tempDir, "Dialogs"));
+    File.WriteAllText(
+        Path.Combine(tempDir, "Dialogs", "base-fallback.json"),
+        """
+        {
+          "welcome": ["FALLBACK_WELCOME"],
+          "deckerror": ["FALLBACK_DECK_ERROR:{0}"],
+          "endturn": ["FALLBACK_END_TURN"],
+          "surrender": ["FALLBACK_SURRENDER"],
+          "facedownmonstername": "默认里侧怪兽"
+        }
+        """);
+
+    int initCalls = 0;
+    int disposeCalls = 0;
+    bool initSawMergedFallback = false;
+
+    FakeLuaRuntime runtime = new(context =>
+    {
+        var dialogFn = (WindBot.Game.AI.Lua.LuaDslAction1)context.Globals["dialog"]!;
+        var dialogEndFn = (WindBot.Game.AI.Lua.LuaDslAction0)context.Globals["dialog_end"]!;
+        var setLocale = (WindBot.Game.AI.Lua.LuaDslAction1)context.Globals["set_locale"]!;
+        var setDescription = (WindBot.Game.AI.Lua.LuaDslAction1)context.Globals["set_description"]!;
+        var setAuthor = (WindBot.Game.AI.Lua.LuaDslAction1)context.Globals["set_author"]!;
+        var setFallback = (WindBot.Game.AI.Lua.LuaDslAction1)context.Globals["set_fallback"]!;
+        var setFacedown = (WindBot.Game.AI.Lua.LuaDslAction1)context.Globals["set_facedown_monster_name"]!;
+        var addWelcome = (WindBot.Game.AI.Lua.LuaDslAction3)context.Globals["add_welcome"]!;
+        var setSummon = (WindBot.Game.AI.Lua.LuaDslAction3)context.Globals["set_summon"]!;
+        var addAttack = (WindBot.Game.AI.Lua.LuaDslAction3)context.Globals["add_attack"]!;
+        var clearLines = (WindBot.Game.AI.Lua.LuaDslAction1)context.Globals["clear_lines"]!;
+        var onInit = (WindBot.Game.AI.Lua.LuaDslAction1)context.Globals["on_init"]!;
+        var onSummon = (WindBot.Game.AI.Lua.LuaDslAction1)context.Globals["on_summon"]!;
+        var onDirectAttack = (WindBot.Game.AI.Lua.LuaDslAction1)context.Globals["on_directattack"]!;
+        var onCustom = (WindBot.Game.AI.Lua.LuaDslAction1)context.Globals["on_custom"]!;
+        var onMessage = (WindBot.Game.AI.Lua.LuaDslAction1)context.Globals["on_message"]!;
+        var onDispose = (WindBot.Game.AI.Lua.LuaDslAction1)context.Globals["on_dispose"]!;
+
+        // 顶层共享设置
+        setFacedown("顶层里侧怪兽");
+
+        dialogFn("PersonaAlpha");
+            addWelcome("ALPHA_ONLY", null, null);
+        dialogEndFn();
+
+        dialogFn("PersonaBeta");
+            setLocale("zh-CN");
+            setDescription("xmake-style persona");
+            setAuthor("tester");
+            setFallback("base-fallback");
+            addWelcome("BETA_WELCOME", null, null);
+            setSummon("STATIC_SUMMON:{0}", null, null);
+            addAttack("{0}->ATK->{1}", null, null);
+            // 清空 endturn，验证显式 clear_lines 阻止回退继承
+            clearLines("endturn");
+            // 延迟解析函数名
+            onSummon("format_beta_summon");
+            onDirectAttack(new FakeRawLuaClosure(args =>
+            {
+                string attacker = (string)args[1]!;
+                return attacker == "Silent" ? "" : null;
+            }));
+            onCustom(new FakeRawLuaClosure(args => $"CUSTOM#{args[1]}:{args[2]}"));
+            onMessage(new FakeRawLuaClosure(args =>
+            {
+                string eventName = (string)args[1]!;
+                string text = (string)args[2]!;
+                return eventName == "welcome" ? "[PREFIX]" + text : null;
+            }));
+            onInit(new FakeRawLuaClosure(args =>
+            {
+                initCalls++;
+                var ctx = (WindBot.Game.AI.Lua.LuaDialogContext)args[0]!;
+                initSawMergedFallback = ctx.GetLines("surrender").Contains("FALLBACK_SURRENDER");
+                return null;
+            }));
+            onDispose(new FakeRawLuaClosure(_ =>
+            {
+                disposeCalls++;
+                return null;
+            }));
+        dialogEndFn();
+
+        // 在脚本尾部定义具名回调
+        context.Functions["format_beta_summon"] = new FakeLuaFunction(args =>
+        {
+            string monster = (string)args[1]!;
+            return monster == "BlueEyes" ? "SPECIAL_BLUE_EYES" : null;
+        });
+    });
+
+    WindBot.Game.AI.Lua.InMemoryLuaDialogScriptProvider provider = new();
+    provider.Add("PersonaBeta", "-- xmake dialog dsl");
+
+    try
+    {
+        Environment.CurrentDirectory = tempDir;
+        WindBot.Game.AI.DialogsManager.ResetLua();
+        WindBot.Game.AI.DialogsManager.ConfigureLua(runtime, provider);
+
+        (InMemoryNetworkTransport clientTransport, InMemoryNetworkTransport serverTransport) =
+            InMemoryNetworkTransport.CreatePair();
+        using WindBot.Game.GameClient client = new(
+            new WindBot.WindBotInfo { Name = "BetaBot", Deck = "AI_OldSchool", Dialog = "PersonaBeta", Chat = true, ChatIntervalMilliseconds = 0, DuelStartChatDelayMilliseconds = 0 },
+            TestNamedRepository(),
+            clientTransport);
+
+        WindBot.Game.AI.Dialogs? dialogs = null;
+        List<string> chats = CaptureDialogChatMessages(client, clientTransport, serverTransport, c =>
+        {
+            WindBot.Game.Duel duel = new();
+            duel.Turn = 3;
+            dialogs = new WindBot.Game.AI.Dialogs(c, duel);
+
+            AssertTrue(dialogs.LuaScript != null);
+            AssertEqual("PersonaBeta", dialogs.LuaScript!.Dsl.DeclaredDialogName);
+            AssertEqual("zh-CN", dialogs.LuaScript.Dsl.DeclaredLocale);
+            AssertEqual("xmake-style persona", dialogs.LuaScript.Dsl.DeclaredDescription);
+            AssertEqual("tester", dialogs.LuaScript.Dsl.DeclaredAuthor);
+            AssertEqual("顶层里侧怪兽", dialogs.FacedownMonsterName);
+            AssertEqual(2, initCalls); // 1 次来自 GameBehavior 内 GameAI，1 次来自显式 dialogs
+            AssertTrue(initSawMergedFallback);
+
+            dialogs.SendWelcome();
+            dialogs.SendDeckSorry("BadCard");
+            dialogs.SendEndTurn();
+            dialogs.SendSummon("BlueEyes");
+            dialogs.SendSummon("OtherMonster");
+            dialogs.SendAttack("Dragon", "monster");
+            dialogs.SendDirectAttack("Silent");
+            dialogs.SendCustomChat(2, "OK");
+        });
+
+        AssertEqual(6, chats.Count);
+        AssertEqual("[PREFIX]BETA_WELCOME", chats[0]);
+        AssertEqual("FALLBACK_DECK_ERROR:BadCard", chats[1]);
+        AssertEqual("SPECIAL_BLUE_EYES", chats[2]);
+        AssertEqual("STATIC_SUMMON:OtherMonster", chats[3]);
+        AssertEqual("Dragon->ATK->顶层里侧怪兽", chats[4]);
+        AssertEqual("CUSTOM#2:OK", chats[5]);
+
+        dialogs!.Dispose();
+        client.Dispose();
+        AssertEqual(2, disposeCalls);
+        AssertTrue(dialogs.LuaScript == null);
+        // 确认 XLua 释放安全：全部上下文与 ILuaFunction 均已释放
+        AssertTrue(runtime.CreatedContexts.All(c => c.Disposed));
+        AssertTrue(runtime.CreatedContexts.All(c => c.TrackedFunctions.All(f => f.Disposed)));
+    }
+    finally
+    {
+        WindBot.Game.AI.DialogsManager.ResetLua();
+        Environment.CurrentDirectory = previousDirectory;
+        Directory.Delete(tempDir, recursive: true);
+    }
+}
+
+static void WindBotLuaDialogSupportsModuleTablePriorityAndErrorIsolation()
+{
+    string previousDirectory = Environment.CurrentDirectory;
+    string tempDir = Path.Combine(Path.GetTempPath(), "YGOProSharpLuaDialogMod_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(Path.Combine(tempDir, "Dialogs"));
+    File.WriteAllText(
+        Path.Combine(tempDir, "Dialogs", "shared.json"),
+        """
+        {
+          "welcome": ["JSON_WELCOME"],
+          "summon": ["JSON_SUMMON:{0}"]
+        }
+        """);
+
+    List<FakeLuaTable> createdTables = new();
+    FakeLuaRuntime runtime = new(context =>
+    {
+        FakeLuaTable table = new();
+        table.Fields["welcome"] = new[] { "LUA_TABLE_WELCOME" };
+        table.Fields["summon"] = new[] { "LUA_TABLE_SUMMON:{0}" };
+        table.Functions["OnSummon"] = new FakeLuaFunction(_ => throw new InvalidOperationException("boom in dialog hook"));
+        createdTables.Add(table);
+        context.ModuleResult = table;
+    });
+
+    WindBot.Game.AI.Lua.InMemoryLuaDialogScriptProvider provider = new();
+    provider.Add("shared", "-- return module table");
+
+    try
+    {
+        Environment.CurrentDirectory = tempDir;
+        WindBot.Game.AI.DialogsManager.ResetLua();
+
+        // 1. 默认 PreferLuaDialogs=false 且无 AllowOverride 时，同名优先使用 JSON
+        WindBot.Game.AI.DialogsManager.ConfigureLua(runtime, provider, preferLuaDialogs: false, throwOnScriptError: false);
+        WindBot.Game.GameClient jsonClient = new(new WindBot.WindBotInfo { Dialog = "shared", Chat = true }, TestNamedRepository());
+        using (WindBot.Game.AI.Dialogs jsonDialogs = new(jsonClient))
+        {
+            AssertTrue(jsonDialogs.LuaScript == null);
+            AssertEqual("JSON_WELCOME", jsonDialogs.GetLines("welcome")[0]);
+        }
+
+        // 2. 注册 AllowOverride=true 描述符后，优先走 Lua 模块表，且异常在 throwOnScriptError=false 时隔离并回退静态台词
+        WindBot.Game.AI.DialogsManager.RegisterLuaDialog(
+            new WindBot.Game.AI.Lua.LuaDialogDescriptor("shared", "shared", allowOverride: true));
+        (InMemoryNetworkTransport clientTransport, InMemoryNetworkTransport serverTransport) =
+            InMemoryNetworkTransport.CreatePair();
+        using WindBot.Game.GameClient luaClient = new(
+            new WindBot.WindBotInfo { Deck = "AI_OldSchool", Dialog = "shared", Chat = true, ChatIntervalMilliseconds = 0, DuelStartChatDelayMilliseconds = 0 },
+            TestNamedRepository(),
+            clientTransport);
+
+        List<string> chats = CaptureDialogChatMessages(luaClient, clientTransport, serverTransport, c =>
+        {
+            using WindBot.Game.AI.Dialogs luaDialogs = new(c);
+            AssertTrue(luaDialogs.LuaScript != null);
+            luaDialogs.SendWelcome();
+            luaDialogs.SendSummon("DarkMagician");
+        });
+
+        AssertEqual(2, chats.Count);
+        AssertEqual("LUA_TABLE_WELCOME", chats[0]);
+        AssertEqual("LUA_TABLE_SUMMON:DarkMagician", chats[1]);
+
+        luaClient.Dispose();
+        AssertTrue(createdTables.Count > 0 && createdTables.All(t => t.Disposed));
+
+        // 3. throwOnScriptError=true 时向上抛出异常
+        FakeLuaTable throwingTable = new();
+        throwingTable.Functions["OnWelcome"] = new FakeLuaFunction(_ => throw new InvalidOperationException("strict error"));
+        FakeLuaRuntime strictRuntime = new(ctx => ctx.ModuleResult = throwingTable);
+        WindBot.Game.AI.DialogsManager.ResetLua();
+        WindBot.Game.AI.DialogsManager.ConfigureLua(strictRuntime, provider, preferLuaDialogs: true, throwOnScriptError: true);
+
+        using (WindBot.Game.AI.Dialogs strictDialogs = new(jsonClient))
+        {
+            bool threw = false;
+            try
+            {
+                strictDialogs.SendWelcome();
+            }
+            catch (InvalidOperationException ex)
+            {
+                threw = ex.Message.Contains("strict error", StringComparison.Ordinal);
+            }
+
+            AssertTrue(threw);
+        }
+
+        // 4. 验证 GameBehavior 在加载卡组失败时也会释放 Lua Dialogs 资源
+        FakeLuaTable failDeckDialogTable = new();
+        failDeckDialogTable.Functions["OnWelcome"] = new FakeLuaFunction(_ => "hi");
+        FakeLuaRuntime failDeckRuntime = new(ctx => ctx.ModuleResult = failDeckDialogTable);
+        WindBot.Game.AI.DialogsManager.ResetLua();
+        WindBot.Game.AI.DialogsManager.ConfigureLua(failDeckRuntime, provider, preferLuaDialogs: true);
+
+        WindBot.Game.GameClient missingDeckClient = new(
+            new WindBot.WindBotInfo { Deck = "AI_OldSchool", DeckFile = "NonExistentDeckForDialogDispose", Dialog = "shared" },
+            TestNamedRepository());
+        bool deckThrew = false;
+        try
+        {
+            _ = new WindBot.Game.GameBehavior(missingDeckClient, TestNamedRepository());
+        }
+        catch (InvalidOperationException)
+        {
+            deckThrew = true;
+        }
+
+        AssertTrue(deckThrew);
+        AssertTrue(failDeckDialogTable.Disposed);
+        AssertTrue(failDeckRuntime.CreatedContexts.All(c => c.Disposed));
+    }
+    finally
+    {
+        WindBot.Game.AI.DialogsManager.ResetLua();
+        Environment.CurrentDirectory = previousDirectory;
+        Directory.Delete(tempDir, recursive: true);
+    }
+}
+
+static void CliNLuaRuntimeExecutesExampleBlueEyesDialogEndToEnd()
+{
+    string root = FindRepositoryRoot();
+    string luaDialogsDir = Path.Combine(root, "YGOProSharp.WindBot", "Dialogs", "Lua");
+    INamedCardRepository cardRepo = TestNamedRepository(TestNamedCard(89631139));
+
+    // 1. 验证 CLI 选项装配 LuaDialogDir / PreferLuaDialogs / EnableLuaDialogs / Locale
+    CliConfiguration cliConfig = CliConfiguration.Load([
+        $"LuaDialogDir={luaDialogsDir}",
+        "Locale=zh-CN",
+        "PreferLuaDialogs=true",
+        "ThrowOnLuaScriptError=true"
+    ]);
+    WindBot.WindBotRuntimeOptions runtimeOptions = CliOptionsFactory.CreateWindBotRuntimeOptions(cliConfig, cardRepo);
+    AssertTrue(runtimeOptions.LuaRuntime is NLuaRuntime);
+    AssertTrue(runtimeOptions.LuaDialogScriptProvider is WindBot.Game.AI.Lua.FileSystemLuaDialogScriptProvider);
+    AssertTrue(runtimeOptions.PreferLuaDialogs);
+    AssertEqual("zh-CN", runtimeOptions.Locale);
+
+    CliConfiguration disabledDialogs = CliConfiguration.Load(["EnableLuaDecks=false", "EnableLuaDialogs=false"]);
+    WindBot.WindBotRuntimeOptions disabledOptions = CliOptionsFactory.CreateWindBotRuntimeOptions(disabledDialogs, cardRepo);
+    AssertTrue(disabledOptions.LuaRuntime is null);
+    AssertTrue(disabledOptions.LuaDialogScriptProvider is null);
+
+    try
+    {
+        WindBot.Game.AI.DecksManager.ResetLua();
+        WindBot.Game.AI.DialogsManager.ResetLua();
+        WindBot.WindBotRuntime.Configure(runtimeOptions);
+
+        // 2. 简体中文（zh-CN）：验证 locale("zh-CN", "zh") 块 + set_fallback("auto") 命中 zh-CN.json + 动态青眼台词
+        (InMemoryNetworkTransport clientTransportZh, InMemoryNetworkTransport serverTransportZh) =
+            InMemoryNetworkTransport.CreatePair();
+        using WindBot.Game.GameClient clientZh = new(
+            new WindBot.WindBotInfo
+            {
+                Name = "BlueEyesBotZh",
+                Deck = "AI_OldSchool",
+                Dialog = "ExampleBlueEyes",
+                Locale = "zh-CN",
+                Chat = true,
+                ChatIntervalMilliseconds = 0,
+                DuelStartChatDelayMilliseconds = 0
+            },
+            cardRepo,
+            clientTransportZh);
+
+        List<string> chatsZh = CaptureDialogChatMessages(clientZh, clientTransportZh, serverTransportZh, c =>
+        {
+            WindBot.Game.Duel duel = new();
+            duel.Turn = 1;
+            using WindBot.Game.AI.Dialogs dialogs = new(c, duel);
+
+            AssertTrue(dialogs.LuaScript != null);
+            AssertEqual("ExampleBlueEyes.zh-CN.lua", dialogs.ResolvedDialogName);
+            AssertEqual("ExampleBlueEyes", dialogs.LuaScript!.Dsl.DeclaredDialogName);
+            AssertEqual("zh-CN", dialogs.LuaScript.Dsl.DeclaredLocale);
+            AssertEqual("YGOProSharp", dialogs.LuaScript.Dsl.DeclaredAuthor); // 来自 includes("ExampleBlueEyes.common.lua")
+            AssertEqual("zh-CN", dialogs.Locale);
+            AssertEqual("里侧怪兽", dialogs.FacedownMonsterName);
+            AssertTrue(dialogs.GetLines("deckerror").Any(line => line.Contains("卡组", StringComparison.Ordinal)));
+
+            dialogs.SendNewTurn();
+            dialogs.SendSummon("青眼白龙");
+            dialogs.SendSummon("太古的白石");
+            dialogs.SendDirectAttack("青眼白龙");
+            dialogs.SendAttack("青眼亚白龙", "monster");
+        });
+
+        AssertEqual(5, chatsZh.Count);
+        AssertEqual("第一回合，抽卡！让青眼的传说就此开始！", chatsZh[0]);
+        AssertEqual("出现吧，最强之龙——青眼白龙！", chatsZh[1]);
+        AssertTrue(chatsZh[2].Contains("太古的白石", StringComparison.Ordinal));
+        AssertEqual("青眼白龙，直接攻击！毁灭的爆裂疾风弹！！", chatsZh[3]);
+        AssertTrue(chatsZh[4].Contains("青眼亚白龙", StringComparison.Ordinal) && chatsZh[4].Contains("里侧怪兽", StringComparison.Ordinal));
+
+        // 3. 繁体中文（zh-TW）：验证自动命中拆分文件 ExampleBlueEyes.zh-TW.lua
+        (InMemoryNetworkTransport clientTransportTw, InMemoryNetworkTransport serverTransportTw) =
+            InMemoryNetworkTransport.CreatePair();
+        using WindBot.Game.GameClient clientTw = new(
+            new WindBot.WindBotInfo
+            {
+                Name = "BlueEyesBotTw",
+                Deck = "AI_OldSchool",
+                Dialog = "ExampleBlueEyes",
+                Locale = "zh-TW",
+                Chat = true,
+                ChatIntervalMilliseconds = 0,
+                DuelStartChatDelayMilliseconds = 0
+            },
+            cardRepo,
+            clientTransportTw);
+
+        List<string> chatsTw = CaptureDialogChatMessages(clientTw, clientTransportTw, serverTransportTw, c =>
+        {
+            WindBot.Game.Duel duel = new();
+            duel.Turn = 1;
+            using WindBot.Game.AI.Dialogs dialogs = new(c, duel);
+
+            AssertEqual("ExampleBlueEyes.zh-TW.lua", dialogs.ResolvedDialogName);
+            AssertEqual("zh-TW", dialogs.LuaScript!.Dsl.DeclaredLocale);
+            AssertEqual("YGOProSharp", dialogs.LuaScript.Dsl.DeclaredAuthor);
+            AssertEqual("裡側怪獸", dialogs.FacedownMonsterName);
+            dialogs.SendNewTurn();
+            dialogs.SendSummon("青眼白龍");
+        });
+
+        AssertEqual(2, chatsTw.Count);
+        AssertEqual("第一回合，抽牌！讓青眼的傳說就此開始！", chatsTw[0]);
+        AssertEqual("出現吧，最強之龍——青眼白龍！", chatsTw[1]);
+
+        // 4. 英文（en-US）：验证自动命中英文基线 ExampleBlueEyes.lua + default.json 回退
+        (InMemoryNetworkTransport clientTransportEn, InMemoryNetworkTransport serverTransportEn) =
+            InMemoryNetworkTransport.CreatePair();
+        using WindBot.Game.GameClient clientEn = new(
+            new WindBot.WindBotInfo
+            {
+                Name = "BlueEyesBotEn",
+                Deck = "AI_OldSchool",
+                Dialog = "ExampleBlueEyes",
+                Locale = "en-US",
+                Chat = true,
+                ChatIntervalMilliseconds = 0,
+                DuelStartChatDelayMilliseconds = 0
+            },
+            cardRepo,
+            clientTransportEn);
+
+        List<string> chatsEn = CaptureDialogChatMessages(clientEn, clientTransportEn, serverTransportEn, c =>
+        {
+            WindBot.Game.Duel duel = new();
+            duel.Turn = 1;
+            using WindBot.Game.AI.Dialogs dialogs = new(c, duel);
+
+            AssertEqual("ExampleBlueEyes.lua", dialogs.ResolvedDialogName);
+            AssertEqual("en-US", dialogs.LuaScript!.Dsl.DeclaredLocale);
+            AssertEqual("YGOProSharp", dialogs.LuaScript.Dsl.DeclaredAuthor);
+            AssertEqual("monster", dialogs.FacedownMonsterName);
+            AssertTrue(dialogs.GetLines("deckerror").Any(line => line.Contains("deck", StringComparison.OrdinalIgnoreCase)));
+            dialogs.SendNewTurn();
+            dialogs.SendSummon("Blue-Eyes White Dragon");
+            dialogs.SendDirectAttack("Blue-Eyes White Dragon");
+        });
+
+        AssertEqual(3, chatsEn.Count);
+        AssertEqual("Turn 1, draw! Let the legend of Blue-Eyes begin!", chatsEn[0]);
+        AssertEqual("Come forth, the ultimate engine of destruction — Blue-Eyes White Dragon!", chatsEn[1]);
+        AssertEqual("Blue-Eyes White Dragon, direct attack! Burst Stream of Destruction!!", chatsEn[2]);
+    }
+    finally
+    {
+        WindBot.WindBotRuntime.Locale = null;
+        WindBot.Game.AI.DecksManager.ResetLua();
+        WindBot.Game.AI.DialogsManager.ResetLua();
+    }
+}
+
+static void WindBotDialogsSupportsLocalizationAndConsolidatedFolders()
+{
+    INamedCardRepository cardRepo = TestNamedRepository(TestNamedCard(89631139));
+
+    try
+    {
+        WindBot.Game.AI.DecksManager.ResetLua();
+        WindBot.Game.AI.DialogsManager.ResetLua();
+        WindBot.WindBotRuntime.Configure(new WindBot.WindBotRuntimeOptions
+        {
+            CardRepository = cardRepo,
+            LuaRuntime = NLuaRuntime.Instance
+        });
+
+        // 1. 验证默认无参数配置即可从输出目录集中位置自动发现 Decks/Lua 与 Dialogs/Lua 脚本
+        WindBot.Game.AI.Lua.FileSystemLuaDeckScriptProvider defaultDeckProvider = new();
+        AssertTrue(defaultDeckProvider.TryGetScriptSource("ExampleBlueEyes", out string? deckSrc, out _));
+        AssertTrue(!string.IsNullOrWhiteSpace(deckSrc));
+
+        WindBot.Game.AI.Lua.FileSystemLuaDialogScriptProvider defaultDialogProvider = new();
+        AssertTrue(defaultDialogProvider.TryGetScriptSource("ExampleBlueEyes", out string? dialogSrc, out _));
+        AssertTrue(!string.IsNullOrWhiteSpace(dialogSrc));
+
+        // 2. JSON 自动本地化：Dialog="cirno" + Locale="zh-CN" -> 自动命中 cirno.zh-CN.json
+        WindBot.Game.GameClient cirnoClient = new(
+            new WindBot.WindBotInfo { Dialog = "cirno", Locale = "zh-CN", Chat = true },
+            cardRepo);
+        using (WindBot.Game.AI.Dialogs cirnoDialogs = new(cirnoClient))
+        {
+            AssertEqual("cirno.zh-CN", cirnoDialogs.ResolvedDialogName);
+            AssertTrue(cirnoDialogs.GetLines("welcome").Any(line => line.Contains("最强", StringComparison.Ordinal)));
+        }
+
+        // 3. JSON 默认本地化：Dialog="default" + Locale="zh-CN" -> 自动命中 zh-CN.json
+        WindBot.Game.GameClient defaultZhClient = new(
+            new WindBot.WindBotInfo { Dialog = "default", Locale = "zh-CN", Chat = true },
+            cardRepo);
+        using (WindBot.Game.AI.Dialogs defaultZhDialogs = new(defaultZhClient))
+        {
+            AssertEqual("zh-CN", defaultZhDialogs.ResolvedDialogName);
+            AssertTrue(defaultZhDialogs.GetLines("welcome").Any(line => line.Contains("机器人", StringComparison.Ordinal)));
+        }
+
+        // 4. 拆分文件本地化：优先命中 <name>.<locale>.lua，未命中时回退 <name>.lua + is_locale(...)
+        WindBot.Game.AI.Lua.InMemoryLuaDialogScriptProvider splitProvider = new();
+        splitProvider.Add("SplitHero", """
+            dialog("SplitHero")
+                if is_locale("ja") then
+                    add_welcome("こんにちは、ヒーローだ！")
+                else
+                    add_welcome("Hello from base SplitHero!")
+                end
+            dialog_end()
+            """);
+        splitProvider.Add("SplitHero.zh-CN", """
+            dialog("SplitHero.zh-CN")
+                add_welcome("你好，来自拆分中文文件 SplitHero.zh-CN.lua！")
+            dialog_end()
+            """);
+
+        WindBot.Game.AI.DialogsManager.ConfigureLua(NLuaRuntime.Instance, splitProvider, preferLuaDialogs: true, throwOnScriptError: true);
+
+        using (WindBot.Game.AI.Dialogs zhSplit = new(new WindBot.Game.GameClient(
+            new WindBot.WindBotInfo { Dialog = "SplitHero", Locale = "zh-CN" }, cardRepo)))
+        {
+            AssertEqual("SplitHero.zh-CN.lua", zhSplit.ResolvedDialogName);
+            AssertEqual("你好，来自拆分中文文件 SplitHero.zh-CN.lua！", zhSplit.GetLines("welcome")[0]);
+        }
+
+        using (WindBot.Game.AI.Dialogs jaFallback = new(new WindBot.Game.GameClient(
+            new WindBot.WindBotInfo { Dialog = "SplitHero", Locale = "ja-JP" }, cardRepo)))
+        {
+            AssertEqual("SplitHero.lua", jaFallback.ResolvedDialogName);
+            AssertEqual("こんにちは、ヒーローだ！", jaFallback.GetLines("welcome")[0]);
+        }
+
+        // 5. 跨 .lua 的 set_fallback 与子目录 Dialogs/Lua/<name>/<locale>.lua 解析
+        string nestedTempDir = Path.Combine(Path.GetTempPath(), "YGOProSharpNestedLuaDialogs_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string charDir = Path.Combine(nestedTempDir, "MyChar");
+            Directory.CreateDirectory(charDir);
+            File.WriteAllText(Path.Combine(nestedTempDir, "BasePersona.lua"), """
+                dialog("BasePersona")
+                    add_surrender("BASE_LUA_SURRENDER")
+                dialog_end()
+                """);
+            File.WriteAllText(Path.Combine(charDir, "zh-CN.lua"), """
+                dialog("MyChar")
+                    set_fallback("BasePersona")
+                    add_welcome("NESTED_ZH_WELCOME")
+                dialog_end()
+                """);
+
+            WindBot.Game.AI.DialogsManager.ConfigureLua(
+                NLuaRuntime.Instance,
+                new WindBot.Game.AI.Lua.FileSystemLuaDialogScriptProvider(nestedTempDir),
+                preferLuaDialogs: true,
+                throwOnScriptError: true);
+
+            using WindBot.Game.AI.Dialogs nestedDialog = new(new WindBot.Game.GameClient(
+                new WindBot.WindBotInfo { Dialog = "MyChar", Locale = "zh-CN" }, cardRepo));
+            AssertEqual("NESTED_ZH_WELCOME", nestedDialog.GetLines("welcome")[0]);
+            AssertEqual("BASE_LUA_SURRENDER", nestedDialog.GetLines("surrender")[0]);
+        }
+        finally
+        {
+            Directory.Delete(nestedTempDir, recursive: true);
+        }
+    }
+    finally
+    {
+        WindBot.WindBotRuntime.Locale = null;
+        WindBot.Game.AI.DecksManager.ResetLua();
+        WindBot.Game.AI.DialogsManager.ResetLua();
+    }
+}
+
+static void WindBotChatPacerPacesBurstsAndRespectsDelay()
+{
+    (InMemoryNetworkTransport clientTransport, InMemoryNetworkTransport serverTransport) =
+        InMemoryNetworkTransport.CreatePair();
+    List<string> received = new();
+    YGOClient serverPeer = new(serverTransport);
+    serverPeer.PacketReceivedRaw += packet =>
+    {
+        if (packet.Length > 1 && packet.Span[0] == (byte)CtosMessage.Chat)
+            received.Add(Encoding.Unicode.GetString(packet.Span.Slice(1)).TrimEnd('\0'));
+    };
+
+    using WindBot.Game.GameClient client = new(
+        new WindBot.WindBotInfo
+        {
+            Name = "PacedBot",
+            Deck = "AI_OldSchool",
+            Dialog = "default",
+            Chat = true,
+            ChatIntervalMilliseconds = 60,
+            DuelStartChatDelayMilliseconds = 80,
+            MaxQueuedChatMessages = 3
+        },
+        TestNamedRepository(),
+        clientTransport);
+
+    client.Start(clientTransport);
+    serverPeer.Update();
+    received.Clear();
+
+    // 1. 首条立即发送，后续密集 5 条按 MaxQueuedChatMessages=3 丢弃最旧并排队（保留 msg4, msg5, msg6）
+    client.Chat("msg1");
+    client.Chat("msg2");
+    client.Chat("msg3");
+    client.Chat("msg4");
+    client.Chat("msg5");
+    client.Chat("msg6");
+
+    serverPeer.Update();
+    AssertEqual(1, received.Count);
+    AssertEqual("msg1", received[0]);
+    AssertEqual(3, client.PendingChatCount);
+
+    // 2. 逐次等待节流间隔并 Tick，按顺序逐条发出（不一次性倾倒）
+    for (int i = 0; i < 3; i++)
+    {
+        Thread.Sleep(75);
+        client.Tick();
+        serverPeer.Update();
+        AssertEqual(i + 2, received.Count);
+    }
+
+    AssertEqual(4, received.Count);
+    AssertEqual("msg1", received[0]);
+    AssertEqual("msg4", received[1]);
+    AssertEqual("msg5", received[2]);
+    AssertEqual("msg6", received[3]);
+    AssertEqual(0, client.PendingChatCount);
+
+    // 3. DelayChat 延后首条聊天，未到期不发，到期后发出
+    received.Clear();
+    client.DelayChat(90);
+    client.Chat("after-delay");
+    client.Tick();
+    serverPeer.Update();
+    AssertEqual(0, received.Count);
+
+    Thread.Sleep(110);
+    client.Tick();
+    serverPeer.Update();
+    AssertEqual(1, received.Count);
+    AssertEqual("after-delay", received[0]);
+    serverPeer.Close();
+}
+
+static async Task ServerBroadcastsChatToSenderAndOpponentAsync()
+{
+    ServerOptions serverOptions = new()
+    {
+        EnableNetworkListener = false,
+        ClientVersion = 0x1362,
+        Game = new GameOptions { NoCheckDeck = true }
+    };
+
+    await using YGOProSharpServerHost host = new(duelFactory: null, cardRepository: TestRepository(TestCard(1)), options: serverOptions);
+    host.StartBackgroundLoop(tickDelayMilliseconds: 2, embedded: true);
+
+    YGOClient playerA = host.ConnectLocalClient();
+    YGOClient playerB = host.ConnectLocalClient();
+
+    List<(short Sender, string Text)> receivedByA = new();
+    List<(short Sender, string Text)> receivedByB = new();
+    playerA.PacketReceivedRaw += p =>
+    {
+        if (p.Length > 3 && p.Span[0] == (byte)StocMessage.Chat)
+        {
+            short sender = BitConverter.ToInt16(p.Span.Slice(1, 2));
+            string text = Encoding.Unicode.GetString(p.Span.Slice(3)).TrimEnd('\0');
+            receivedByA.Add((sender, text));
+        }
+    };
+    playerB.PacketReceivedRaw += p =>
+    {
+        if (p.Length > 3 && p.Span[0] == (byte)StocMessage.Chat)
+        {
+            short sender = BitConverter.ToInt16(p.Span.Slice(1, 2));
+            string text = Encoding.Unicode.GetString(p.Span.Slice(3)).TrimEnd('\0');
+            receivedByB.Add((sender, text));
+        }
+    };
+
+    void JoinPlayer(YGOClient client, string name)
+    {
+        using (MemoryStream info = new())
+        using (BinaryWriter w = new(info, Encoding.UTF8, leaveOpen: true))
+        {
+            w.Write((byte)CtosMessage.PlayerInfo);
+            w.WriteUnicode(name, 20);
+            client.Send(info.ToArray());
+        }
+        using (MemoryStream join = new())
+        using (BinaryWriter w = new(join, Encoding.UTF8, leaveOpen: true))
+        {
+            w.Write((byte)CtosMessage.JoinGame);
+            w.Write((short)0x1362);
+            w.Write(0);
+            w.Write((short)0);
+            w.WriteUnicode("", 20);
+            client.Send(join.ToArray());
+        }
+    }
+
+    JoinPlayer(playerA, "PlayerA");
+    JoinPlayer(playerB, "PlayerB");
+    await Task.Delay(40);
+    playerA.Update();
+    playerB.Update();
+
+    using (MemoryStream chat = new())
+    using (BinaryWriter w = new(chat, Encoding.UTF8, leaveOpen: true))
+    {
+        w.Write((byte)CtosMessage.Chat);
+        w.WriteUnicodeAutoLength("你好 MDPro3!", 255);
+        playerA.Send(chat.ToArray());
+    }
+
+    DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+    while (DateTime.UtcNow < deadline && (receivedByA.Count == 0 || receivedByB.Count == 0))
+    {
+        playerA.Update();
+        playerB.Update();
+        await Task.Delay(10);
+    }
+
+    AssertTrue(receivedByA.Any(x => x.Sender == 0 && x.Text == "你好 MDPro3!"));
+    AssertTrue(receivedByB.Any(x => x.Sender == 0 && x.Text == "你好 MDPro3!"));
+
+    playerA.Close();
+    playerB.Close();
+    await host.StopAsync();
 }
 
 internal static class TestLog

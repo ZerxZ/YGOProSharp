@@ -15,7 +15,7 @@
 
 `IceYGO/windbot` 已 clone 到本地忽略目录 `.external/windbot-upstream/` 作为只读对比源。当前适配只保守补齐可直接接入 YGOProSharp 边界的缺失代码。
 
-`Decks/`（71 个 `.ydk`）与 `Dialogs/`（20 个 `.json`）已从上游 `IceYGO/windbot`（MIT License）纳入本项目，并在构建时随 `CopyToOutputDirectory=PreserveNewest` 自动输出到运行目录。
+`Decks/`（71 个 `.ydk` + `Decks/Lua/` Lua 卡组脚本）与 `Dialogs/`（20 个 `.json` + `Dialogs/Lua/` Lua 对话脚本）统一集中在 `YGOProSharp.WindBot` 内，并在构建时随 `CopyToOutputDirectory=PreserveNewest` 自动输出到运行目录；开发者 LuaLS / EmmyLua 智能提示位于 [lua-api/](lua-api/README.md)。
 
 对比时会跳过旧 `YGOSharp.*`、旧工程文件、旧 sqlite 二进制和 `.meta` 文件，避免把上游旧依赖重新带回当前 `Core` / `Protocol` / `Abstractions` 分层。
 
@@ -38,10 +38,12 @@ dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- windbo
 - `HostInfo`：房间密码或主机信息。
 - `Name`：Bot 昵称。
 - `Deck` / `DeckFile`：Bot 使用的卡组。
-- `Dialog`：Bot 使用的对话资源。
+- `Dialog`：Bot 使用的对话资源（支持内置 `Dialogs/*.json` 以及 xmake 风格 / XLua 兼容的 Lua 对话脚本，详见 [docs/windbot-lua.md](../docs/windbot-lua.md)）。
+- `LuaDialogDir` / `LuaDialogDirs` / `PreferLuaDialogs` / `EnableLuaDialogs`：Lua 对话目录与优先级开关。
+- `ChatIntervalMs` / `BotChatIntervalMs` / `DuelStartChatDelayMs` / `MaxQueuedChatMessages`：Bot 聊天节流间隔（默认 800ms）、开局切场延迟（默认 4000ms）与待发队列上限（默认 6 条）。
 - `DbPath`：主 `cards.cdb` 路径。
 - `DbPaths` / `Databases`：额外数据库路径，支持 `;` 或 `,` 分隔。
-- `Locale`：额外尝试 `Data/locales/<Locale>/<DbPath>`。
+- `Locale` / `BotLocale`：本地化区域标识（如 `zh-CN`、`zh-TW`、`en-US`），同时用于 `Data/locales/<Locale>/<DbPath>` 与 Dialog 本地化自动解析（`<name>.<locale>.json` / `<name>.<locale>.lua` / `locale(...)` 条件块）。
 - `LogLevel`：`Trace`、`Debug`、`Information`、`Warning`、`Error`、`Critical`，默认 `Information`。
 
 ## 库式调用（C# 直接调用）

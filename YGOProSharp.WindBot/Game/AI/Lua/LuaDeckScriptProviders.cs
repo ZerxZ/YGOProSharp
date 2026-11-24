@@ -195,12 +195,16 @@ namespace WindBot.Game.AI.Lua
             string baseDir = AppContext.BaseDirectory;
             return
             [
-                "LuaDecks",
                 Path.Combine("Decks", "Lua"),
+                Path.Combine("Deck", "Lua"),
+                Path.Combine("Data", "WindBot", "Decks", "Lua"),
+                "LuaDecks",
                 Path.Combine("Data", "WindBot", "LuaDecks"),
                 Path.Combine("Scripts", "WindBot"),
-                Path.Combine(baseDir, "LuaDecks"),
                 Path.Combine(baseDir, "Decks", "Lua"),
+                Path.Combine(baseDir, "Deck", "Lua"),
+                Path.Combine(baseDir, "Data", "WindBot", "Decks", "Lua"),
+                Path.Combine(baseDir, "LuaDecks"),
                 Path.Combine(baseDir, "Data", "WindBot", "LuaDecks"),
                 Path.Combine(baseDir, "Scripts", "WindBot")
             ];

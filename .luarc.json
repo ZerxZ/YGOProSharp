@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "runtime.version": "Lua 5.4",
+  "workspace.library": [
+    "YGOProSharp.WindBot/lua-api",
+    "YGOProSharp.Native/lua-api"
+  ],
+  "workspace.ignoreDir": [
+    ".external",
+    ".git",
+    ".idea",
+    ".xmake",
+    "build",
+    "bin",
+    "obj",
+    "YGOProSharp.Native/ygopro-core",
+    "YGOProSharp.Native/.deps"
+  ],
+  "diagnostics.globals": [
+    "aux",
+    "GetID"
+  ]
+}

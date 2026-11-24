@@ -254,14 +254,22 @@ await service.RunBotAsync(new WindBotInfo { Deck = "MyLuaBlueEyes" }, cancellati
 
 ### 方式 D：通过 `YGOProSharp.Cli` 开箱即用（内置 NLua 5.4 运行时）
 
-`YGOProSharp.Abstractions` 与 `YGOProSharp.WindBot` 保持零第三方 Lua 依赖；`YGOProSharp.Cli` 作为组合根内置了稳定的 **NLua（Lua 5.4，MIT License）** 适配器（[NLuaRuntime.cs](../YGOProSharp.Cli/NLuaRuntime.cs)）以及示例卡组脚本 [ExampleOldSchool.lua](../YGOProSharp.Cli/LuaDecks/ExampleOldSchool.lua)，直接通过命令行即可运行：
+`YGOProSharp.Abstractions` 与 `YGOProSharp.WindBot` 保持零第三方 Lua 依赖；`YGOProSharp.Cli` 作为组合根内置了稳定的 **NLua（Lua 5.4，MIT License）** 适配器（[NLuaRuntime.cs](../YGOProSharp.Cli/NLuaRuntime.cs)）。
+
+全部内置 Lua 脚本均集中存放在 `YGOProSharp.WindBot` 下，并在构建时随 `Decks/**/*` 与 `Dialogs/**/*` 自动复制到输出目录：
+
+- 卡组脚本目录：`YGOProSharp.WindBot/Decks/Lua/`（内置示例：[ExampleOldSchool.lua](../YGOProSharp.WindBot/Decks/Lua/ExampleOldSchool.lua)、[ExampleBlueEyes.lua](../YGOProSharp.WindBot/Decks/Lua/ExampleBlueEyes.lua)）
+- 对话脚本目录：`YGOProSharp.WindBot/Dialogs/Lua/`（内置示例：[ExampleBlueEyes.lua](../YGOProSharp.WindBot/Dialogs/Lua/ExampleBlueEyes.lua)）
+- 开发者智能提示：`YGOProSharp.WindBot/lua-api/`（[windbot-deck.lua](../YGOProSharp.WindBot/lua-api/windbot-deck.lua)、[windbot-dialog.lua](../YGOProSharp.WindBot/lua-api/windbot-dialog.lua) 与仓库根目录 [.luarc.json](../.luarc.json)）
+
+直接通过命令行即可运行：
 
 ```powershell
 dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- windbot DbPath=cards.cdb Host=127.0.0.1 Port=7911 Deck=ExampleOldSchool LogLevel=Debug
 ```
 
 相关 CLI 可选参数：
-- `LuaDeckDir` / `LuaDeckDirs`：额外指定 Lua 卡组脚本目录（支持 `;` 或 `,` 分隔，默认自动扫描 `LuaDecks`）。
+- `LuaDeckDir` / `LuaDeckDirs`：额外指定 Lua 卡组脚本目录（支持 `;` 或 `,` 分隔，默认优先扫描 `Decks/Lua`、`Deck/Lua`）。
 - `PreferLuaDecks`：`true` 时同名卡组优先使用 Lua 版本。
 - `ThrowOnLuaScriptError`：`true` 时 Lua 钩子异常直接抛出，便于开发调试。
 - `EnableLuaDecks`：默认 `true`，设为 `false` 可关闭 CLI 的 Lua 运行时装配。
@@ -391,3 +399,62 @@ end
 
 return M
 ```
+
+---
+
+## 6. Lua 对话系统（xmake 声明式 DSL / XLua 风格）
+
+`YGOProSharp.WindBot` 的对话系统（[Dialogs.cs](../YGOProSharp.WindBot/Game/AI/Dialogs.cs) / [DialogsManager.cs](../YGOProSharp.WindBot/Game/AI/DialogsManager.cs)）采用与 Lua 卡组执行器完全一致的泛用 `ILuaRuntime` 抽象与 **xmake 风格 DSL**，兼容 XLua、NLua、MoonSharp、Lua-CSharp，同时 100% 保留原有 `Dialogs/*.json` 兼容。
+
+### 6.1 模块与释放链路
+
+- [LuaDialogDsl.cs](../YGOProSharp.WindBot/Game/AI/Lua/LuaDialogDsl.cs)：xmake 风格声明式 DSL 宿主，复用 `LuaDslAction0`~`LuaDslAction3` 固定参委托，避免 XLua 变参桥接问题。
+- [LuaDialogScript.cs](../YGOProSharp.WindBot/Game/AI/Lua/LuaDialogScript.cs)：支持 **xmake 风格 DSL**、**模块表返回式（`return { welcome = {...}, OnSummon = ... }`）**、**全局函数式** 三种写法。
+- [LuaDialogContext.cs](../YGOProSharp.WindBot/Game/AI/Lua/LuaDialogContext.cs)：向动态回调暴露 `Self` / `Dialog`（含 `Game`、`Duel`、`BotField`、`EnemyField`、`Turn`、`BotName`、`Deck`、`Pick(...)`、`PickEventLine(...)`、`Format(...)` 等）。
+- [LuaDialogScriptProviders.cs](../YGOProSharp.WindBot/Game/AI/Lua/LuaDialogScriptProviders.cs)：提供 `FileSystemLuaDialogScriptProvider`（默认优先扫描 `Dialogs/Lua`、`Dialog/Lua`、`Dialogs`）、`InMemoryLuaDialogScriptProvider`、`CompositeLuaDialogScriptProvider`。
+- **完整释放链路（XLua 安全）**：
+  `GameClient.Dispose()` -> `GameBehavior.Dispose()` -> `GameAI.Dispose()` -> `Dialogs.Dispose()` -> `LuaDialogScript.Dispose()`（触发 `on_dispose`，释放所有缓存 `ILuaFunction`、`ILuaTable`、`ILuaScriptContext`）。纯静态声明脚本（无动态钩子）在加载完成后即主动释放底层上下文。
+
+### 6.2 多文件组织、本地化（i18n）与聊天节奏控制
+
+WindBot Dialog 同时支持 **像 JSON 一样按文件拆分维护**、**子目录归档**、**xmake 风格 `includes(...)` 组合** 以及 **单文件 `locale(...)` 条件块**：
+
+1. **按文件拆分（推荐，便于维护）**：
+   - 扁平拆分（与 `Dialogs/*.json` 同风格）：`Dialogs/Lua/ExampleBlueEyes.lua`、`Dialogs/Lua/ExampleBlueEyes.zh-CN.lua`、`Dialogs/Lua/ExampleBlueEyes.zh-TW.lua`，共用片段放进 `ExampleBlueEyes.common.lua` 并通过 `includes("ExampleBlueEyes.common.lua")` 引入。
+   - 子目录归档：`Dialogs/Lua/<角色名>/default.lua`、`Dialogs/Lua/<角色名>/zh-CN.lua`、`Dialogs/Lua/<角色名>/zh-TW.lua`。
+2. **自动本地化文件解析（JSON 与 Lua 均适用）**：
+   - 当 `Dialog=ExampleBlueEyes` 且 `Locale=zh-CN` 时，自动按 `ExampleBlueEyes.zh-CN` -> `ExampleBlueEyes.zh` -> `ExampleBlueEyes` 顺序查找（直接命中 `Dialogs/Lua/ExampleBlueEyes.zh-CN.lua`）。
+   - 当 `Dialog=cirno` 且 `Locale=zh-CN` 时，直接命中 `Dialogs/cirno.zh-CN.json`；当 `Dialog=default` 且 `Locale=zh-CN` 时，直接命中 `Dialogs/zh-CN.json`。
+3. **跨文件回退继承**：`set_fallback("auto")` 自动按当前 `Locale` 继承 `<locale>.json` -> `default.json`；`set_fallback("OtherLuaDialog")` 也支持跨 `.lua` 对话继承（内置循环检测）。
+4. **MDPro3 友好的聊天节流与开局延迟**：
+   - 服务端 `Game.Chat` 广播 `StocMessage.Chat` 给全体客户端（含发送者自身），确保 MDPro3 双方聊天均正常显示；
+   - Bot 端 `GameClient` 内置非阻塞聊天节流队列：开局延后 `DuelStartChatDelayMilliseconds`（默认 `4000ms`，等待 MDPro3 完成 3D 对局场景加载与开局过渡）、连续消息间隔 `ChatIntervalMilliseconds`（默认 `800ms`）、队列上限 `MaxQueuedChatMessages`（默认 `6` 条，避免连招积压过久）；人类玩家入房时 Bot 自动补发欢迎语。
+
+多文件示例见 [ExampleBlueEyes.common.lua](../YGOProSharp.WindBot/Dialogs/Lua/ExampleBlueEyes.common.lua)、[ExampleBlueEyes.lua](../YGOProSharp.WindBot/Dialogs/Lua/ExampleBlueEyes.lua)、[ExampleBlueEyes.zh-CN.lua](../YGOProSharp.WindBot/Dialogs/Lua/ExampleBlueEyes.zh-CN.lua) 与 [ExampleBlueEyes.zh-TW.lua](../YGOProSharp.WindBot/Dialogs/Lua/ExampleBlueEyes.zh-TW.lua)。
+
+### 6.3 对话 DSL 速查
+
+| 分类 | DSL 函数 | 说明 |
+| --- | --- | --- |
+| 作用域与多文件 | `dialog(name)` / `dialog_end()` / `includes(f1, f2?, f3?)` / `include(f)` | 开启/结束对话作用域，或按 xmake 风格组合引入多个子对话 Lua 文件 |
+| 作用域与本地化 | `locale(tag1?, tag2?, tag3?)` / `locale_end()` / `is_locale(tag1?, tag2?, tag3?)` | 按当前 `Locale`（支持精确与主语言前缀，如 `"zh"` 匹配 `"zh-CN"`）条件启用多语言台词块 |
+| 元数据与回退 | `set_locale(locale)` / `set_description(desc)` / `set_author(author)` / `set_fallback(name)` / `set_override(bool)` / `set_throw_on_error(bool)` / `set_facedown_monster_name(name)` | 元数据、`"auto"`/指定 JSON 回退继承、同名覆盖、错误处理与里侧怪兽称呼 |
+| 台词声明 | `add_lines(event, lines)` / `set_lines(event, lines)` / `clear_lines(event)` | 通用按事件名追加、覆盖或显式清空（阻止回退） |
+| 事件简写 | `add_*` / `set_*`：`welcome`、`deckerror`(`deck_error`)、`duelstart`(`duel_start`)、`newturn`(`new_turn`)、`endturn`(`end_turn`)、`directattack`(`direct_attack`)、`attack`、`ondirectattack`(`on_direct_attack`)、`activate`、`summon`、`setmonster`(`set_monster`)、`chaining`、`surrender`、`custom` | 按事件类型追加或替换静态台词 |
+| 动态钩子 | `on_init` / `on_dispose` / `on_message` / `on_welcome` / `on_deckerror` / `on_duelstart` / `on_newturn` / `on_endturn` / `on_directattack` / `on_attack` / `on_ondirectattack` / `on_activate` / `on_summon` / `on_setmonster` / `on_chaining` / `on_surrender` / `on_custom`（均支持 snake_case 别名） | 动态生成台词或静默拦截，支持匿名函数、延迟解析函数名及 XLua 委托 |
+
+### 6.4 配置、CLI 参数与开发者智能提示
+
+- **代码装配**：在 `WindBotRuntimeOptions` 中配置 `Locale`、`LuaRuntime`、`LuaDialogScriptProvider`、`LuaDialogs`、`PreferLuaDialogs`（或在 `WindBotInfo.Locale` 为单个 Bot 指定语言）。
+- **解析优先级**：显式 `.lua` 扩展名 > 已注册且 `AllowOverride=true` 的 `LuaDialogDescriptor` > `PreferLuaDialogs=true` 时的同名/本地化 Lua 脚本 > 内置本地化 JSON（`<name>.<locale>.json` -> `<name>.json`） > 动态按名/本地化解析的 `.lua` > 优雅退化为空对话。
+- **CLI 参数**：
+  - `Dialog` / `BotDialog`：指定对话名（如 `BotDialog=ExampleBlueEyes`、`Dialog=cirno`）。
+  - `Locale` / `BotLocale`：指定语言区域（如 `BotLocale=zh-CN`、`Locale=zh-TW`、`Locale=en-US`）。
+  - `ChatIntervalMs` / `BotChatIntervalMs`：连续聊天最小间隔（默认 `800` ms，设为 `0` 立即发送）。
+  - `DuelStartChatDelayMs` / `BotDuelStartChatDelayMs`：开局首条聊天延迟（默认 `4000` ms，等待 MDPro3 完成对局场景加载）。
+  - `MaxQueuedChatMessages`：排队聊天上限（默认 `6` 条）。
+  - `LuaDialogDir` / `LuaDialogDirs`：额外指定 Lua 对话脚本目录（支持 `;` 或 `,` 分隔，默认优先扫描 `Dialogs/Lua`、`Dialog/Lua`、`Dialogs`）。
+  - `PreferLuaDialogs`：`true` 时同名对话优先加载 `.lua` 而非 `.json`。
+  - `EnableLuaDialogs`：默认跟随 `EnableLuaDecks`（为 `true`），设为 `false` 可关闭 CLI Lua 对话加载。
+- **开发者 IDE 提示（LuaLS / EmmyLua）**：见 [YGOProSharp.WindBot/lua-api/README.md](../YGOProSharp.WindBot/lua-api/README.md) 与根目录 [.luarc.json](../.luarc.json)。
+- **XLua 提示**：开启 XLua 代码生成时，建议将 `LuaDialogContext`、`LuaDialogDsl`、`LuaDslAction0`~`LuaDslAction3` 与 `LuaDslPredicate3` 一并加入 `[LuaCallCSharp]`。
