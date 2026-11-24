@@ -15,7 +15,7 @@
 
 `IceYGO/windbot` 已 clone 到本地忽略目录 `.external/windbot-upstream/` 作为只读对比源。当前适配只保守补齐可直接接入 YGOProSharp 边界的缺失代码。
 
-`Decks/`、`Dialogs/` 不复制进项目。运行时请按需要自行提供卡组与对话资源。
+`Decks/`（71 个 `.ydk`）与 `Dialogs/`（20 个 `.json`）已从上游 `IceYGO/windbot`（MIT License）纳入本项目，并在构建时随 `CopyToOutputDirectory=PreserveNewest` 自动输出到运行目录。
 
 对比时会跳过旧 `YGOSharp.*`、旧工程文件、旧 sqlite 二进制和 `.meta` 文件，避免把上游旧依赖重新带回当前 `Core` / `Protocol` / `Abstractions` 分层。
 

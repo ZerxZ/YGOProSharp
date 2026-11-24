@@ -20,7 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="Data\**\*;Deck\**\*;*.conf;*.json">
+    <None Update="Decks\**\*;Dialogs\**\*;Data\**\*;Deck\**\*;*.conf;*.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

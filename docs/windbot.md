@@ -16,7 +16,7 @@
 
 当前项目只保守补齐能直接适配到 `YGOProSharp.Protocol`、`YGOProSharp.Core`、`YGOProSharp.Abstractions` 的缺失代码。旧 `YGOSharp.*`、`MDPro3`、旧工程文件、sqlite 二进制和 `.meta` 文件不会回流。
 
-`Decks/` 和 `Dialogs/` 不复制进仓库。需要运行 Bot 时，请在运行目录或配置指定位置自行提供卡组与对话资源。
+`Decks/`（71 个 `.ydk` 卡组文件）和 `Dialogs/`（20 个 `.json` 对话资源）已同步自上游 MIT 许可的 `IceYGO/windbot` 并放在 `YGOProSharp.WindBot/Decks/` 与 `YGOProSharp.WindBot/Dialogs/` 中，编译时会自动复制到输出目录；也可在运行目录放置同名文件覆盖默认资源。
 
 ## 项目位置
 

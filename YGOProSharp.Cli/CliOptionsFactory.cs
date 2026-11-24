@@ -49,6 +49,38 @@ public static class CliOptionsFactory
         };
     }
 
+    public static WindBotInfo CreateServerBotInfo(CliConfiguration configuration, ServerOptions serverOptions)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(serverOptions);
+
+        WindBotInfo info = new WindBotInfo
+        {
+            Name = configuration.GetString("BotName", configuration.GetString("Name", "WindBot")),
+            Deck = configuration.GetString("BotDeck") ?? configuration.GetString("Deck"),
+            DeckFile = configuration.GetString("BotDeckFile") ?? configuration.GetString("DeckFile"),
+            Dialog = configuration.GetString("BotDialog", configuration.GetString("Dialog", "default")),
+            Host = "127.0.0.1",
+            Port = serverOptions.Port,
+            Version = (int)serverOptions.ClientVersion,
+            Hand = configuration.GetInt("BotHand", configuration.GetInt("Hand", 0)),
+            Debug = configuration.GetBool("BotDebug", configuration.GetBool("Debug", false)),
+            Chat = configuration.GetBool("BotChat", configuration.GetBool("Chat", true))
+        };
+
+        return info;
+    }
+
+    public static bool ShouldStartServerBot(CliConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        return configuration.GetBool("AddBot", false) ||
+               configuration.GetBool("WithBot", false) ||
+               !string.IsNullOrWhiteSpace(configuration.GetString("BotDeck")) ||
+               !string.IsNullOrWhiteSpace(configuration.GetString("BotDeckFile"));
+    }
+
     public static WindBotInfo CreateWindBotInfo(CliConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);

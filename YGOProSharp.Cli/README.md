@@ -20,6 +20,12 @@
 dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- server RootPath=. DatabaseFile=cards.cdb ScriptDirectory=script Port=7911
 ```
 
+启动服务端并默认内置添加一个进程内 WindBot（无需额外开端口或进程）：
+
+```bash
+dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- server RootPath=. DatabaseFile=cards.cdb ScriptDirectory=script Port=7911 AddBot=true BotName=BlueEyesLua BotDeck=ExampleBlueEyes
+```
+
 启动 WindBot 客户端：
 
 ```bash
@@ -38,7 +44,7 @@ dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- windbo
 
 - `LogLevel=Trace|Debug|Information|Warning|Error|Critical`
 - `Config=server.conf`
-- 服务端：`RootPath`、`ScriptDirectory`、`DatabaseFile`、`BanlistFile`、`Port`、`ClientVersion`、`StandardStreamProtocol`
+- 服务端：`RootPath`、`ScriptDirectory`、`DatabaseFile`、`BanlistFile`、`Port`、`ClientVersion`、`StandardStreamProtocol`、`AddBot`（或指定 `BotDeck`/`BotDeckFile` 自动启用）、`BotName`、`BotDeck`、`BotDeckFile`、`BotDialog`、`BotChat`、`BotDebug`
 - WindBot：`DbPath`、`DbPaths`、`Databases`、`Host`、`Port`、`Deck`、`DeckFile`、`Dialog`、`ServerMode`、`BotListPath`
 
 ## 边界

@@ -46,7 +46,7 @@ remain with their respective authors.
 
 4. IceYGO/windbot
    Source: https://github.com/IceYGO/windbot
-   Role: original WindBot client Bot project, AI executors, and behavior reference
+   Role: original WindBot client Bot project, AI executors, Decks (.ydk), Dialogs (.json), and behavior reference
    License: MIT License
    Copyright (c) 2015-2017 IceYGO
 

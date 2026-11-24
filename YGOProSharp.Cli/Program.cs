@@ -70,7 +70,55 @@ static async Task<int> RunServerAsync(CliConfiguration configuration, Cancellati
 
     using NativeOcgRuntime runtime = new NativeOcgRuntime();
     logger.LogInformation("Starting YGOProSharp server.");
-    await YGOProSharpServer.RunAsync(options, runtime, cancellationToken).ConfigureAwait(false);
+
+    if (!CliOptionsFactory.ShouldStartServerBot(configuration))
+    {
+        await YGOProSharpServer.RunAsync(options, runtime, cancellationToken).ConfigureAwait(false);
+        logger.LogInformation("YGOProSharp server stopped.");
+        return 0;
+    }
+
+    await using YGOProSharpServerHost serverHost = YGOProSharpServerHost.Create(options, runtime);
+    serverHost.StartBackgroundLoop(tickDelayMilliseconds: 1, embedded: !options.EnableNetworkListener, cancellationToken);
+
+    List<string> botDbPaths = CliOptionsFactory.ResolveWindBotDatabasePaths(configuration);
+    string serverDbPath = Path.Combine(Path.GetFullPath(options.RootPath), options.DatabaseFile);
+    if (File.Exists(serverDbPath) && !botDbPaths.Contains(serverDbPath, StringComparer.OrdinalIgnoreCase))
+        botDbPaths.Insert(0, serverDbPath);
+
+    if (botDbPaths.Count == 0)
+    {
+        logger.LogError("Can't find cards database file for embedded WindBot.");
+        await serverHost.StopAsync().ConfigureAwait(false);
+        return 2;
+    }
+
+    SqliteCardDatabaseManager databaseManager = new SqliteCardDatabaseManager();
+    INamedCardRepository botCardRepository = databaseManager.LoadNamedCards(botDbPaths);
+    WindBotRuntimeOptions botRuntimeOptions = CliOptionsFactory.CreateWindBotRuntimeOptions(configuration, botCardRepository);
+    WindBotInfo botInfo = CliOptionsFactory.CreateServerBotInfo(configuration, options);
+
+    await using WindBotService botService = new WindBotService(botRuntimeOptions);
+    using WindBotSession botSession = botService.StartBot(botInfo, serverHost.CreateLocalTransport(), cancellationToken);
+    logger.LogInformation(
+        "Started default in-process WindBot '{BotName}' (Deck={Deck}) on local transport.",
+        botInfo.Name,
+        botInfo.Deck ?? "<default>");
+
+    try
+    {
+        while (serverHost.IsRunning && !cancellationToken.IsCancellationRequested)
+            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+    }
+    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+    {
+    }
+    finally
+    {
+        await botService.StopAllAsync().ConfigureAwait(false);
+        await serverHost.StopAsync().ConfigureAwait(false);
+    }
+
     logger.LogInformation("YGOProSharp server stopped.");
     return 0;
 }

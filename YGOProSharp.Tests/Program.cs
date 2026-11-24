@@ -48,6 +48,7 @@ Run("Project boundaries keep direct Console writes out of source", ProjectBounda
 Run("Project boundaries keep logger parameters out of business APIs", ProjectBoundariesKeepLoggerParametersOutOfBusinessApis);
 Run("CLI maps server options", CliMapsServerOptions);
 Run("CLI maps WindBot options", CliMapsWindBotOptions);
+Run("CLI maps embedded server bot options", CliMapsEmbeddedServerBotOptions);
 Run("WindBot packet factory writes CTOS message byte", WindBotPacketFactoryWritesCtosMessageByte);
 Run("WindBot deck loads through named-card repository", WindBotDeckLoadsThroughNamedCardRepository);
 Run("WindBot server mode parses query info", WindBotServerModeParsesQueryInfo);
@@ -94,6 +95,7 @@ await RunAsync("WindBot client connects over WebSocket and sends deck", WindBotC
 await RunAsync("InMemoryNetworkTransport round-trips packets and propagates disconnect", InMemoryNetworkTransportRoundTripsAndPropagatesDisconnectAsync);
 await RunAsync("Embedded server host connects local WindBot session and local client in memory", EmbeddedServerHostConnectsLocalWindBotSessionAndClientInMemoryAsync);
 Run("WindBotDirectClient produces CTOS packets synchronously from fed STOC packets", WindBotDirectClientProducesCtosPacketsSynchronously);
+Run("WindBot bundled Decks and Dialogs assets load from output directory", WindBotBundledDecksAndDialogsAssetsLoadFromOutputDirectory);
 await RunAsync("WindBotService StartBot captures startup error without leaking session", WindBotServiceStartBotCapturesStartupErrorAsync);
 
 static void AppLogParsesLogLevels()
@@ -429,6 +431,32 @@ static void CliMapsServerOptions()
     AssertEqual(80, options.Game.DeckRules.MainDeckMaxSize);
     AssertEqual(20, options.Game.DeckRules.ExtraDeckMaxSize);
     AssertEqual(20, options.Game.DeckRules.SideDeckMaxSize);
+}
+
+static void CliMapsEmbeddedServerBotOptions()
+{
+    CliConfiguration defaultConfig = CliConfiguration.Load(["Port=7911"]);
+    AssertFalse(CliOptionsFactory.ShouldStartServerBot(defaultConfig));
+
+    CliConfiguration botDeckConfig = CliConfiguration.Load([
+        "Port=7922",
+        "ClientVersion=0x1362",
+        "BotName=LuaBot",
+        "BotDeck=ExampleOldSchool",
+        "BotChat=false",
+        "BotDebug=true"
+    ]);
+
+    ServerOptions serverOptions = CliOptionsFactory.CreateServerOptions(botDeckConfig);
+    AssertTrue(CliOptionsFactory.ShouldStartServerBot(botDeckConfig));
+
+    WindBot.WindBotInfo botInfo = CliOptionsFactory.CreateServerBotInfo(botDeckConfig, serverOptions);
+    AssertEqual("LuaBot", botInfo.Name);
+    AssertEqual("ExampleOldSchool", botInfo.Deck);
+    AssertEqual(7922, botInfo.Port);
+    AssertEqual(0x1362, botInfo.Version);
+    AssertFalse(botInfo.Chat);
+    AssertTrue(botInfo.Debug);
 }
 
 static void CliMapsWindBotOptions()
@@ -2167,6 +2195,16 @@ static void CliNLuaRuntimeExecutesExampleScriptAndLua54Features()
         AssertEqual(2, selected.Count);
         AssertEqual(2002, selected[0].Id);
         AssertEqual(2001, selected[1].Id);
+
+        // 4. 验证仓库自带的 ExampleBlueEyes.lua 可被真实 NLua 5.4 加载并执行青眼规则
+        WindBot.Game.GameClient blueEyesClient = new(new WindBot.WindBotInfo { Deck = "ExampleBlueEyes", Chat = false }, cardRepo);
+        WindBot.Game.GameAI blueEyesAi = new(blueEyesClient, duel);
+        using WindBot.Game.AI.Lua.LuaDeckExecutor blueEyesExec =
+            (WindBot.Game.AI.Lua.LuaDeckExecutor)WindBot.Game.AI.DecksManager.Instantiate(blueEyesAi, duel);
+        AssertEqual("AI_BlueEyes", blueEyesExec.Deck);
+        AssertEqual("ExampleBlueEyes", blueEyesExec.Dsl.DeclaredDeckName);
+        AssertTrue(blueEyesExec.Executors.Any(e => e.CardId == 38517737 && e.Type == WindBot.Game.AI.ExecutorType.SpSummon));
+        AssertTrue(blueEyesExec.Executors.Any(e => e.CardId == 41620959 && e.Type == WindBot.Game.AI.ExecutorType.Activate));
     }
     finally
     {
@@ -2545,6 +2583,40 @@ static void WindBotDirectClientProducesCtosPacketsSynchronously()
     {
         Environment.CurrentDirectory = previousDirectory;
         Directory.Delete(temporaryDirectory, recursive: true);
+    }
+}
+
+static void WindBotBundledDecksAndDialogsAssetsLoadFromOutputDirectory()
+{
+    string decksDir = Path.Combine(AppContext.BaseDirectory, "Decks");
+    string dialogsDir = Path.Combine(AppContext.BaseDirectory, "Dialogs");
+
+    AssertTrue(Directory.Exists(decksDir));
+    AssertTrue(Directory.Exists(dialogsDir));
+
+    string[] deckFiles = Directory.GetFiles(decksDir, "*.ydk");
+    string[] dialogFiles = Directory.GetFiles(dialogsDir, "*.json");
+    AssertTrue(deckFiles.Length >= 71);
+    AssertTrue(dialogFiles.Length >= 20);
+
+    // 验证通过 WindBotRuntime.ReadFile 直接解析内置 .ydk 文件
+    using (FileStream oldSchool = WindBot.WindBotRuntime.ReadFile("Decks", "AI_OldSchool", "ydk"))
+    {
+        AssertTrue(oldSchool.Length > 0);
+    }
+
+    // 验证全部内置 Dialogs JSON 均可正常反序列化
+    foreach (string dialogFile in dialogFiles)
+    {
+        string dialogName = Path.GetFileNameWithoutExtension(dialogFile);
+        WindBot.Game.GameClient client = new(new WindBot.WindBotInfo
+        {
+            Dialog = dialogName,
+            Chat = false
+        }, TestNamedRepository());
+
+        WindBot.Game.AI.Dialogs dialogs = new(client);
+        dialogs.SendWelcome();
     }
 }
 
