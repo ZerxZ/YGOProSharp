@@ -81,7 +81,7 @@ ehthumbs.db
 Desktop.ini
 
 # =========================
-# Logs / temp
+# Logs / temp / runtime data
 # =========================
 *.log
 *.tmp
@@ -90,6 +90,21 @@ Desktop.ini
 *.bak
 *.swp
 *.swo
+crash_*.txt
+lua_*.txt
+*.yrp
+*.db
+*.db-wal
+*.db-shm
+.env
+data/
+
+# =========================
+# Web frontend
+# =========================
+web/node_modules/
+web/dist/
+YGOProSharp.Web/wwwroot/
 
 # =========================
 # JetBrains terminal/history misc

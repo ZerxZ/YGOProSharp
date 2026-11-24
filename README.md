@@ -104,6 +104,7 @@ dotnet run --project YGOProSharp.Cli -c Release -- windbot LogLevel=Debug DbPath
 - [调用流程](docs/call-flow.md)
 - [服务端拆分说明](docs/server-migration.md)
 - [WindBot 适配说明](docs/windbot.md)
+- [AI MCP、Web 控制台与 DIY 上传规划](docs/ai-mcp-web-diy-plan.md)
 - [开发代理规范](AGENTS.md)
 - [参考项目索引](docs/reference-projects.md)
 - [参考项目审计](docs/reference-audit.md)

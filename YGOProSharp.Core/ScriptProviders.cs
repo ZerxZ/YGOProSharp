@@ -69,11 +69,13 @@ public sealed class ZipArchiveScriptProvider : IScriptProvider, IDisposable
 
     public string ArchivePath { get; }
 
-    public ZipArchiveScriptProvider(string archivePath)
+    public ZipArchiveScriptProvider(string archivePath, bool copyToMemory = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(archivePath);
         ArchivePath = Path.GetFullPath(archivePath);
-        _archive = ZipFile.OpenRead(ArchivePath);
+        _archive = copyToMemory
+            ? new ZipArchive(new MemoryStream(File.ReadAllBytes(ArchivePath), writable: false), ZipArchiveMode.Read, leaveOpen: false)
+            : ZipFile.OpenRead(ArchivePath);
 
         foreach (ZipArchiveEntry entry in _archive.Entries)
         {
@@ -181,5 +183,104 @@ public sealed class CompositeScriptProvider : IScriptProvider, IDisposable
             if (_providers[i] is IDisposable disposable)
                 disposable.Dispose();
         }
+    }
+}
+
+/// <summary>
+/// 支持运行时原子热重载的脚本 provider 包装器；进行中的对局可继续安全读取，新快照立即生效。
+/// </summary>
+public sealed class ReloadableScriptProvider : IScriptProvider, IDisposable
+{
+    private readonly object _gate = new();
+    private readonly List<IDisposable> _retired = new();
+    private volatile IScriptProvider _current;
+    private long _version = 1;
+    private bool _disposed;
+
+    public ReloadableScriptProvider(IScriptProvider initialProvider)
+    {
+        ArgumentNullException.ThrowIfNull(initialProvider);
+        _current = initialProvider;
+    }
+
+    public IScriptProvider Current => _current;
+
+    public long Version => Volatile.Read(ref _version);
+
+    public event Action<long>? Reloaded;
+
+    public long Reload(IScriptProvider nextProvider, bool disposePreviousImmediately = false)
+    {
+        ArgumentNullException.ThrowIfNull(nextProvider);
+
+        IScriptProvider previous;
+        long nextVersion;
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            previous = _current;
+            _current = nextProvider;
+            nextVersion = Interlocked.Increment(ref _version);
+
+            if (!ReferenceEquals(previous, nextProvider) && previous is IDisposable disposable)
+            {
+                if (disposePreviousImmediately)
+                    disposable.Dispose();
+                else
+                    _retired.Add(disposable);
+            }
+        }
+
+        Reloaded?.Invoke(nextVersion);
+        return nextVersion;
+    }
+
+    public bool TryGetScript(string scriptName, out byte[] script)
+    {
+        if (_disposed)
+        {
+            script = [];
+            return false;
+        }
+
+        return _current.TryGetScript(scriptName, out script);
+    }
+
+    public void TrimRetired()
+    {
+        List<IDisposable> toDispose;
+        lock (_gate)
+        {
+            if (_retired.Count == 0)
+                return;
+
+            toDispose = new List<IDisposable>(_retired);
+            _retired.Clear();
+        }
+
+        for (int i = 0; i < toDispose.Count; i++)
+            toDispose[i].Dispose();
+    }
+
+    public void Dispose()
+    {
+        IScriptProvider? currentToDispose = null;
+        List<IDisposable> retiredToDispose;
+        lock (_gate)
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+            currentToDispose = _current;
+            retiredToDispose = new List<IDisposable>(_retired);
+            _retired.Clear();
+        }
+
+        for (int i = 0; i < retiredToDispose.Count; i++)
+            retiredToDispose[i].Dispose();
+
+        if (currentToDispose is IDisposable disposable)
+            disposable.Dispose();
     }
 }

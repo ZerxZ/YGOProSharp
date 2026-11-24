@@ -191,4 +191,19 @@ public sealed record RoomSnapshot(
     int MaxDuelists,
     int ObserverCount,
     string? HostPlayerName,
-    IReadOnlyList<string> PlayerNames);
+    IReadOnlyList<string> PlayerNames,
+    RandomDeckMode RandomDeckMode = RandomDeckMode.None,
+    bool IsSuddenDeath = false,
+    int TurnCount = 0,
+    int Team0Lp = 0,
+    int Team1Lp = 0);
+
+/// <summary>
+/// 服务端热重载执行结果摘要。
+/// </summary>
+public sealed record ServerReloadResult(
+    long CatalogVersion,
+    long ScriptVersion,
+    int DatabaseCount,
+    int BanlistCount,
+    int PresetDeckCount);

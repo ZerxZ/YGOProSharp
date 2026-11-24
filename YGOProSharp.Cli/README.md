@@ -26,6 +26,12 @@ dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- server
 dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- server RootPath=. DatabaseFile=cards.cdb ScriptDirectory=script Port=7911 AddBot=true BotName=BlueEyesLua BotDeck=ExampleBlueEyes
 ```
 
+启动 2v2 双打（Tag Duel）服务端（默认 4 席位、16000 LP，进入房间后可输入 `/ai fill ExampleBlueEyes` 一键召唤 3 名 AI 补满席位开局）：
+
+```bash
+dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- server RootPath=. DatabaseFile=cards.cdb ScriptDirectory=script Port=7911 Mode=2v2
+```
+
 启动 WindBot 客户端：
 
 ```bash

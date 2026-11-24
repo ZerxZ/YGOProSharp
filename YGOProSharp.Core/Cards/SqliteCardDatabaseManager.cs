@@ -55,6 +55,44 @@ public sealed class SqliteCardDatabaseManager : ICardDatabaseManager
         return LoadNamedCardsCore(databaseFullPaths.Where(File.Exists));
     }
 
+    public CardDatabaseValidationResult ValidateDatabase(string databaseFullPath)
+    {
+        if (string.IsNullOrWhiteSpace(databaseFullPath) || !File.Exists(databaseFullPath))
+            return new CardDatabaseValidationResult(false, 0, 0, [], "Database file does not exist.");
+
+        try
+        {
+            List<int> cardIds = new();
+            int customCount = 0;
+
+            using SqliteConnection connection = OpenConnection(Path.GetFullPath(databaseFullPath));
+            using (SqliteCommand datasCmd = connection.CreateCommand())
+            {
+                datasCmd.CommandText = CardQuery;
+                using SqliteDataReader reader = datasCmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    Card card = ReadCard(reader);
+                    cardIds.Add(card.Id);
+                    if ((card.Ot & 0x4) != 0)
+                        customCount++;
+                }
+            }
+
+            using (SqliteCommand textsCmd = connection.CreateCommand())
+            {
+                textsCmd.CommandText = "SELECT COUNT(*) FROM texts";
+                _ = textsCmd.ExecuteScalar();
+            }
+
+            return new CardDatabaseValidationResult(true, cardIds.Count, customCount, cardIds);
+        }
+        catch (Exception ex)
+        {
+            return new CardDatabaseValidationResult(false, 0, 0, [], ex.Message);
+        }
+    }
+
     private static INamedCardRepository LoadNamedCardsCore(IEnumerable<string> databaseFullPaths)
     {
         List<NamedCard> cards = new();
@@ -79,7 +117,8 @@ public sealed class SqliteCardDatabaseManager : ICardDatabaseManager
         SqliteConnectionStringBuilder builder = new()
         {
             DataSource = databaseFullPath,
-            Mode = SqliteOpenMode.ReadOnly
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
         };
 
         SqliteConnection connection = new(builder.ToString());

@@ -1,14 +1,17 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Threading;
 using Microsoft.Extensions.Logging;
 using YGOProSharp.Abstractions.Logging;
 using YGOProSharp.Abstractions.Ocg;
+using YGOProSharp.Core;
 using YGOProSharp.Core.Cards;
 using YGOProSharp.Protocol;
 using YGOProSharp.Protocol.Enums;
+using YGOProSharp.Protocol.Utils;
 
 namespace YGOProSharp.Server
 {
@@ -24,7 +27,13 @@ namespace YGOProSharp.Server
         public AddonsManager? Addons { get; private set; }
         public Game? Game { get; private set; }
         public bool IsMultiRoom => _options.EnableMultiRoom;
+        public ServerOptions Options => _options;
+        public ICardRepository CardRepository => _cardRepository;
+        public ReloadableCardRepository ReloadableCards => _reloadableCards;
+        public PresetDeckPool PresetDecks => _presetDecks;
         public RoomPasswordParser PasswordParser => _passwordParser;
+        public bool IsMaintenanceMode { get; private set; }
+        public string MaintenanceReason { get; private set; } = string.Empty;
         public int ClientCount
         {
             get
@@ -53,9 +62,12 @@ namespace YGOProSharp.Server
         private readonly IDuelFactory? _duelFactory;
         private readonly ILogger<CoreServer> _logger;
         private readonly ICardRepository _cardRepository;
+        private readonly ReloadableCardRepository _reloadableCards;
+        private readonly PresetDeckPool _presetDecks;
         private readonly ServerOptions _options;
         private readonly RoomPasswordParser _passwordParser;
         private readonly IDisposable? _ownedResource;
+        private readonly Func<ServerReloadResult>? _reloadCallback;
         private readonly object _clientsLock = new();
         private readonly List<YGOClient> _clients = new();
         private readonly List<YGOClient> _tickClients = new();
@@ -71,7 +83,7 @@ namespace YGOProSharp.Server
         /// 使用可选业务依赖创建 server，同时通过 <see cref="AppLog"/> 保持全局日志入口。
         /// </summary>
         public CoreServer(IDuelFactory? duelFactory = null, ICardRepository? cardRepository = null, ServerOptions? options = null)
-            : this(duelFactory, cardRepository, options, ownedResource: null)
+            : this(duelFactory, cardRepository, options, ownedResource: null, reloadCallback: null)
         {
         }
 
@@ -79,14 +91,102 @@ namespace YGOProSharp.Server
             IDuelFactory? duelFactory,
             ICardRepository? cardRepository,
             ServerOptions? options,
-            IDisposable? ownedResource)
+            IDisposable? ownedResource,
+            Func<ServerReloadResult>? reloadCallback = null)
         {
             _duelFactory = duelFactory;
             _logger = AppLog.CreateLogger<CoreServer>();
-            _cardRepository = cardRepository ?? EmptyCardRepository.Instance;
             _options = options ?? new ServerOptions();
+            ICardRepository baseRepo = cardRepository ?? EmptyCardRepository.Instance;
+            _reloadableCards = baseRepo as ReloadableCardRepository ?? new ReloadableCardRepository(baseRepo);
+            _cardRepository = _reloadableCards;
+            _presetDecks = _options.PresetDeckPool ?? new PresetDeckPool();
             _passwordParser = _options.RoomPasswordParser ?? RoomPasswordParser.Default;
             _ownedResource = ownedResource;
+            _reloadCallback = reloadCallback;
+        }
+
+        /// <summary>
+        /// 切换服务端停服维护模式（参考 srvpro <c>stop</c>）：开启后进行中的对局不受影响，拒绝新入房与新建房请求。
+        /// </summary>
+        public void SetMaintenanceMode(bool enabled, string? reason = null)
+        {
+            IsMaintenanceMode = enabled;
+            MaintenanceReason = reason?.Trim() ?? string.Empty;
+            _logger.LogInformation("Maintenance mode set to {Enabled}. Reason={Reason}.", enabled, MaintenanceReason);
+        }
+
+        /// <summary>
+        /// 向当前所有活动房间广播黄色系统公告（全服黄字 <c>shout</c>）。
+        /// </summary>
+        public void BroadcastSystemMessage(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return;
+
+            if (!_options.EnableMultiRoom)
+            {
+                Game?.BroadcastSystemMessage(message);
+                return;
+            }
+
+            ManagedRoom[] snapshot;
+            lock (_roomsLock)
+                snapshot = _rooms.Values.ToArray();
+
+            for (int i = 0; i < snapshot.Length; i++)
+                snapshot[i].Game.BroadcastSystemMessage(message);
+        }
+
+        /// <summary>
+        /// 免重启原子热重载磁盘卡库、脚本、禁限表与盲盒预设卡组池（进行中对局不断线）。
+        /// </summary>
+        public ServerReloadResult ReloadAssets()
+        {
+            if (_reloadCallback is not null)
+                return _reloadCallback();
+
+            long version = _reloadableCards.Reload(_reloadableCards.Current);
+            return new ServerReloadResult(version, 1, 0, BanlistManager.Banlists.Count, _presetDecks.Count);
+        }
+
+        /// <summary>
+        /// 在多房间模式下通过控制面 API 预创建指定名称与规则的房间。
+        /// </summary>
+        public bool TryCreateRoom(string roomName, out Game? room, GameOptions? optionsOverride = null)
+        {
+            room = null;
+            if (!_options.EnableMultiRoom || IsMaintenanceMode || string.IsNullOrWhiteSpace(roomName))
+                return false;
+
+            string trimmed = roomName.Trim();
+            Game created;
+            lock (_roomsLock)
+            {
+                if (_rooms.TryGetValue(trimmed, out ManagedRoom? existing) && !existing.PendingRemoval && existing.Game.State != GameState.End)
+                    return false;
+
+                if (_rooms.Count >= Math.Max(1, _options.MaxRooms))
+                    return false;
+
+                ManagedRoom managed = CreateManagedRoom(trimmed, optionsOverride ?? _options.Game);
+                _rooms[trimmed] = managed;
+                created = managed.Game;
+            }
+
+            created.Start();
+            OnRoomCreated?.Invoke(created);
+            _logger.LogInformation("Created room '{RoomName}' programmatically. ActiveRooms={RoomCount}.", trimmed, RoomCount);
+            room = created;
+            return true;
+        }
+
+        public Game CreateRoom(string roomName, GameOptions? optionsOverride = null)
+        {
+            if (!TryCreateRoom(roomName, out Game? room, optionsOverride) || room is null)
+                throw new InvalidOperationException($"Unable to create room '{roomName}'. Ensure MultiRoom is enabled, server is not in maintenance mode, and room name is unique.");
+
+            return room;
         }
 
         public void Start()
@@ -321,6 +421,12 @@ namespace YGOProSharp.Server
 
         internal Game? ResolveGameForJoin(Player player, string rawPassword)
         {
+            if (IsMaintenanceMode)
+            {
+                SendMaintenanceRejection(player);
+                return null;
+            }
+
             ParsedRoomPassword parsed = _passwordParser.Parse(rawPassword);
 
             if (!_options.EnableMultiRoom)
@@ -375,6 +481,12 @@ namespace YGOProSharp.Server
 
         internal Game? ResolveGameForCreate(Player player, HostInfo hostInfo, string hostName, string password)
         {
+            if (IsMaintenanceMode)
+            {
+                SendMaintenanceRejection(player);
+                return null;
+            }
+
             if (!_options.EnableMultiRoom)
             {
                 if (Game is null)
@@ -596,6 +708,17 @@ namespace YGOProSharp.Server
                 return parsed.RawPassword;
 
             return "default";
+        }
+
+        private void SendMaintenanceRejection(Player player)
+        {
+            string suffix = string.IsNullOrWhiteSpace(MaintenanceReason) ? string.Empty : $"（原因：{MaintenanceReason}）";
+            string text = $"[Server] 服务器当前处于维护模式，暂不接受新连接{suffix}。";
+            using BinaryWriter packet = GamePacketFactory.Create(StocMessage.Chat);
+            packet.Write((short)PlayerType.Yellow);
+            packet.WriteUnicode(text, text.Length + 1);
+            player.Send(packet);
+            _logger.LogInformation("Rejected connection from {PlayerName} because maintenance mode is active.", player.Name);
         }
 
         private void Listener_ClientConnected(NetworkClient client)

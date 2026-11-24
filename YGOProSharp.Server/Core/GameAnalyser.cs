@@ -117,7 +117,8 @@ namespace YGOProSharp.Server
                     OnShuffleSetCard(cmsg);
                     break;
                 case GameMessage.NewTurn:
-                    OnNewTurn(cmsg);
+                    if (OnNewTurn(cmsg))
+                        return 2;
                     break;
                 case GameMessage.NewPhase:
                     OnNewPhase(cmsg);
@@ -313,7 +314,7 @@ namespace YGOProSharp.Server
         {
             int player = msg.Reader.ReadByte();
             int reason = msg.Reader.ReadByte();
-            Game.MatchSaveResult(player, reason);
+            Game.MatchSaveResult(Game.GetLobbyTeamFromDuelSide(player), reason);
             SendToAll(msg);
         }
 
@@ -599,15 +600,17 @@ namespace YGOProSharp.Server
             }
         }
 
-        private void OnNewTurn(CoreMessage msg)
+        private bool OnNewTurn(CoreMessage msg)
         {
             Game.TimeReset();
+            Game.ClearPendingTagSurrender();
             if (!Game.IsTag)
                 Game.RefreshAll();
             Game.CurrentPlayer = msg.Reader.ReadByte();
             SendToAll(msg);
 
             Game.TurnCount++;
+            return Game.TrySettleSuddenDeathOnNewTurn();
         }
 
         private void OnNewPhase(CoreMessage msg)
@@ -712,9 +715,9 @@ namespace YGOProSharp.Server
                     packet.Write(0);
             }
 
-            SendToTeam(msg, player);
-            SendToOpponentTeam(packet, player);
-            Game.SendToObservers(packet);
+            // 对齐 tag_duel.cpp：2v2 双打中抽卡仅对当前执子玩家公开，队友与对手及观战者同样收到遮蔽包。
+            SendToPlayer(msg, player);
+            Game.SendToAllBut(packet, player);
         }
 
         private void OnLpUpdate(CoreMessage msg)
@@ -841,10 +844,7 @@ namespace YGOProSharp.Server
                     packet.Write(0);
             }
 
-            if (Game.CurPlayers[player].Equals(Game.Players[player * 2]))
-                Game.CurPlayers[player] = Game.Players[player * 2 + 1];
-            else
-                Game.CurPlayers[player] = Game.Players[player * 2];
+            Game.ToggleTagPlayer(player);
 
             SendToPlayer(msg, player);
             Game.SendToAllBut(packet, player);

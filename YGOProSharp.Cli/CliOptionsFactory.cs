@@ -41,9 +41,17 @@ public static class CliOptionsFactory
         List<string> extraScripts = new();
         AddSplitPaths(extraScripts, configuration.GetString("ExtraScripts"));
 
+        List<string> randomDeckDirs = new();
+        AddSplitPaths(randomDeckDirs, configuration.GetString("RandomDeckDir"));
+        AddSplitPaths(randomDeckDirs, configuration.GetString("RandomDeckDirs"));
+
         bool enableMultiRoom = configuration.Has("EnableMultiRoom")
             ? configuration.GetBool("EnableMultiRoom")
             : configuration.GetBool("MultiRoom");
+
+        int mode = ParseMode(configuration.GetString("Mode"));
+        int defaultStartLp = mode == 2 ? Game.DEFAULT_TAG_LIFEPOINTS : Game.DEFAULT_LIFEPOINTS;
+        RandomDeckMode randomDeckMode = ParseRandomDeckMode(configuration.GetString("RandomDeck"));
 
         return new ServerOptions
         {
@@ -60,17 +68,19 @@ public static class CliOptionsFactory
             ExtraScriptDirectories = extraScriptDirs,
             ExtraScriptArchives = extraScriptArchives,
             ExtraBanlistFiles = extraBanlists,
+            RandomDeckDirectories = randomDeckDirs,
+            RandomDeckRerollPerMatchDuel = configuration.GetBool("RandomDeckRerollPerMatchDuel", true),
             EnableMultiRoom = enableMultiRoom,
             MaxRooms = configuration.GetInt("MaxRooms", 128),
             ApplyPasswordRulesInSingleRoom = configuration.GetBool("ApplyPasswordRulesInSingleRoom", true),
             EnableChatCommands = configuration.GetBool("EnableChatCommands", true),
             Game = new GameOptions
             {
-                Mode = configuration.GetInt("Mode"),
+                Mode = mode,
                 Region = region,
                 MasterRule = configuration.GetInt("MasterRule", 5),
                 Banlist = configuration.GetInt("Banlist"),
-                StartLp = configuration.GetInt("StartLp", Game.DEFAULT_LIFEPOINTS),
+                StartLp = configuration.GetInt("StartLp", defaultStartLp),
                 StartHand = configuration.GetInt("StartHand", Game.DEFAULT_START_HAND),
                 DrawCount = configuration.GetInt("DrawCount", Game.DEFAULT_DRAW_COUNT),
                 EnablePriority = configuration.GetBool("EnablePriority"),
@@ -78,6 +88,9 @@ public static class CliOptionsFactory
                 NoShuffleDeck = configuration.GetBool("NoShuffleDeck"),
                 GameTimer = configuration.GetInt("GameTimer", Game.DEFAULT_TIMER),
                 MatchWins = configuration.GetInt("MatchWins", 2),
+                RandomDeck = randomDeckMode,
+                ChaosMainDeckSize = configuration.GetInt("ChaosMainDeckSize", 40),
+                SuddenDeath = configuration.GetBool("SuddenDeath", false),
                 ExtraScripts = extraScripts,
                 DeckRules = new DeckRules(
                     configuration.GetInt("MainDeckMinSize", 40),
@@ -234,6 +247,41 @@ public static class CliOptionsFactory
         directories.Add("LuaDialogs");
         directories.Add(Path.Combine(AppContext.BaseDirectory, "LuaDialogs"));
         return new FileSystemLuaDialogScriptProvider(directories.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+    }
+
+    private static int ParseMode(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return 0;
+
+        string trimmed = raw.Trim();
+        if (int.TryParse(trimmed, out int numeric) && numeric >= 0 && numeric <= 2)
+            return numeric;
+
+        return trimmed.ToLowerInvariant() switch
+        {
+            "s" or "single" or "1v1" or "1vs1" => 0,
+            "m" or "match" => 1,
+            "t" or "tag" or "2v2" or "2vs2" => 2,
+            _ => 0
+        };
+    }
+
+    private static RandomDeckMode ParseRandomDeckMode(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return RandomDeckMode.None;
+
+        return raw.Trim().ToLowerInvariant() switch
+        {
+            "preset" or "rd" or "rand" => RandomDeckMode.PresetRandom,
+            "mirror" or "rdm" => RandomDeckMode.MirrorRandom,
+            "chaos" or "chaos60" => RandomDeckMode.ChaosDraft,
+            "purechaos" => RandomDeckMode.PureChaos,
+            "diy" or "diyrd" => RandomDeckMode.DiyRandom,
+            "diychaos" => RandomDeckMode.DiyChaos,
+            _ => RandomDeckMode.None
+        };
     }
 
     private static void AddSplitPaths(List<string> target, string? raw)

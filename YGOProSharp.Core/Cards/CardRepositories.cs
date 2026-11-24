@@ -4,11 +4,13 @@ using System.Runtime.CompilerServices;
 namespace YGOProSharp.Core.Cards;
 
 /// <summary>
-/// 只读卡片查询（read-only lookup），供卡组校验和 native card-data callback 使用。
+/// 只读卡片查询（read-only lookup），供卡组校验、随机组卡和 native card-data callback 使用。
 /// </summary>
 public interface ICardRepository
 {
     bool TryGetCard(int id, out Card card);
+
+    IReadOnlyCollection<Card> GetAllCards();
 }
 
 /// <summary>
@@ -20,6 +22,16 @@ public interface INamedCardRepository
 
     IReadOnlyCollection<NamedCard> GetAllCards();
 }
+
+/// <summary>
+/// <c>.cdb</c> 卡片数据库结构校验结果。
+/// </summary>
+public sealed record CardDatabaseValidationResult(
+    bool IsValid,
+    int TotalCards,
+    int CustomCards,
+    IReadOnlyList<int> CardIds,
+    string? ErrorMessage = null);
 
 /// <summary>
 /// 从持久化存储加载 card repository；SQLite 细节应留在该接口的实现内部。
@@ -36,6 +48,11 @@ public interface ICardDatabaseManager
     INamedCardRepository LoadNamedCards(string databaseFullPath);
 
     INamedCardRepository LoadNamedCards(IEnumerable<string> databaseFullPaths);
+
+    /// <summary>
+    /// 校验单个 <c>.cdb</c> 文件的表结构与数据可读性，并返回包含的卡密列表以供冲突分析。
+    /// </summary>
+    CardDatabaseValidationResult ValidateDatabase(string databaseFullPath);
 }
 
 /// <summary>
@@ -54,6 +71,11 @@ public sealed class EmptyCardRepository : ICardRepository
         card = null!;
         return false;
     }
+
+    public IReadOnlyCollection<Card> GetAllCards()
+    {
+        return [];
+    }
 }
 
 /// <summary>
@@ -62,6 +84,7 @@ public sealed class EmptyCardRepository : ICardRepository
 public sealed class InMemoryCardRepository : ICardRepository
 {
     private readonly FrozenDictionary<int, Card> _cards;
+    private readonly Card[] _allCards;
 
     public InMemoryCardRepository(IEnumerable<Card> cards)
     {
@@ -70,12 +93,19 @@ public sealed class InMemoryCardRepository : ICardRepository
             indexedCards[card.Id] = card;
 
         _cards = indexedCards.ToFrozenDictionary();
+        _allCards = [.. indexedCards.Values];
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryGetCard(int id, out Card card)
     {
         return _cards.TryGetValue(id, out card!);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public IReadOnlyCollection<Card> GetAllCards()
+    {
+        return _allCards;
     }
 }
 
@@ -140,6 +170,7 @@ public sealed class InMemoryNamedCardRepository : INamedCardRepository
 public sealed class CompositeCardRepository : ICardRepository
 {
     private readonly ICardRepository[] _repositories;
+    private readonly Lazy<Card[]> _allCards;
 
     public CompositeCardRepository(params ICardRepository[] repositories)
         : this((IEnumerable<ICardRepository>)repositories)
@@ -150,6 +181,7 @@ public sealed class CompositeCardRepository : ICardRepository
     {
         ArgumentNullException.ThrowIfNull(repositories);
         _repositories = repositories.Where(static repo => repo is not null).ToArray();
+        _allCards = new Lazy<Card[]>(BuildMergedCards);
     }
 
     public bool TryGetCard(int id, out Card card)
@@ -162,6 +194,66 @@ public sealed class CompositeCardRepository : ICardRepository
 
         card = null!;
         return false;
+    }
+
+    public IReadOnlyCollection<Card> GetAllCards()
+    {
+        return _allCards.Value;
+    }
+
+    private Card[] BuildMergedCards()
+    {
+        Dictionary<int, Card> merged = new();
+        for (int i = _repositories.Length - 1; i >= 0; i--)
+        {
+            foreach (Card card in _repositories[i].GetAllCards())
+                merged[card.Id] = card;
+        }
+
+        return [.. merged.Values];
+    }
+}
+
+/// <summary>
+/// 支持运行时原子热重载的卡片仓库包装器；每次 <see cref="Reload"/> 自动递增 <see cref="CatalogVersion"/>，
+/// 供上层缓存键空间与随机卡组池无锁切换。
+/// </summary>
+public sealed class ReloadableCardRepository : ICardRepository
+{
+    private volatile ICardRepository _current;
+    private long _catalogVersion = 1;
+
+    public ReloadableCardRepository(ICardRepository initialRepository)
+    {
+        ArgumentNullException.ThrowIfNull(initialRepository);
+        _current = initialRepository;
+    }
+
+    public ICardRepository Current => _current;
+
+    public long CatalogVersion => Volatile.Read(ref _catalogVersion);
+
+    public event Action<long>? Reloaded;
+
+    public long Reload(ICardRepository nextRepository)
+    {
+        ArgumentNullException.ThrowIfNull(nextRepository);
+        _current = nextRepository;
+        long nextVersion = Interlocked.Increment(ref _catalogVersion);
+        Reloaded?.Invoke(nextVersion);
+        return nextVersion;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryGetCard(int id, out Card card)
+    {
+        return _current.TryGetCard(id, out card);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public IReadOnlyCollection<Card> GetAllCards()
+    {
+        return _current.GetAllCards();
     }
 }
 

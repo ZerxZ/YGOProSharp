@@ -95,6 +95,21 @@ public sealed record ServerOptions
     /// </summary>
     public RoomPasswordParser? RoomPasswordParser { get; init; }
 
+    /// <summary>
+    /// 额外扫描的服务端预设随机盲盒 <c>.ydk</c> 目录列表（默认自动扫描 <c>&lt;RootPath&gt;/decks/random</c> 与启用的 DIY 包 <c>decks/</c>）。
+    /// </summary>
+    public IReadOnlyList<string> RandomDeckDirectories { get; init; } = [];
+
+    /// <summary>
+    /// 可选外部注入的预设盲盒卡组池实例；为空时由服务端自动创建并管理。
+    /// </summary>
+    public PresetDeckPool? PresetDeckPool { get; init; }
+
+    /// <summary>
+    /// 在 Match（BO3/BO5）模式下启用随机卡组时，是否每小局重新随机抽取新卡组（默认 <c>true</c>；设为 <c>false</c> 则整场 Match 沿用首局随机卡组）。
+    /// </summary>
+    public bool RandomDeckRerollPerMatchDuel { get; init; } = true;
+
     public GameOptions Game { get; init; } = new();
 }
 
@@ -111,6 +126,21 @@ public sealed record GameOptions
     public bool EnablePriority { get; init; }
     public bool NoCheckDeck { get; init; }
     public bool NoShuffleDeck { get; init; }
+
+    /// <summary>
+    /// 房间强制服务端随机卡组模式（默认 <see cref="RandomDeckMode.None"/> 关闭）。
+    /// </summary>
+    public RandomDeckMode RandomDeck { get; init; } = RandomDeckMode.None;
+
+    /// <summary>
+    /// 混沌随机模式（<c>CHAOS</c> / <c>CHAOS60</c>）的目标主卡组张数（默认 40）。
+    /// </summary>
+    public int ChaosMainDeckSize { get; init; } = 40;
+
+    /// <summary>
+    /// 是否默认开启额外回合猝死规则（<c>ED</c>）。
+    /// </summary>
+    public bool SuddenDeath { get; init; }
 
     /// <summary>
     /// Match 模式下获胜所需的单局胜场数（默认 2 即 BO3，配合 <c>BO5</c> 可设为 3）。

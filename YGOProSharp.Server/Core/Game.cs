@@ -6,6 +6,7 @@ using System.IO;
 using Microsoft.Extensions.Logging;
 using YGOProSharp.Abstractions.Ocg;
 using YGOProSharp.Abstractions.Ocg.Enums;
+using YGOProSharp.Core;
 using YGOProSharp.Core.Cards;
 using YGOProSharp.Abstractions.Logging;
 using YGOProSharp.Protocol;
@@ -20,9 +21,11 @@ namespace YGOProSharp.Server
     public class Game : IGame
     {
         public const int DEFAULT_LIFEPOINTS = 8000;
+        public const int DEFAULT_TAG_LIFEPOINTS = DEFAULT_LIFEPOINTS * 2;
         public const int DEFAULT_START_HAND = 5;
         public const int DEFAULT_DRAW_COUNT = 1;
         public const int DEFAULT_TIMER = 240;
+        public const int WIN_REASON_SUDDEN_DEATH = 0x11;
 
         public Banlist Banlist { get; private set; } = null!;
         public string RoomName { get; internal set; } = "default";
@@ -38,8 +41,13 @@ namespace YGOProSharp.Server
         public bool NoCheckDeck { get; set; }
         public bool NoShuffleDeck { get; set; }
         public int MatchWins { get; set; }
+        public RandomDeckMode RandomDeckMode { get; set; }
+        public int ChaosMainDeckSize { get; set; } = 40;
+        public bool IsSuddenDeath { get; private set; }
+        public int SuddenDeathTargetTurn { get; private set; }
         public bool IsMatch { get; private set; }
         public bool IsTag { get; private set; }
+        public bool IsDuelSwapped { get; private set; }
         public bool IsTpSelect { get; private set; }
         public CoreServer Server => _server;
         public IReadOnlyList<string> ExtraScripts => _extraScripts;
@@ -82,7 +90,11 @@ namespace YGOProSharp.Server
 
         private int[] _timelimit;
         private DateTime? _time;
-        
+        private Player[] _duelPlayers = Array.Empty<Player>();
+        private readonly HashSet<int> _pendingTagSurrenderSlots = new();
+        private readonly Dictionary<Player, RandomDeckMode> _personalRandomModes = new();
+        private Deck?[]? _matchInitialRandomDecks;
+
         private bool _matchKill;
 
         public event Action<object, EventArgs>? OnNetworkReady;
@@ -146,6 +158,13 @@ namespace YGOProSharp.Server
             NoCheckDeck = _options.NoCheckDeck;
             NoShuffleDeck = _options.NoShuffleDeck;
             Timer = _options.GameTimer;
+            RandomDeckMode = _options.RandomDeck;
+            ChaosMainDeckSize = Math.Clamp(_options.ChaosMainDeckSize, 1, 60);
+            if (_options.SuddenDeath)
+            {
+                IsSuddenDeath = true;
+                SuddenDeathTargetTurn = 5;
+            }
 
             _server = server;
             _analyser = new GameAnalyser(this);
@@ -195,7 +214,12 @@ namespace YGOProSharp.Server
                 Players.Length,
                 Observers.Count,
                 HostPlayer?.Name,
-                playerNames);
+                playerNames,
+                RandomDeckMode,
+                IsSuddenDeath,
+                TurnCount,
+                LifePoints[0],
+                LifePoints[1]);
         }
 
         public bool IsHost(Player player)
@@ -257,6 +281,12 @@ namespace YGOProSharp.Server
                     }
                     Players = expandedPlayers;
                     IsReady = expandedReady;
+                    if (StartLp == DEFAULT_LIFEPOINTS)
+                    {
+                        StartLp = DEFAULT_TAG_LIFEPOINTS;
+                        LifePoints[0] = StartLp;
+                        LifePoints[1] = StartLp;
+                    }
                 }
                 else
                 {
@@ -272,6 +302,12 @@ namespace YGOProSharp.Server
                     }
                     Players = shrunkPlayers;
                     IsReady = shrunkReady;
+                    if (StartLp == DEFAULT_TAG_LIFEPOINTS)
+                    {
+                        StartLp = DEFAULT_LIFEPOINTS;
+                        LifePoints[0] = StartLp;
+                        LifePoints[1] = StartLp;
+                    }
                 }
             }
 
@@ -371,6 +407,18 @@ namespace YGOProSharp.Server
             else if (overrides.BanlistIndex.HasValue && overrides.BanlistIndex.Value >= 0 && overrides.BanlistIndex.Value < BanlistManager.Banlists.Count)
                 Banlist = BanlistManager.Banlists[overrides.BanlistIndex.Value];
 
+            if (overrides.RandomDeck.HasValue)
+                RandomDeckMode = overrides.RandomDeck.Value;
+            if (overrides.ChaosMainDeckSize.HasValue)
+                ChaosMainDeckSize = Math.Clamp(overrides.ChaosMainDeckSize.Value, 1, 60);
+            if (overrides.SuddenDeath.HasValue)
+            {
+                if (overrides.SuddenDeath.Value)
+                    StartSuddenDeath();
+                else
+                    CancelSuddenDeath();
+            }
+
             foreach (string script in overrides.ExtraScripts)
                 AddExtraScript(script);
             foreach (KeyValuePair<string, string> pair in overrides.CustomTags)
@@ -429,6 +477,10 @@ namespace YGOProSharp.Server
             StartHand = merged.StartHand;
             DrawCount = merged.DrawCount;
             Timer = merged.GameTimer;
+            RandomDeckMode = merged.RandomDeck;
+            ChaosMainDeckSize = Math.Clamp(merged.ChaosMainDeckSize, 1, 60);
+            IsSuddenDeath = merged.SuddenDeath;
+            SuddenDeathTargetTurn = merged.SuddenDeath ? 5 : 0;
 
             if (merged.Banlist < 0)
                 Banlist = null!;
@@ -476,8 +528,9 @@ namespace YGOProSharp.Server
             EnablePriority = hostInfo.EnablePriority;
             NoCheckDeck = hostInfo.NoCheckDeck;
             NoShuffleDeck = hostInfo.NoShuffleDeck;
-            LifePoints[0] = hostInfo.StartLp;
-            LifePoints[1] = hostInfo.StartLp;
+            StartLp = hostInfo.StartLp > 0 ? hostInfo.StartLp : (IsTag ? DEFAULT_TAG_LIFEPOINTS : DEFAULT_LIFEPOINTS);
+            LifePoints[0] = StartLp;
+            LifePoints[1] = StartLp;
             StartHand = hostInfo.StartHand;
             DrawCount = hostInfo.DrawCount;
             Timer = hostInfo.TimeLimit;
@@ -538,19 +591,152 @@ namespace YGOProSharp.Server
                 player.Send(packet);
         }
 
-        public void SendToTeam(BinaryWriter packet, int team)
+        public int GetLobbyTeam(Player player)
         {
-            if (!IsTag)
-                Players[team].Send(packet);
-            else if (team == 0)
+            if (player is null || player.Type < 0 || player.Type >= Players.Length)
+                return -1;
+
+            return IsTag ? (player.Type >= 2 ? 1 : 0) : player.Type;
+        }
+
+        public int GetDuelSide(Player player)
+        {
+            int lobbyTeam = GetLobbyTeam(player);
+            if (lobbyTeam < 0)
+                return -1;
+
+            return (State == GameState.Duel && IsDuelSwapped) ? (1 - lobbyTeam) : lobbyTeam;
+        }
+
+        public int GetLobbyTeamFromDuelSide(int duelSide)
+        {
+            return (IsDuelSwapped && (duelSide == 0 || duelSide == 1)) ? (1 - duelSide) : duelSide;
+        }
+
+        public Player? GetTeammate(Player player)
+        {
+            if (!IsTag || player is null || player.Type < 0 || player.Type >= 4)
+                return null;
+
+            return Players[player.Type ^ 1];
+        }
+
+        public void ToggleTagPlayer(int duelSide)
+        {
+            if (!IsTag || (duelSide != 0 && duelSide != 1) || _duelPlayers.Length < 4)
+                return;
+
+            Player first = _duelPlayers[duelSide * 2];
+            Player second = _duelPlayers[duelSide * 2 + 1];
+            CurPlayers[duelSide] = ReferenceEquals(CurPlayers[duelSide], first) ? second : first;
+        }
+
+        public void ClearPendingTagSurrender()
+        {
+            _pendingTagSurrenderSlots.Clear();
+        }
+
+        public bool HasPendingTagSurrender(int playerSlot) => _pendingTagSurrenderSlots.Contains(playerSlot);
+
+        public void SetPlayerPersonalRandomDeck(Player player, RandomDeckMode mode)
+        {
+            ArgumentNullException.ThrowIfNull(player);
+            if (mode == RandomDeckMode.None)
+                _personalRandomModes.Remove(player);
+            else
+                _personalRandomModes[player] = mode;
+        }
+
+        public RandomDeckMode GetEffectiveRandomDeckMode(Player player)
+        {
+            if (RandomDeckMode != RandomDeckMode.None)
+                return RandomDeckMode;
+
+            return player is not null && _personalRandomModes.TryGetValue(player, out RandomDeckMode personal)
+                ? personal
+                : RandomDeckMode.None;
+        }
+
+        public bool HasServerAssignedRandomDeck(Player player) => GetEffectiveRandomDeckMode(player) != RandomDeckMode.None;
+
+        /// <summary>
+        /// 开启额外回合猝死规则（ED，对齐 srvpro2 <c>RoomDeathService</c>）。
+        /// </summary>
+        public bool StartSuddenDeath(int extraTurns = 4)
+        {
+            if (State == GameState.End)
+                return false;
+
+            int clampedTurns = Math.Clamp(extraTurns, 1, 20);
+            IsSuddenDeath = true;
+            if (State == GameState.Duel)
             {
-                Players[0].Send(packet);
-                Players[1].Send(packet);
+                SuddenDeathTargetTurn = TurnCount > 0 ? TurnCount + clampedTurns : clampedTurns + 1;
+                BroadcastSystemMessage($"[Death] 已开启额外回合猝死规则（ED）：将在第 {SuddenDeathTargetTurn} 回合开始时按双方 LP 高低结算胜负。");
             }
             else
             {
-                Players[2].Send(packet);
-                Players[3].Send(packet);
+                SuddenDeathTargetTurn = clampedTurns + 1;
+            }
+            return true;
+        }
+
+        public void CancelSuddenDeath()
+        {
+            if (!IsSuddenDeath)
+                return;
+
+            IsSuddenDeath = false;
+            SuddenDeathTargetTurn = 0;
+            if (State == GameState.Duel)
+                BroadcastSystemMessage("[Death] 已取消额外回合猝死规则（ED）。");
+        }
+
+        internal bool TrySettleSuddenDeathOnNewTurn()
+        {
+            if (!IsSuddenDeath || SuddenDeathTargetTurn == 0 || State != GameState.Duel)
+                return false;
+
+            if (SuddenDeathTargetTurn == -1 || TurnCount >= SuddenDeathTargetTurn)
+            {
+                if (LifePoints[0] != LifePoints[1] && TurnCount > 1)
+                {
+                    int winSide = LifePoints[0] > LifePoints[1] ? 0 : 1;
+                    BroadcastSystemMessage($"[Death] 额外回合结算完成（LP {LifePoints[0]} vs {LifePoints[1]}），LP 较高一方获胜！");
+                    using BinaryWriter win = GamePacketFactory.Create(GameMessage.Win);
+                    win.Write((byte)winSide);
+                    win.Write((byte)WIN_REASON_SUDDEN_DEATH);
+                    SendToAll(win);
+                    MatchSaveResult(GetLobbyTeamFromDuelSide(winSide), WIN_REASON_SUDDEN_DEATH);
+                    return true;
+                }
+
+                SuddenDeathTargetTurn = -1;
+                BroadcastSystemMessage("[Death] 当前双方 LP 相同，进入猝死决胜回合（后续回合开始时一旦存在 LP 差立即判胜）！");
+                return false;
+            }
+
+            BroadcastSystemMessage($"[Death] 距离额外回合 LP 结算还剩 {SuddenDeathTargetTurn - TurnCount} 回合。");
+            return false;
+        }
+
+        public void SendToTeam(BinaryWriter packet, int team)
+        {
+            if (team != 0 && team != 1)
+                return;
+
+            Player[] roster = (State == GameState.Duel && _duelPlayers.Length == (IsTag ? 4 : 2))
+                ? _duelPlayers
+                : Players;
+
+            if (!IsTag)
+            {
+                roster[team]?.Send(packet);
+            }
+            else
+            {
+                roster[team * 2]?.Send(packet);
+                roster[team * 2 + 1]?.Send(packet);
             }
         }
 
@@ -680,7 +866,24 @@ namespace YGOProSharp.Server
                 player.Disconnect();
             }
             else
+            {
+                if (IsTag && State == GameState.Duel)
+                {
+                    Player? teammate = GetTeammate(player);
+                    if (teammate is not null && _pendingTagSurrenderSlots.Contains(teammate.Type) && !_pendingTagSurrenderSlots.Contains(player.Type))
+                    {
+                        _pendingTagSurrenderSlots.Clear();
+                        Surrender(teammate, 0, true);
+                        player.Disconnect();
+                        if (OnPlayerLeave != null)
+                            OnPlayerLeave(this, new PlayerEventArgs(player));
+                        return;
+                    }
+                }
+
+                _pendingTagSurrenderSlots.Remove(player.Type);
                 Surrender(player, 4, true);
+            }
 
             if (OnPlayerLeave != null)
             {
@@ -797,7 +1000,11 @@ namespace YGOProSharp.Server
             }
 
             BinaryWriter packet = GamePacketFactory.Create(StocMessage.Chat);
-            packet.Write((short)player.Type);
+            int chatPlayerType = player.Type;
+            if (State == GameState.Duel && IsDuelSwapped && chatPlayerType >= 0 && chatPlayerType < Players.Length)
+                chatPlayerType = IsTag ? (chatPlayerType ^ 2) : (1 - chatPlayerType);
+
+            packet.Write((short)chatPlayerType);
             if (player.Type == (int)PlayerType.Observer)
             {
                 string fullmsg = "[" + player.Name + "]: " + outgoing;
@@ -857,9 +1064,9 @@ namespace YGOProSharp.Server
 
             if (ready)
             {
-                int result = 1;
+                int result = HasServerAssignedRandomDeck(player) ? 0 : 1;
 
-                if (player.Deck != null)
+                if (result != 0 && player.Deck != null)
                 {
                     DeckValidationContext validationContext = new(
                         this,
@@ -995,6 +1202,7 @@ namespace YGOProSharp.Server
                 else
                     _startplayer = 0;
                 State = GameState.Starting;
+                IsTpSelect = true;
                 Players[_startplayer].Send(GamePacketFactory.Create(StocMessage.SelectTp));
                 TpTimer = DateTime.UtcNow;
                 _logger.LogInformation("Hand result decided start player slot {StartPlayer}.", _startplayer);
@@ -1013,7 +1221,10 @@ namespace YGOProSharp.Server
                 _logger.LogDebug("Ignoring TP result from {PlayerName}: expected player slot {StartPlayer}.", player.Name, _startplayer);
                 return;
             }
-            
+
+            IsTpSelect = false;
+            _pendingTagSurrenderSlots.Clear();
+
             int opt = MasterRule << 16;
             if (EnablePriority)
                 opt += 0x08;
@@ -1021,14 +1232,28 @@ namespace YGOProSharp.Server
                 opt += 0x10;
             if (IsTag)
                 opt += 0x20;
-            
-            if (result && player.Type == (IsTag ? 2 : 1) || !result && player.Type == 0)
-            {
-                opt += 0x80;
-            }
 
-            CurPlayers[0] = Players[0];
-            CurPlayers[1] = Players[IsTag ? 2 : 1];
+            bool isLobbyTeam0 = IsTag ? player.Type < 2 : player.Type == 0;
+            IsDuelSwapped = result != isLobbyTeam0;
+
+            if (IsTag)
+            {
+                _duelPlayers = IsDuelSwapped
+                    ? [Players[2], Players[3], Players[0], Players[1]]
+                    : [Players[0], Players[1], Players[2], Players[3]];
+                // 对齐 YGOPro tag_duel.cpp 与 ocgcore：先攻方由槽位 0 首发；后攻方在 Turn 1 由槽位 3 持手牌待命，
+                // Turn 2 开始时 ocgcore 自动触发 MSG_TAG_SWAP(1) 将槽位 2 换入首发，实现 0 -> 2 -> 1 -> 3 标准轮转。
+                CurPlayers[0] = _duelPlayers[0];
+                CurPlayers[1] = _duelPlayers[3];
+            }
+            else
+            {
+                _duelPlayers = IsDuelSwapped
+                    ? [Players[1], Players[0]]
+                    : [Players[0], Players[1]];
+                CurPlayers[0] = _duelPlayers[0];
+                CurPlayers[1] = _duelPlayers[1];
+            }
 
             State = GameState.Duel;
             int seed = Environment.TickCount;
@@ -1040,7 +1265,7 @@ namespace YGOProSharp.Server
 
             // 从这里开始 Game 只与 IDuelSession 通信；NativeApi 负责 ocgapi.h binding 和 handle 安全。
             _duel = _duelFactory.Create((uint)seed);
-            _logger.LogInformation("Duel created. Seed={Seed}, Options={Options}, StartPlayer={StartPlayer}.", seed, opt, _startplayer);
+            _logger.LogInformation("Duel created. Seed={Seed}, Options={Options}, StartPlayer={StartPlayer}, Swapped={Swapped}.", seed, opt, _startplayer, IsDuelSwapped);
             Random rand = new Random(seed);
 
             _duel.SetAnalyzer(_analyser.Analyse);
@@ -1048,32 +1273,39 @@ namespace YGOProSharp.Server
 
             _duel.InitPlayers(StartLp, StartHand, DrawCount);
 
+            AssignRandomDecksBeforeDuelStart(rand);
+            if (IsSuddenDeath && DuelCount > 0 && SuddenDeathTargetTurn != -1)
+                SuddenDeathTargetTurn = 5;
+
             Replay = new Replay((uint)seed, IsTag);
-            Replay.Writer.WriteUnicode(Players[0].Name, 20);
-            Replay.Writer.WriteUnicode(Players[1].Name, 20);
+            Replay.Writer.WriteUnicode(_duelPlayers[0].Name, 20);
+            Replay.Writer.WriteUnicode(_duelPlayers[1].Name, 20);
             if (IsTag)
             {
-                Replay.Writer.WriteUnicode(Players[2].Name, 20);
-                Replay.Writer.WriteUnicode(Players[3].Name, 20);
+                Replay.Writer.WriteUnicode(_duelPlayers[2].Name, 20);
+                Replay.Writer.WriteUnicode(_duelPlayers[3].Name, 20);
             }
             Replay.Writer.Write(StartLp);
             Replay.Writer.Write(StartHand);
             Replay.Writer.Write(DrawCount);
             Replay.Writer.Write(opt);
 
-            for (int i = 0; i < Players.Length; i++)
+            // 标准 YGOPro .yrp 与 ocgcore 装填顺序：单局 [0, 1]；2v2 Tag [0(main0), 1(tag0), 3(main1), 2(tag1)]。
+            ReadOnlySpan<int> deckLoadOrder = IsTag ? [0, 1, 3, 2] : [0, 1];
+            for (int idx = 0; idx < deckLoadOrder.Length; idx++)
             {
-                Player dplayer = Players[i];
-                int pid = i;
-                if (IsTag)
-                    pid = i >= 2 ? 1 : 0;
+                int duelSlot = deckLoadOrder[idx];
+                Player dplayer = _duelPlayers[duelSlot];
+                int pid = IsTag ? (duelSlot >= 2 ? 1 : 0) : duelSlot;
+                bool useTagCard = IsTag && (duelSlot == 1 || duelSlot == 2);
+
                 if (!NoShuffleDeck)
                 {
                     List<int> cards = ShuffleCards(rand, dplayer.Deck.Main);
                     Replay.Writer.Write(cards.Count);
                     foreach (int id in cards)
                     {
-                        if (IsTag && (i == 1 || i == 3))
+                        if (useTagCard)
                             _duel.AddTagCard(id, pid, CardLocation.Deck);
                         else
                             _duel.AddCard(id, pid, CardLocation.Deck);
@@ -1086,7 +1318,7 @@ namespace YGOProSharp.Server
                     for (int j = dplayer.Deck.Main.Count - 1; j >= 0; j--)
                     {
                         int id = dplayer.Deck.Main[j];
-                        if (IsTag && (i == 1 || i == 3))
+                        if (useTagCard)
                             _duel.AddTagCard(id, pid, CardLocation.Deck);
                         else
                             _duel.AddCard(id, pid, CardLocation.Deck);
@@ -1096,7 +1328,7 @@ namespace YGOProSharp.Server
                 Replay.Writer.Write(dplayer.Deck.Extra.Count);
                 foreach (int id in dplayer.Deck.Extra)
                 {
-                    if (IsTag && (i == 1 || i == 3))
+                    if (useTagCard)
                         _duel.AddTagCard(id, pid, CardLocation.Extra);
                     else
                         _duel.AddCard(id, pid, CardLocation.Extra);
@@ -1137,7 +1369,7 @@ namespace YGOProSharp.Server
             SendToTeam(packet, 1);
 
             packet.BaseStream.Position = 2;
-            packet.Write((byte)0x10);
+            packet.Write((byte)(IsDuelSwapped ? 0x11 : 0x10));
             SendToObservers(packet);
 
             RefreshExtra(0);
@@ -1167,18 +1399,40 @@ namespace YGOProSharp.Server
             }
             if (player.Type == (int)PlayerType.Observer)
                 return;
+
+            if (IsTag && !force && reason == 0 && State == GameState.Duel)
+            {
+                Player? teammate = GetTeammate(player);
+                if (teammate is not null)
+                {
+                    if (_pendingTagSurrenderSlots.Contains(player.Type))
+                        return;
+
+                    if (!_pendingTagSurrenderSlots.Contains(teammate.Type))
+                    {
+                        _pendingTagSurrenderSlots.Add(player.Type);
+                        using BinaryWriter confirm = GamePacketFactory.Create(StocMessage.TeammateSurrender);
+                        player.Send(confirm);
+                        teammate.Send(confirm);
+                        _logger.LogInformation("Player {PlayerName} requested tag surrender; waiting for teammate {TeammateName}.", player.Name, teammate.Name);
+                        return;
+                    }
+                }
+            }
+
+            _pendingTagSurrenderSlots.Clear();
             _logger.LogInformation("Player {PlayerName} surrendered. Reason={Reason}, Force={Force}.", player.Name, reason, force);
+            int duelSide = GetDuelSide(player);
+            if (duelSide < 0)
+                return;
+
+            int winSide = 1 - duelSide;
             BinaryWriter win = GamePacketFactory.Create(GameMessage.Win);
-            int team = player.Type;
-            if (IsTag)
-                team = player.Type >= 2 ? 1 : 0;
-            else if (State == GameState.Hand)
-                team = 1 - team;
-            win.Write((byte)(1 - team));
+            win.Write((byte)winSide);
             win.Write((byte)reason);
             SendToAll(win);
 
-            MatchSaveResult(1 - team, reason);
+            MatchSaveResult(GetLobbyTeamFromDuelSide(winSide), reason);
 
             EndDuel(reason == 4);
         }
@@ -1281,30 +1535,42 @@ namespace YGOProSharp.Server
 
         private void SendToCorrectDestination(int player, CardLocation location, ReadOnlySpan<byte> result, Player? observer)
         {
-            BinaryWriter update;
-
             if (observer == null)
             {
-                update = GamePacketFactory.Create(GameMessage.UpdateData);
-                update.Write((byte)player);
-                update.Write((byte)location);
-                update.Write(result);
-                SendToTeam(update, player);
+                using BinaryWriter fullUpdate = GamePacketFactory.Create(GameMessage.UpdateData);
+                fullUpdate.Write((byte)player);
+                fullUpdate.Write((byte)location);
+                fullUpdate.Write(result);
+
+                // 对齐 tag_duel.cpp：2v2 双打中队友可见己方场上暗牌，但不可见队友未公开手牌与里侧额外卡组。
+                if (IsTag && (location == CardLocation.Hand || location == CardLocation.Extra))
+                {
+                    CurPlayers[player]?.Send(fullUpdate);
+
+                    using BinaryWriter publicForRest = GamePacketFactory.Create(GameMessage.UpdateData);
+                    publicForRest.Write((byte)player);
+                    publicForRest.Write((byte)location);
+                    WritePublicCards(publicForRest, result);
+                    SendToAllBut(publicForRest, player);
+                    return;
+                }
+
+                SendToTeam(fullUpdate, player);
             }
 
-            update = GamePacketFactory.Create(GameMessage.UpdateData);
-            update.Write((byte)player);
-            update.Write((byte)location);
-            WritePublicCards(update, result);
+            using BinaryWriter publicUpdate = GamePacketFactory.Create(GameMessage.UpdateData);
+            publicUpdate.Write((byte)player);
+            publicUpdate.Write((byte)location);
+            WritePublicCards(publicUpdate, result);
 
             if (observer == null)
             {
-                SendToTeam(update, 1 - player);
-                SendToObservers(update);
+                SendToTeam(publicUpdate, 1 - player);
+                SendToObservers(publicUpdate);
             }
             else
             {
-                observer.Send(update);
+                observer.Send(publicUpdate);
             }
         }
 
@@ -1354,34 +1620,37 @@ namespace YGOProSharp.Server
                 int length = _duel.QueryCard(player, location, sequence, buffer);
                 ReadOnlySpan<byte> result = buffer.AsSpan(0, length);
 
-                if (location == (int)CardLocation.Removed && (result[15] & (int)CardPosition.FaceDown) != 0)
+                if (location == (int)CardLocation.Removed && result.Length > 15 && (result[15] & (int)CardPosition.FaceDown) != 0)
                     return;
 
-                BinaryWriter update = GamePacketFactory.Create(GameMessage.UpdateCard);
+                using BinaryWriter update = GamePacketFactory.Create(GameMessage.UpdateCard);
                 update.Write((byte)player);
                 update.Write((byte)location);
                 update.Write((byte)sequence);
                 update.Write(result);
-                CurPlayers[player].Send(update);
 
                 if (IsTag)
                 {
                     if ((location & (int)CardLocation.Onfield) != 0)
                     {
                         SendToTeam(update, player);
-                        if ((result[15] & (int)CardPosition.FaceUp) != 0)
+                        if (result.Length > 15 && (result[15] & (int)CardPosition.FaceUp) != 0)
+                        {
                             SendToTeam(update, 1 - player);
+                            SendToObservers(update);
+                        }
                     }
                     else
                     {
-                        CurPlayers[player].Send(update);
+                        CurPlayers[player]?.Send(update);
                         if ((location & 0x90) != 0)
                             SendToAllBut(update, player);
                     }
                 }
                 else
                 {
-                    if ((location & 0x90) != 0 || ((location & 0x2c) != 0 && (result[15] & (int)CardPosition.FaceUp) != 0))
+                    CurPlayers[player]?.Send(update);
+                    if ((location & 0x90) != 0 || ((location & 0x2c) != 0 && result.Length > 15 && (result[15] & (int)CardPosition.FaceUp) != 0))
                         SendToAllBut(update, player);
                 }
             }
@@ -1579,7 +1848,7 @@ namespace YGOProSharp.Server
                     if (elapsed.TotalMilliseconds >= 30000)
                     {
                         _logger.LogWarning("TP selection timer expired for player slot {Player}.", _startplayer);
-                        Surrender(CurPlayers[_startplayer], 3, true);
+                        Surrender(Players[_startplayer], 3, true);
                     }
 
                 }
@@ -1604,9 +1873,9 @@ namespace YGOProSharp.Server
         public void MatchSaveResult(int player, int reason)
         {
             if (player < 2)
-                _startplayer = 1 - player;
+                _startplayer = IsTag ? (1 - player) * 2 : (1 - player);
             else
-                _startplayer = 1 - _startplayer;
+                _startplayer = IsTag ? (_startplayer == 0 ? 2 : 0) : (1 - _startplayer);
             MatchResults[DuelCount] = player;
             MatchReasons[DuelCount++] = reason;
             _logger.LogInformation("Duel result saved. Winner={Winner}, Reason={Reason}, DuelCount={DuelCount}.", player, reason, DuelCount);
@@ -1734,14 +2003,14 @@ namespace YGOProSharp.Server
         private void InitNewSpectator(Player player)
         {
             BinaryWriter packet = GamePacketFactory.Create(GameMessage.Start);
-            packet.Write((byte)0x10);
+            packet.Write((byte)(IsDuelSwapped ? 0x11 : 0x10));
             packet.Write((byte)MasterRule);
             packet.Write(LifePoints[0]);
             packet.Write(LifePoints[1]);
-            packet.Write((short)0); // deck
-            packet.Write((short)0); // extra
-            packet.Write((short)0); // deck
-            packet.Write((short)0);  // extra
+            packet.Write((short)_duel.QueryFieldCount(0, CardLocation.Deck));
+            packet.Write((short)_duel.QueryFieldCount(0, CardLocation.Extra));
+            packet.Write((short)_duel.QueryFieldCount(1, CardLocation.Deck));
+            packet.Write((short)_duel.QueryFieldCount(1, CardLocation.Extra));
             player.Send(packet);
             
             BinaryWriter turn = GamePacketFactory.Create(GameMessage.NewTurn);
@@ -1781,6 +2050,108 @@ namespace YGOProSharp.Server
             string errorFile = "lua_" + DateTime.UtcNow.ToString("yyyy-MM-dd_HH-mm-ss") + ".txt";
             File.WriteAllText(errorFile, error);
             _logger.LogError("Native/Lua error details were written to {ErrorFile}.", errorFile);
+        }
+
+        private void AssignRandomDecksBeforeDuelStart(Random rand)
+        {
+            (bool ocg, bool tcg, bool allowCustom) = DefaultDeckValidator.ResolveRegionFlags(Region);
+            bool rerollPerDuel = _server.Options.RandomDeckRerollPerMatchDuel;
+
+            if (RandomDeckMode != RandomDeckMode.None)
+            {
+                if (IsMatch && DuelCount > 0 && !rerollPerDuel && _matchInitialRandomDecks is not null && _matchInitialRandomDecks.Length == Players.Length)
+                {
+                    for (int i = 0; i < Players.Length; i++)
+                    {
+                        if (Players[i] is not null && _matchInitialRandomDecks[i] is not null)
+                            Players[i].SetServerDeck(CloneDeck(_matchInitialRandomDecks[i]!));
+                    }
+                    return;
+                }
+
+                RandomDeckGenerator generator = new(CardRepository, _server.PresetDecks);
+                IReadOnlyList<GeneratedRandomDeck> allocated = generator.AllocateDecksForDuel(
+                    _duelPlayers.Length,
+                    RandomDeckMode,
+                    Banlist,
+                    ocg,
+                    tcg,
+                    allowCustom,
+                    _options.DeckRules,
+                    skipDeckValidation: NoCheckDeck,
+                    mainDeckSize: ChaosMainDeckSize,
+                    random: rand);
+
+                for (int k = 0; k < _duelPlayers.Length && k < allocated.Count; k++)
+                    _duelPlayers[k].SetServerDeck(allocated[k].Deck);
+
+                if (DuelCount == 0)
+                {
+                    _matchInitialRandomDecks = new Deck?[Players.Length];
+                    for (int i = 0; i < Players.Length; i++)
+                    {
+                        if (Players[i]?.Deck is not null)
+                            _matchInitialRandomDecks[i] = CloneDeck(Players[i].Deck);
+                    }
+                }
+
+                if (RandomDeckMode == RandomDeckMode.MirrorRandom && allocated.Count >= 2)
+                {
+                    string mirrorDesc = IsTag && allocated.Count >= 4
+                        ? $"{allocated[0].Label} + {allocated[1].Label}"
+                        : allocated[0].Label;
+                    BroadcastSystemMessage($"[RandomDeck] 本局镜像随机卡组：{mirrorDesc}");
+                }
+                else
+                {
+                    for (int k = 0; k < _duelPlayers.Length && k < allocated.Count; k++)
+                    {
+                        SendSystemMessage(
+                            _duelPlayers[k],
+                            $"[RandomDeck] 本局随机卡组：{allocated[k].Label}（Main {allocated[k].Deck.Main.Count} / Extra {allocated[k].Deck.Extra.Count}）");
+                    }
+                }
+                return;
+            }
+
+            if (_personalRandomModes.Count == 0)
+                return;
+
+            RandomDeckGenerator personalGen = new(CardRepository, _server.PresetDecks);
+            for (int k = 0; k < _duelPlayers.Length; k++)
+            {
+                Player p = _duelPlayers[k];
+                if (!_personalRandomModes.TryGetValue(p, out RandomDeckMode pMode) || pMode == RandomDeckMode.None)
+                    continue;
+
+                if (IsMatch && DuelCount > 0 && !rerollPerDuel && p.Deck is not null && p.Deck.Main.Count > 0)
+                    continue;
+
+                GeneratedRandomDeck generated = personalGen.GenerateSingle(
+                    pMode,
+                    Banlist,
+                    ocg,
+                    tcg,
+                    allowCustom,
+                    _options.DeckRules,
+                    skipDeckValidation: NoCheckDeck,
+                    mainDeckSize: ChaosMainDeckSize,
+                    random: rand);
+                p.SetServerDeck(generated.Deck);
+                SendSystemMessage(p, $"[RandomDeck] 个人随机卡组已就绪：{generated.Label}（Main {generated.Deck.Main.Count} / Extra {generated.Deck.Extra.Count}）");
+            }
+        }
+
+        private Deck CloneDeck(Deck source)
+        {
+            Deck copy = new(CardRepository);
+            foreach (int id in source.Main)
+                copy.AddMain(id);
+            foreach (int id in source.Extra)
+                copy.AddMain(id);
+            foreach (int id in source.Side)
+                copy.AddSide(id);
+            return copy;
         }
 
         private static List<int> ShuffleCards(Random rand, IEnumerable<int> cards)

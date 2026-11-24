@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\YGOProSharp.Abstractions\YGOProSharp.Abstractions.csproj" />
+        <ProjectReference Include="..\YGOProSharp.Core\YGOProSharp.Core.csproj" />
+        <ProjectReference Include="..\YGOProSharp.Persistence\YGOProSharp.Persistence.csproj" />
+        <ProjectReference Include="..\YGOProSharp.Protocol\YGOProSharp.Protocol.csproj" />
+        <ProjectReference Include="..\YGOProSharp.Server\YGOProSharp.Server.csproj" />
+        <ProjectReference Include="..\YGOProSharp.WindBot\YGOProSharp.WindBot.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="..\LICENSE" Pack="true" PackagePath="\" />
+    </ItemGroup>
+
+</Project>

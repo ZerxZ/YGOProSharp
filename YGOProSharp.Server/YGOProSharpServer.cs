@@ -78,7 +78,7 @@ public static class YGOProSharpServer
             assets.ScriptArchives.Count,
             assets.BanlistPaths.Count);
 
-        ICardRepository cardRepository;
+        ICardRepository initialRepository;
         try
         {
             if (assets.DatabasePaths.Count == 0 || !File.Exists(assets.PrimaryDatabasePath))
@@ -88,7 +88,7 @@ public static class YGOProSharpServer
                 ? cardDatabaseManager.LoadCards(assets.DatabasePaths[0])
                 : cardDatabaseManager.LoadCards(assets.DatabasePaths);
 
-            cardRepository = options.AdditionalCardRepositories.Count == 0
+            initialRepository = options.AdditionalCardRepositories.Count == 0
                 ? diskRepository
                 : new CompositeCardRepository(options.AdditionalCardRepositories.Concat([diskRepository]));
 
@@ -100,6 +100,8 @@ public static class YGOProSharpServer
             throw;
         }
 
+        ReloadableCardRepository reloadableCards = new(initialRepository);
+
         if (assets.BanlistPaths.Count == 1)
             BanlistManager.Init(assets.BanlistPaths[0]);
         else if (assets.BanlistPaths.Count > 1)
@@ -109,26 +111,87 @@ public static class YGOProSharpServer
 
         logger.LogInformation("Loaded {BanlistCount} banlist(s) from {BanlistFileCount} file(s).", BanlistManager.Banlists.Count, assets.BanlistPaths.Count);
 
-        IScriptProvider scriptProvider = BuildScriptProvider(options, assets, logger);
+        PresetDeckPool presetDeckPool = options.PresetDeckPool ?? new PresetDeckPool();
+        if (assets.PresetDeckDirectories.Count > 0)
+        {
+            int deckCount = presetDeckPool.ReloadFromDirectories(assets.PresetDeckDirectories, reloadableCards);
+            logger.LogInformation("Loaded {PresetDeckCount} preset random deck(s).", deckCount);
+        }
+
+        ReloadableScriptProvider reloadableScripts = new(BuildScriptProvider(options, assets, logger));
         try
         {
             runtime.Initialize(new OcgRuntimeOptions(
                 rootPath,
                 scriptDirectory,
                 databaseFile,
-                new RepositoryCardDataProvider(cardRepository),
-                scriptProvider));
+                new RepositoryCardDataProvider(reloadableCards),
+                reloadableScripts));
             logger.LogInformation("Native OCG runtime initialized.");
         }
         catch (Exception ex)
         {
-            if (scriptProvider is IDisposable disposableProvider)
-                disposableProvider.Dispose();
+            reloadableScripts.Dispose();
             logger.LogError(ex, "Failed to initialize native OCG runtime.");
             throw;
         }
 
-        return new CoreServer(runtime.DuelFactory, cardRepository, options, scriptProvider as IDisposable);
+        ServerOptions effectiveOptions = options with { PresetDeckPool = presetDeckPool };
+        Func<ServerReloadResult> reloadCallback = () =>
+            ReloadServerAssets(effectiveOptions, cardDatabaseManager, reloadableCards, reloadableScripts, presetDeckPool, logger);
+
+        return new CoreServer(runtime.DuelFactory, reloadableCards, effectiveOptions, reloadableScripts, reloadCallback);
+    }
+
+    private static ServerReloadResult ReloadServerAssets(
+        ServerOptions options,
+        ICardDatabaseManager cardDatabaseManager,
+        ReloadableCardRepository reloadableCards,
+        ReloadableScriptProvider reloadableScripts,
+        PresetDeckPool presetDeckPool,
+        ILogger logger)
+    {
+        DiscoveredAssets assets = DiscoverAssets(options);
+        if (assets.DatabasePaths.Count == 0 || !File.Exists(assets.PrimaryDatabasePath))
+            throw new FileNotFoundException("Could not find the cards database during reload.", assets.PrimaryDatabasePath);
+
+        ICardRepository diskRepository = assets.DatabasePaths.Count == 1
+            ? cardDatabaseManager.LoadCards(assets.DatabasePaths[0])
+            : cardDatabaseManager.LoadCards(assets.DatabasePaths);
+
+        ICardRepository nextRepo = options.AdditionalCardRepositories.Count == 0
+            ? diskRepository
+            : new CompositeCardRepository(options.AdditionalCardRepositories.Concat([diskRepository]));
+
+        long catalogVersion = reloadableCards.Reload(nextRepo);
+
+        if (assets.BanlistPaths.Count == 1)
+            BanlistManager.Init(assets.BanlistPaths[0]);
+        else if (assets.BanlistPaths.Count > 1)
+            BanlistManager.Init(assets.BanlistPaths);
+        else
+            BanlistManager.Init(assets.PrimaryBanlistPath);
+
+        IScriptProvider nextScripts = BuildScriptProvider(options, assets, logger);
+        long scriptVersion = reloadableScripts.Reload(nextScripts, disposePreviousImmediately: false);
+
+        if (assets.PresetDeckDirectories.Count > 0)
+            presetDeckPool.ReloadFromDirectories(assets.PresetDeckDirectories, reloadableCards);
+
+        logger.LogInformation(
+            "Hot-reloaded server assets. CatalogVersion={CatalogVersion}, ScriptVersion={ScriptVersion}, Databases={DatabaseCount}, Banlists={BanlistCount}, PresetDecks={PresetDeckCount}.",
+            catalogVersion,
+            scriptVersion,
+            assets.DatabasePaths.Count,
+            BanlistManager.Banlists.Count,
+            presetDeckPool.Count);
+
+        return new ServerReloadResult(
+            catalogVersion,
+            scriptVersion,
+            assets.DatabasePaths.Count,
+            BanlistManager.Banlists.Count,
+            presetDeckPool.Count);
     }
 
     private static IScriptProvider BuildScriptProvider(ServerOptions options, DiscoveredAssets assets, ILogger logger)
@@ -146,13 +209,13 @@ public static class YGOProSharpServer
         if (assets.ScriptDirectories.Count > 0)
             providers.Add(new FileScriptProvider(assets.ScriptDirectories));
 
-        // 3. 压缩扩展包：.ypk / .zip（高优先级在前）
+        // 3. 压缩扩展包：.ypk / .zip（高优先级在前；使用内存拷贝打开以避免 Windows 下文件锁阻塞热重载更新）
         for (int i = 0; i < assets.ScriptArchives.Count; i++)
         {
             string archivePath = assets.ScriptArchives[i];
             try
             {
-                providers.Add(new ZipArchiveScriptProvider(archivePath));
+                providers.Add(new ZipArchiveScriptProvider(archivePath, copyToMemory: true));
             }
             catch (Exception ex)
             {
@@ -183,7 +246,12 @@ public static class YGOProSharpServer
 
             string defaultDiy = Path.Combine(rootFullPath, "diy");
             if (Directory.Exists(defaultDiy))
+            {
                 expansionRoots.Add(defaultDiy);
+                DiyPackageManager pkgManager = new(defaultDiy, new SqliteCardDatabaseManager());
+                foreach (DiyPackageManifest pkg in pkgManager.ListPackages(enabledOnly: true))
+                    expansionRoots.Add(pkgManager.GetPackageDirectory(pkg.Id));
+            }
         }
 
         foreach (string extraRoot in options.ExpansionDirectories)
@@ -292,13 +360,39 @@ public static class YGOProSharpServer
 
         banlistPaths = banlistPaths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
+        // 随机盲盒预设卡组目录顺序：decks/random -> expansionRoots 中的 decks/ -> 显式 RandomDeckDirectories
+        List<string> presetDeckDirs = new();
+        string defaultRandomDecks = Path.Combine(rootFullPath, "decks", "random");
+        if (Directory.Exists(defaultRandomDecks))
+            presetDeckDirs.Add(defaultRandomDecks);
+
+        for (int i = 0; i < expansionRoots.Count; i++)
+        {
+            string expDeckDir = Path.Combine(expansionRoots[i], "decks");
+            if (Directory.Exists(expDeckDir))
+                presetDeckDirs.Add(Path.GetFullPath(expDeckDir));
+        }
+
+        foreach (string customDeckDir in options.RandomDeckDirectories)
+        {
+            if (string.IsNullOrWhiteSpace(customDeckDir))
+                continue;
+
+            string resolved = ResolvePath(rootFullPath, customDeckDir);
+            if (Directory.Exists(resolved))
+                presetDeckDirs.Add(resolved);
+        }
+
+        presetDeckDirs = presetDeckDirs.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
         return new DiscoveredAssets(
             primaryDbPath,
             primaryBanlistPath,
             databasePaths,
             scriptDirs,
             scriptArchives,
-            banlistPaths);
+            banlistPaths,
+            presetDeckDirs);
     }
 
     private static string ResolvePath(string rootFullPath, string path)
@@ -322,5 +416,6 @@ public static class YGOProSharpServer
         List<string> DatabasePaths,
         List<string> ScriptDirectories,
         List<string> ScriptArchives,
-        List<string> BanlistPaths);
+        List<string> BanlistPaths,
+        List<string> PresetDeckDirectories);
 }

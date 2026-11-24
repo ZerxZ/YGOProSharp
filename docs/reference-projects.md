@@ -34,6 +34,11 @@ WindBot 在本仓库中保持外部协议 Bot 客户端定位，不嵌入 `YGOPr
 
 - [purerosefallen/yuzuthread](https://github.com/purerosefallen/yuzuthread)：线程模型、任务调度或并发设计参考。
 
+## DIY 制卡、CDB 编辑与脚本工作台
+
+- [YYY-ZSJ/YGODIY](https://github.com/YYY-ZSJ/YGODIY)（本地对照目录：`.external/YGODIY`）：游戏王 DIY 工作台参考，重点参考其结构化效果模型（`blocks/` 将条件/代价/取对象/处理双向映射为规范中文效果文本与 Lua 脚本、`TYPE_SPSUMMON` 等卡表标志位联动）、`lua_guard` 脚本静态检查、`ygopro-core` 单卡情景测试沙盒（`sandbox/`）以及 `.ypk` / `.cdb` / `strings.conf` 扩展包组织与回收站恢复思路。
+- [kkr223/DataEditorY](https://github.com/kkr223/DataEditorY)（本地对照目录：`.external/DataEditorY`）：跨平台 `.cdb` 数据库 IDE 参考，重点参考其 `Draft -> Working Copy -> Atomic Save` 临时工作副本事务模型、旁路工作区元数据（不污染标准 `.cdb`）、左侧虚拟化卡表 + 规则表达式筛选 + 右侧 `Card / Script / Image / Proposal` 多工作面联动、Monaco + `aux.Stringid` 脚本提示、多 `.cdb` 优先级合并冲突预分析以及可审计提案（Proposal）审阅流。
+
 ## 使用原则
 
 - 优先阅读参考项目理解行为，再在 YGOProSharp 内按当前分层重新实现。

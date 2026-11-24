@@ -9,8 +9,10 @@
 - 服务监听、客户端管理与单/多房间路由：`CoreServer`。
 - 玩家协议适配器：`Player`（解析 `CTOS_JOIN_GAME` 房号/规则前缀、`CTOS_CREATE_GAME`、`CTOS_CHAT` 等）。
 - 房间与 duel 生命周期：`Game`（含 `OnBeforePlayerChat`、`OnBeforeDuelStart`、`IDeckValidator`、`ExtraScripts` 预加载）。
-- 房号规则解析器：`RoomPasswordParser`（支持 `M#`、`T#`、`DIY#`、`LP<n>`、`MR<n>`、`LF<n>`、`NF`、`BO<n>`、`NC`、`NS`、`PR` 等以及自定义 DIY token 注册）。
-- 插件机制：`AddonBase`、`AddonsManager`、`StandardStreamProtocol`、`ChatCommandAddon`（内置 `/help`、`/rules`、`/room`、`/rooms`、`/surrender` 并支持自定义命令）。
+- 房号规则解析器：`RoomPasswordParser`（支持 `M#`、`T#`/`TAG#`/`2V2#`、`RD#`/`RDM#`/`CHAOS#`/`CHAOS60#`/`PURECHAOS#`/`DIYRD#`/`DIYCHAOS#`、`ED#`、`DIY#`、`LP<n>`、`MR<n>`、`LF<n>`、`NF`、`BO<n>`、`NC`、`NS`、`PR` 等以及自定义 DIY token 注册）。
+- 服务端随机卡组与热重载：内置盲盒预组池（`PresetDeckPool`）与混沌构筑注入（玩家免改本地 `.ydk` 直接准备、支持 1v1/2v2 对称镜像与 Match 换副兼容），支持 `CoreServer.ReloadAssets()` 免重启热重载、额外回合猝死规则（`ED`）与停服维护开关（`SetMaintenanceMode`）。
+- 2v2 双打（Tag Duel）：完整对齐 `ocgcore` 与 `tag_duel.cpp` 状态机（4 席位大厅、16000 默认 LP、先攻换边映射、`0 -> 2 -> 1 -> 3` 标准轮转、`.yrp` `[0, 1, 3, 2]` 卡组序列、队友场上盖卡共享可见与未公开手牌/里侧额外遮蔽、`STOC_TEAMMATE_SURRENDER` 队友投降确认）。
+- 插件机制：`AddonBase`、`AddonsManager`、`StandardStreamProtocol`、`ChatCommandAddon`（内置 `/help`、`/rules`、`/room`、`/rooms`、`/swap`、`/surrender` 并支持自定义命令）。
 
 ## 扩展与玩家 DIY 能力
 
@@ -30,9 +32,9 @@
 - **`GameOptions.DeckValidator`（`IDeckValidator`）**：可替换默认卡组校验逻辑（如单卡限制、主题限定、DIY 专场）。
 - **`Game.OnBeforePlayerChat` & `ChatCommandAddon`**：拦截 `/command` 消息避免刷屏广播，并可通过 `ServerOptions.ChatCommands` 注册自定义房间命令。
   - 查询类：`/help [命令名|分类]`、`/rules`、`/room`、`/rooms`、`/banlists [页码]`
-  - 玩家与娱乐：`/ready`、`/unready`、`/duelist`、`/observer`、`/surrender`（`/ff`、`/gg`）、`/roll [上限]`、`/coin`
-  - 房主实时改规则（自动同步客户端左侧面板）：`/lp`、`/mr`、`/region`、`/banlist`、`/nocheck`、`/noshuffle`、`/hand`、`/draw`、`/timer`、`/mode`、`/preset`、`/script`、`/kick`、`/start`
-  - CLI 宿主额外注入：`/ai [卡组名] [对话名]`、`/decks [关键字]`
+  - 玩家与娱乐：`/ready`、`/unready`、`/duelist`、`/observer`、`/swap`（2v2 切换席位/队伍，别名 `/seat`、`/team`）、`/randdeck`（个人随机卡组）、`/surrender`（`/ff`、`/gg`）、`/roll [上限]`、`/coin`
+  - 房主实时改规则（自动同步客户端左侧面板）：`/lp`、`/mr`、`/region`、`/banlist`、`/nocheck`、`/noshuffle`、`/hand`、`/draw`、`/timer`、`/mode <single|match|tag|2v2>`、`/randmode`、`/death`（额外回合猝死规则 ED）、`/preset`、`/script`、`/kick`、`/start`
+  - CLI 宿主额外注入：`/ai [fill] [卡组名|random] [对话名]`（`fill` 可一键补齐 1v1/2v2 全部空余席位，`random` 随机挑选机器人卡组）、`/decks [关键字]`
 - **`ServerOptions.AddonFactories`**：为每个房间挂载自定义 `AddonBase`（房间关闭时自动 `Dispose()`）。
 
 ### 3. 多房间模式与房号语法

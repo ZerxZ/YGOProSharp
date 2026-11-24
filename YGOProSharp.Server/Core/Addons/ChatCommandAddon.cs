@@ -120,8 +120,10 @@ public sealed class ChatCommandAddon : AddonBase
             string banlistName = g.Banlist is null ? "None" : g.Banlist.Name;
             string modeName = FormatMode(g.Mode, g.MatchWins);
             string regionName = FormatRegion(g.Region);
+            string randTag = g.RandomDeckMode != RandomDeckMode.None ? $", RandDeck={g.RandomDeckMode}({g.ChaosMainDeckSize})" : string.Empty;
+            string deathTag = g.IsSuddenDeath ? ", SuddenDeath=ON" : string.Empty;
             string extra = g.ExtraScripts.Count > 0 ? $", ExtraScripts={string.Join(",", g.ExtraScripts)}" : string.Empty;
-            ctx.Reply($"[Rules] Room={g.RoomName}, Mode={modeName}, Region={regionName}, MR={g.MasterRule}, LP={g.StartLp}, Hand={g.StartHand}, Draw={g.DrawCount}, Timer={g.Timer}s, Banlist={banlistName}, NoCheck={g.NoCheckDeck}, NoShuffle={g.NoShuffleDeck}{extra}");
+            ctx.Reply($"[Rules] Room={g.RoomName}, Mode={modeName}, Region={regionName}, MR={g.MasterRule}, LP={g.StartLp}, Hand={g.StartHand}, Draw={g.DrawCount}, Timer={g.Timer}s, Banlist={banlistName}, NoCheck={g.NoCheckDeck}, NoShuffle={g.NoShuffleDeck}{randTag}{deathTag}{extra}");
         }, "/rules", "查询", "rule");
 
         RegisterCommand("room", "查看当前房间玩家、准备状态与观战人数", ctx =>
@@ -131,13 +133,14 @@ public sealed class ChatCommandAddon : AddonBase
             for (int i = 0; i < g.Players.Length; i++)
             {
                 Player p = g.Players[i];
+                string teamTag = g.IsTag ? (i < 2 ? "[A队]" : "[B队]") : string.Empty;
                 if (p is null)
-                    slots.Add($"#{i}:<空>");
+                    slots.Add($"#{i}{teamTag}:<空>");
                 else
                 {
                     string hostTag = g.IsHost(p) ? "[房主]" : string.Empty;
                     string readyTag = g.State == GameState.Lobby ? (g.IsReady[i] ? "(已准备)" : "(未准备)") : string.Empty;
-                    slots.Add($"#{i}:{p.Name}{hostTag}{readyTag}");
+                    slots.Add($"#{i}{teamTag}:{p.Name}{hostTag}{readyTag}");
                 }
             }
             ctx.Reply($"[Room] {g.RoomName} | State={g.State} | {string.Join(" , ", slots)} | 观战={g.Observers.Count}");
@@ -209,6 +212,61 @@ public sealed class ChatCommandAddon : AddonBase
                 return;
             ctx.Game.MoveToObserver(ctx.Player);
         }, "/observer", "玩家", "obs", "watch");
+
+        RegisterCommand("swap", "在 2v2 双打大厅切换空余席位/队伍", ctx =>
+        {
+            if (!EnsureLobby(ctx))
+                return;
+            if (!ctx.Game.IsTag)
+            {
+                ctx.Reply("[Swap] 当前并非 2v2 (Tag) 模式，无需切换队伍席位。");
+                return;
+            }
+            if (ctx.Player.Type == (int)PlayerType.Observer)
+            {
+                ctx.Game.MoveToDuelist(ctx.Player);
+                return;
+            }
+            if (ctx.Game.IsReady[ctx.Player.Type])
+            {
+                ctx.Reply("[Swap] 请先取消准备（/unready）后再切换席位。");
+                return;
+            }
+            int before = ctx.Player.Type;
+            ctx.Game.MoveToDuelist(ctx.Player);
+            if (ctx.Player.Type == before)
+                ctx.Reply("[Swap] 当前 4 个决斗席位已满，可先切观战（/observer）后互换。");
+        }, "/swap", "玩家", "seat", "team");
+
+        RegisterCommand("randdeck", "在大厅为自己单独申请服务端随机卡组（免改本地 .ydk）", ctx =>
+        {
+            if (!EnsureLobby(ctx))
+                return;
+            if (ctx.Player.Type == (int)PlayerType.Observer)
+            {
+                ctx.Reply("[RandDeck] 观战席位无法申请随机卡组，请先切入决斗席位（/duelist）。");
+                return;
+            }
+
+            string arg = ctx.Arguments.Count > 0 ? ctx.Arguments[0] : "preset";
+            if (arg.Equals("off", StringComparison.OrdinalIgnoreCase) || arg.Equals("none", StringComparison.OrdinalIgnoreCase))
+            {
+                ctx.Game.SetPlayerPersonalRandomDeck(ctx.Player, RandomDeckMode.None);
+                ctx.Reply("[RandDeck] 已关闭个人服务端随机卡组，将使用客户端提交的卡组。");
+                return;
+            }
+
+            if (!TryParseRandomDeckMode(arg, out RandomDeckMode parsedMode, out int? chaosSize) || parsedMode == RandomDeckMode.None)
+            {
+                ctx.Reply("[RandDeck] 可选模式: preset(盲盒) | chaos(平衡混沌) | purechaos(纯真随机) | diy | diychaos | off");
+                return;
+            }
+
+            if (chaosSize.HasValue)
+                ctx.Game.ChaosMainDeckSize = chaosSize.Value;
+            ctx.Game.SetPlayerPersonalRandomDeck(ctx.Player, parsedMode);
+            ctx.Reply($"[RandDeck] 已为你挂载个人随机卡组模式：{parsedMode}，现在可直接点击准备！");
+        }, "/randdeck [preset|chaos|purechaos|diy|diychaos|off]", "玩家", "myrand");
 
         RegisterCommand("surrender", "对局中主动投降", ctx =>
         {
@@ -420,14 +478,14 @@ public sealed class ChatCommandAddon : AddonBase
             ctx.Broadcast($"[Rules] 房主已将每回合时间修改为 {seconds}s。");
         }, "/timer [0~9999]", "房主", "time", "tm");
 
-        RegisterCommand("mode", "切换单局/比赛/双打模式（房主）", ctx =>
+        RegisterCommand("mode", "切换单局/比赛/2v2双打模式（房主）", ctx =>
         {
             if (!EnsureHostLobby(ctx))
                 return;
 
             if (ctx.Arguments.Count == 0 || !TryParseMode(ctx.Arguments[0], out int mode))
             {
-                ctx.Reply($"[Mode] 当前模式={FormatMode(ctx.Game.Mode, ctx.Game.MatchWins)}，可选: single(0), match(1), tag(2)");
+                ctx.Reply($"[Mode] 当前模式={FormatMode(ctx.Game.Mode, ctx.Game.MatchWins)}，可选: single(0), match(1), tag/2v2(2)");
                 return;
             }
 
@@ -438,8 +496,58 @@ public sealed class ChatCommandAddon : AddonBase
             }
 
             ctx.Game.SyncLobbyRulesToClients();
-            ctx.Broadcast($"[Rules] 房主已将决斗模式切换为 {FormatMode(ctx.Game.Mode, ctx.Game.MatchWins)}。");
-        }, "/mode <single|match|tag>", "房主");
+            ctx.Broadcast($"[Rules] 房主已将决斗模式切换为 {FormatMode(ctx.Game.Mode, ctx.Game.MatchWins)}（初始 LP={ctx.Game.StartLp}）。");
+        }, "/mode <single|match|tag|2v2>", "房主");
+
+        RegisterCommand("randmode", "设置全房强制服务端随机卡组模式（房主）", ctx =>
+        {
+            if (!EnsureHostLobby(ctx))
+                return;
+
+            if (ctx.Arguments.Count == 0 || !TryParseRandomDeckMode(ctx.Arguments[0], out RandomDeckMode mode, out int? chaosSize))
+            {
+                ctx.Reply($"[RandMode] 当前随机模式={ctx.Game.RandomDeckMode}，可选: off | preset(rd) | mirror(rdm) | chaos | chaos60 | purechaos | diy(diyrd) | diychaos");
+                return;
+            }
+
+            ctx.Game.RandomDeckMode = mode;
+            if (chaosSize.HasValue)
+                ctx.Game.ChaosMainDeckSize = chaosSize.Value;
+            if (mode is RandomDeckMode.DiyRandom or RandomDeckMode.DiyChaos && ctx.Game.Region != 3 && ctx.Game.Region < 5)
+                ctx.Game.Region = 3;
+
+            ctx.Game.SyncLobbyRulesToClients();
+            ctx.Broadcast(mode == RandomDeckMode.None
+                ? "[Rules] 房主已关闭全房强制随机卡组模式。"
+                : $"[Rules] 房主已开启全房随机卡组模式：{mode}（玩家可直接点准备免改本地卡组）。");
+        }, "/randmode <off|preset|mirror|chaos|chaos60|purechaos|diy|diychaos>", "房主", "random");
+
+        RegisterCommand("death", "开启或关闭额外回合猝死规则 ED（房主，大厅与对局中均可用）", ctx =>
+        {
+            if (!ctx.IsHost)
+            {
+                ctx.Reply("[Death] 仅房主可以开关额外回合猝死规则。");
+                return;
+            }
+
+            bool next = ParseToggle(ctx.Arguments, !ctx.Game.IsSuddenDeath);
+            if (next)
+            {
+                int turns = 4;
+                if (ctx.Arguments.Count >= 2 && int.TryParse(ctx.Arguments[1], out int parsedTurns))
+                    turns = Math.Clamp(parsedTurns, 1, 20);
+
+                ctx.Game.StartSuddenDeath(turns);
+                if (ctx.Game.State != GameState.Duel)
+                    ctx.Broadcast($"[Rules] 房主已预开启额外回合猝死规则（ED，开局 {turns} 回合后结算 LP）。");
+            }
+            else
+            {
+                ctx.Game.CancelSuddenDeath();
+                if (ctx.Game.State != GameState.Duel)
+                    ctx.Broadcast("[Rules] 房主已关闭额外回合猝死规则（ED）。");
+            }
+        }, "/death [on|off] [回合数]", "房主", "ed", "suddendeath");
 
         RegisterCommand("preset", "用房号规则语法一键套用组合规则（房主）", ctx =>
         {
@@ -699,18 +807,56 @@ public sealed class ChatCommandAddon : AddonBase
         }
     }
 
+    private static bool TryParseRandomDeckMode(string raw, out RandomDeckMode mode, out int? chaosMainSize)
+    {
+        chaosMainSize = null;
+        string value = raw.Trim().ToLowerInvariant();
+        switch (value)
+        {
+            case "off" or "none" or "0" or "false":
+                mode = RandomDeckMode.None;
+                return true;
+            case "preset" or "rd" or "rand" or "blind" or "box":
+                mode = RandomDeckMode.PresetRandom;
+                return true;
+            case "mirror" or "rdm":
+                mode = RandomDeckMode.MirrorRandom;
+                return true;
+            case "chaos" or "draft":
+                mode = RandomDeckMode.ChaosDraft;
+                chaosMainSize = 40;
+                return true;
+            case "chaos60":
+                mode = RandomDeckMode.ChaosDraft;
+                chaosMainSize = 60;
+                return true;
+            case "purechaos" or "pure":
+                mode = RandomDeckMode.PureChaos;
+                return true;
+            case "diy" or "diyrd":
+                mode = RandomDeckMode.DiyRandom;
+                return true;
+            case "diychaos":
+                mode = RandomDeckMode.DiyChaos;
+                return true;
+            default:
+                mode = RandomDeckMode.None;
+                return false;
+        }
+    }
+
     private static bool TryParseMode(string raw, out int mode)
     {
         string value = raw.Trim().ToLowerInvariant();
         switch (value)
         {
-            case "0" or "s" or "single":
+            case "0" or "s" or "single" or "1v1" or "1vs1":
                 mode = 0;
                 return true;
             case "1" or "m" or "match":
                 mode = 1;
                 return true;
-            case "2" or "t" or "tag":
+            case "2" or "t" or "tag" or "2v2" or "2vs2":
                 mode = 2;
                 return true;
             default:

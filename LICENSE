@@ -61,6 +61,36 @@ remain with their respective authors.
    License: MIT License
    Copyright (c) NLua contributors
 
+7. Entity Framework Core & Microsoft.Extensions (Caching.Hybrid, Caching.StackExchangeRedis, AspNetCore)
+   Source: https://github.com/dotnet/efcore / https://github.com/dotnet/runtime / https://github.com/dotnet/extensions
+   Role: operational database ORM (SQLite), L1/L2 hybrid caching, and ASP.NET Core web control plane
+   License: MIT License
+   Copyright (c) .NET Foundation and Contributors
+
+8. Npgsql & Npgsql.EntityFrameworkCore.PostgreSQL
+   Source: https://github.com/npgsql/efcore.pg
+   Role: optional PostgreSQL database provider in YGOProSharp.Persistence
+   License: PostgreSQL License
+   Copyright (c) The Npgsql Development Team
+
+9. StackExchange.Redis
+   Source: https://github.com/StackExchange/StackExchange.Redis
+   Role: optional Redis L2 cache, Pub/Sub invalidation, atomic tickets, and sliding-window rate limiting
+   License: MIT License
+   Copyright (c) Stack Exchange, Inc.
+
+10. Konscious.Security.Cryptography.Argon2
+    Source: https://github.com/kmaragon/Konscious.Security.Cryptography
+    Role: Argon2id password hashing in YGOProSharp.Persistence
+    License: MIT License
+    Copyright (c) Keegan Aragon
+
+11. React, Vite, Lucide Icons, and Tailwind CSS
+    Source: https://github.com/facebook/react / https://github.com/vitejs/vite / https://github.com/lucide-icons/lucide / https://github.com/tailwindlabs/tailwindcss
+    Role: web management dashboard frontend in web/
+    License: MIT License / ISC License
+    Copyright (c) Meta Platforms, Inc., Evan You & Vite contributors, Lucide contributors, Tailwind Labs, Inc.
+
 YGOProSharp is an experimental AI-assisted adaptation and refactoring project.
 It does not imply endorsement by the upstream projects and does not guarantee
 compatibility with upstream clients, scripts, databases, or runtime behavior.

@@ -1,4 +1,5 @@
 using System.Globalization;
+using YGOProSharp.Core;
 
 namespace YGOProSharp.Server;
 
@@ -20,6 +21,9 @@ public sealed class RoomRuleOverrides
     public bool? NoCheckDeck { get; set; }
     public bool? NoShuffleDeck { get; set; }
     public int? MatchWins { get; set; }
+    public RandomDeckMode? RandomDeck { get; set; }
+    public int? ChaosMainDeckSize { get; set; }
+    public bool? SuddenDeath { get; set; }
     public List<string> ExtraScripts { get; } = new();
     public Dictionary<string, string> CustomTags { get; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -37,6 +41,9 @@ public sealed class RoomRuleOverrides
         NoCheckDeck.HasValue ||
         NoShuffleDeck.HasValue ||
         MatchWins.HasValue ||
+        RandomDeck.HasValue ||
+        ChaosMainDeckSize.HasValue ||
+        SuddenDeath.HasValue ||
         ExtraScripts.Count > 0 ||
         CustomTags.Count > 0;
 
@@ -48,7 +55,13 @@ public sealed class RoomRuleOverrides
         ArgumentNullException.ThrowIfNull(baseOptions);
 
         int mode = Mode ?? baseOptions.Mode;
-        int startLp = StartLp ?? (Mode == 2 && baseOptions.Mode != 2 ? baseOptions.StartLp * 2 : baseOptions.StartLp);
+        int defaultStartLp = baseOptions.StartLp;
+        if (Mode == 2 && baseOptions.Mode != 2)
+            defaultStartLp = baseOptions.StartLp * 2;
+        else if (Mode.HasValue && Mode.Value != 2 && baseOptions.Mode == 2 && baseOptions.StartLp == Game.DEFAULT_TAG_LIFEPOINTS)
+            defaultStartLp = Game.DEFAULT_LIFEPOINTS;
+
+        int startLp = StartLp ?? defaultStartLp;
         int banlist = NoBanlist == true
             ? -1
             : (BanlistIndex ?? baseOptions.Banlist);
@@ -82,6 +95,9 @@ public sealed class RoomRuleOverrides
             NoCheckDeck = NoCheckDeck ?? baseOptions.NoCheckDeck,
             NoShuffleDeck = NoShuffleDeck ?? baseOptions.NoShuffleDeck,
             MatchWins = MatchWins ?? baseOptions.MatchWins,
+            RandomDeck = RandomDeck ?? baseOptions.RandomDeck,
+            ChaosMainDeckSize = ChaosMainDeckSize ?? baseOptions.ChaosMainDeckSize,
+            SuddenDeath = SuddenDeath ?? baseOptions.SuddenDeath,
             ExtraScripts = extraScripts,
             CustomTags = customTags
         };
@@ -207,9 +223,9 @@ public sealed class RoomPasswordParser
 
     private void RegisterBuiltInTokens()
     {
-        RegisterToken(["S", "SINGLE"], static (o, _) => o.Mode = 0);
+        RegisterToken(["S", "SINGLE", "1V1", "1VS1"], static (o, _) => o.Mode = 0);
         RegisterToken(["M", "MATCH"], static (o, _) => o.Mode = 1);
-        RegisterToken(["T", "TAG"], static (o, _) => o.Mode = 2);
+        RegisterToken(["T", "TAG", "2V2", "2VS2"], static (o, _) => o.Mode = 2);
 
         RegisterToken(["OO", "OCG"], static (o, _) => o.Region = 0);
         RegisterToken(["TO", "TCG"], static (o, _) => o.Region = 1);
@@ -221,10 +237,31 @@ public sealed class RoomPasswordParser
         RegisterToken(["PR", "PRIORITY"], static (o, _) => o.EnablePriority = true);
         RegisterToken(["NC", "NOCHECK"], static (o, _) => o.NoCheckDeck = true);
         RegisterToken(["NS", "NOSHUFFLE"], static (o, _) => o.NoShuffleDeck = true);
+        RegisterToken(["ED", "DEATH", "SUDDENDEATH"], static (o, _) => o.SuddenDeath = true);
         RegisterToken(["NF", "NOLFLIST"], static (o, _) =>
         {
             o.NoBanlist = true;
             o.BanlistIndex = -1;
+        });
+
+        RegisterToken(["RD", "RAND"], static (o, _) => o.RandomDeck = RandomDeckMode.PresetRandom);
+        RegisterToken(["RDM", "MIRROR"], static (o, _) => o.RandomDeck = RandomDeckMode.MirrorRandom);
+        RegisterToken(["CHAOS"], static (o, _) => o.RandomDeck = RandomDeckMode.ChaosDraft);
+        RegisterToken(["PURECHAOS"], static (o, _) => o.RandomDeck = RandomDeckMode.PureChaos);
+        RegisterToken(["CHAOS60"], static (o, _) =>
+        {
+            o.RandomDeck = RandomDeckMode.ChaosDraft;
+            o.ChaosMainDeckSize = 60;
+        });
+        RegisterToken(["DIYRD"], static (o, _) =>
+        {
+            o.RandomDeck = RandomDeckMode.DiyRandom;
+            o.Region ??= 3;
+        });
+        RegisterToken(["DIYCHAOS"], static (o, _) =>
+        {
+            o.RandomDeck = RandomDeckMode.DiyChaos;
+            o.Region ??= 3;
         });
 
         RegisterPrefixToken("LF", static (o, arg) =>

@@ -19,6 +19,12 @@ namespace YGOProSharp.Server
         public int Type { get; set; }
         public Deck Deck { get; private set; } = null!;
         public PlayerState State { get; set; }
+
+        internal void SetServerDeck(Deck deck)
+        {
+            ArgumentNullException.ThrowIfNull(deck);
+            Deck = deck;
+        }
         public string JoinPassword { get; private set; } = string.Empty;
         private readonly CoreServer? _server;
         private YGOClient _client;
@@ -286,15 +292,18 @@ namespace YGOProSharp.Server
             {
                 if (Game.IsReady[Type])
                     return;
-                if (!Deck.Check(deck))
+                if (!Game.HasServerAssignedRandomDeck(this))
                 {
-                    BinaryWriter error = GamePacketFactory.Create(StocMessage.ErrorMsg);
-                    error.Write((byte)3);
-                    error.Write(0);
-                    Send(error);
-                    return;
+                    if (Deck == null || !Deck.Check(deck))
+                    {
+                        BinaryWriter error = GamePacketFactory.Create(StocMessage.ErrorMsg);
+                        error.Write((byte)3);
+                        error.Write(0);
+                        Send(error);
+                        return;
+                    }
+                    Deck = deck;
                 }
-                Deck = deck;
                 Game.IsReady[Type] = true;
                 Send(GamePacketFactory.Create(StocMessage.DuelStart));
                 Game.MatchSide();

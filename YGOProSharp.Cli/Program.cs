@@ -106,12 +106,32 @@ static async Task<int> RunServerAsync(CliConfiguration configuration, Cancellati
         }
     }
 
+    List<string> CollectAvailableBotDeckNames()
+    {
+        HashSet<string> names = new(DecksManager.GetRegisteredDeckNames(), StringComparer.OrdinalIgnoreCase);
+        string[] luaDirs =
+        [
+            Path.Combine("Decks", "Lua"),
+            Path.Combine(AppContext.BaseDirectory, "Decks", "Lua"),
+            Path.Combine(baseOptions.RootPath, "Decks", "Lua")
+        ];
+        foreach (string dir in luaDirs)
+        {
+            if (!Directory.Exists(dir))
+                continue;
+            foreach (string file in Directory.EnumerateFiles(dir, "*.lua", SearchOption.TopDirectoryOnly))
+                names.Add(Path.GetFileNameWithoutExtension(file));
+        }
+
+        return names.OrderBy(static n => n, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
     List<ChatCommandDefinition> cliCommands = new(baseOptions.ChatCommands);
     if (baseOptions.EnableChatCommands)
     {
         cliCommands.Add(new ChatCommandDefinition(
             "ai",
-            "召唤内置 WindBot 加入当前房间（支持指定卡组与对话）",
+            "召唤内置 WindBot 加入当前房间（支持 random 随机卡组与 fill 一键补齐 2v2 空位）",
             ctx =>
             {
                 if (ctx.Game.State != GameState.Lobby)
@@ -119,7 +139,8 @@ static async Task<int> RunServerAsync(CliConfiguration configuration, Cancellati
                     ctx.Reply("[AI] 仅可在大厅阶段召唤 AI。");
                     return;
                 }
-                if (ctx.Game.Players.All(p => p is not null))
+                int emptySlots = ctx.Game.Players.Count(p => p is null);
+                if (emptySlots == 0)
                 {
                     ctx.Reply("[AI] 当前房间决斗席位已满。");
                     return;
@@ -137,24 +158,45 @@ static async Task<int> RunServerAsync(CliConfiguration configuration, Cancellati
                     return;
                 }
 
-                WindBotInfo botInfo = CliOptionsFactory.CreateServerBotInfo(configuration, baseOptions);
-                string? requestedDeck = ctx.Arguments.Count >= 1 ? ctx.Arguments[0] : botInfo.Deck;
-                string? requestedDialog = ctx.Arguments.Count >= 2 ? ctx.Arguments[1] : botInfo.Dialog;
-                int botSeq = Interlocked.Increment(ref spawnedBotCounter);
+                bool fillAll = ctx.Arguments.Count >= 1 &&
+                    (ctx.Arguments[0].Equals("fill", StringComparison.OrdinalIgnoreCase) ||
+                     ctx.Arguments[0].Equals("all", StringComparison.OrdinalIgnoreCase));
+                int argOffset = fillAll ? 1 : 0;
+                int spawnCount = fillAll ? emptySlots : 1;
 
-                botInfo.Deck = requestedDeck;
-                if (!string.IsNullOrWhiteSpace(requestedDialog))
-                    botInfo.Dialog = requestedDialog;
-                if (!string.IsNullOrWhiteSpace(requestedDeck))
-                    botInfo.Name = $"{requestedDeck}#{botSeq}";
-                else if (botSeq > 1)
-                    botInfo.Name = $"{botInfo.Name}#{botSeq}";
-                botInfo.HostInfo = ctx.Game.RoomName;
+                WindBotInfo templateInfo = CliOptionsFactory.CreateServerBotInfo(configuration, baseOptions);
+                string? requestedDeck = ctx.Arguments.Count > argOffset ? ctx.Arguments[argOffset] : templateInfo.Deck;
+                string? requestedDialog = ctx.Arguments.Count > argOffset + 1 ? ctx.Arguments[argOffset + 1] : templateInfo.Dialog;
+                bool pickRandomDeck = requestedDeck is not null &&
+                    (requestedDeck.Equals("random", StringComparison.OrdinalIgnoreCase) ||
+                     requestedDeck.Equals("rand", StringComparison.OrdinalIgnoreCase));
+                List<string>? availablePool = pickRandomDeck ? CollectAvailableBotDeckNames() : null;
 
                 try
                 {
-                    botService.StartBot(botInfo, activeHost.CreateLocalTransport(), cancellationToken);
-                    ctx.Broadcast($"[AI] 正在召唤 {botInfo.Name}（Deck={botInfo.Deck ?? "随机"}）加入房间...");
+                    List<string> spawnedNames = new(spawnCount);
+                    for (int i = 0; i < spawnCount; i++)
+                    {
+                        WindBotInfo botInfo = CliOptionsFactory.CreateServerBotInfo(configuration, baseOptions);
+                        int botSeq = Interlocked.Increment(ref spawnedBotCounter);
+                        string? chosenDeck = pickRandomDeck && availablePool is { Count: > 0 }
+                            ? availablePool[Random.Shared.Next(availablePool.Count)]
+                            : (pickRandomDeck ? null : requestedDeck);
+
+                        botInfo.Deck = chosenDeck;
+                        if (!string.IsNullOrWhiteSpace(requestedDialog))
+                            botInfo.Dialog = requestedDialog;
+                        if (!string.IsNullOrWhiteSpace(chosenDeck))
+                            botInfo.Name = $"{chosenDeck}#{botSeq}";
+                        else if (botSeq > 1 || spawnCount > 1)
+                            botInfo.Name = $"{botInfo.Name}#{botSeq}";
+                        botInfo.HostInfo = ctx.Game.RoomName;
+
+                        botService.StartBot(botInfo, activeHost.CreateLocalTransport(), cancellationToken);
+                        spawnedNames.Add(botInfo.Name);
+                    }
+
+                    ctx.Broadcast($"[AI] 正在召唤 {string.Join(", ", spawnedNames)} 加入房间...");
                 }
                 catch (Exception ex)
                 {
@@ -163,7 +205,7 @@ static async Task<int> RunServerAsync(CliConfiguration configuration, Cancellati
                 }
             },
             Aliases: ["bot", "addai"],
-            Usage: "/ai [卡组名] [对话名]",
+            Usage: "/ai [fill] [卡组名|random] [对话名]",
             Category: "AI"));
 
         cliCommands.Add(new ChatCommandDefinition(
@@ -172,25 +214,8 @@ static async Task<int> RunServerAsync(CliConfiguration configuration, Cancellati
             ctx =>
             {
                 string filter = ctx.RawArguments.Trim();
-                HashSet<string> names = new(DecksManager.GetRegisteredDeckNames(), StringComparer.OrdinalIgnoreCase);
-
-                string[] luaDirs =
-                [
-                    Path.Combine("Decks", "Lua"),
-                    Path.Combine(AppContext.BaseDirectory, "Decks", "Lua"),
-                    Path.Combine(baseOptions.RootPath, "Decks", "Lua")
-                ];
-                foreach (string dir in luaDirs)
-                {
-                    if (!Directory.Exists(dir))
-                        continue;
-                    foreach (string file in Directory.EnumerateFiles(dir, "*.lua", SearchOption.TopDirectoryOnly))
-                        names.Add(Path.GetFileNameWithoutExtension(file));
-                }
-
-                List<string> matched = names
+                List<string> matched = CollectAvailableBotDeckNames()
                     .Where(n => string.IsNullOrEmpty(filter) || n.Contains(filter, StringComparison.OrdinalIgnoreCase))
-                    .OrderBy(static n => n, StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
                 if (matched.Count == 0)

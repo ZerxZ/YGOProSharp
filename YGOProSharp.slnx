@@ -4,8 +4,10 @@
   <Project Path="YGOProSharp.Core/YGOProSharp.Core.csproj" />
   <Project Path="YGOProSharp.Native/YGOProSharp.Native.csproj" />
   <Project Path="YGOProSharp.NativeApi/YGOProSharp.NativeApi.csproj" />
+  <Project Path="YGOProSharp.Persistence/YGOProSharp.Persistence.csproj" />
   <Project Path="YGOProSharp.Protocol/YGOProSharp.Protocol.csproj" />
   <Project Path="YGOProSharp.Server/YGOProSharp.Server.csproj" />
   <Project Path="YGOProSharp.Tests/YGOProSharp.Tests.csproj" />
+  <Project Path="YGOProSharp.Web/YGOProSharp.Web.csproj" />
   <Project Path="YGOProSharp.WindBot/YGOProSharp.WindBot.csproj" />
 </Solution>
