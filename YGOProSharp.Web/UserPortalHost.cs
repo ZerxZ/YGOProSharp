@@ -14,11 +14,15 @@ using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Logging;
 using YGOProSharp.Abstractions.Logging;
 using YGOProSharp.Abstractions.Ocg.Enums;
+using YGOProSharp.AgentBridge;
 using YGOProSharp.Core;
 using YGOProSharp.Core.Cards;
+using YGOProSharp.Mcp;
 using YGOProSharp.Persistence;
 using YGOProSharp.Persistence.Caching;
 using YGOProSharp.Persistence.Entities;
+using YGOProSharp.Persistence.Security;
+using YGOProSharp.Protocol.Enums;
 using YGOProSharp.Server;
 using YGOProSharp.Web.Services;
 
@@ -40,6 +44,7 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
     private readonly OperationalServerCoordinator _coordinator;
     private readonly UserPortalOptions _options;
     private readonly DiyPackageManager _diyManager;
+    private readonly McpServerEngine _mcpEngine;
     private readonly ConcurrentDictionary<Guid, WebSocket> _publicSubscribers = new();
     private readonly DateTime _startedAtUtc = DateTime.UtcNow;
 
@@ -59,6 +64,15 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
 
         string diyRoot = Path.Combine(Path.GetFullPath(_serverHost.Server.Options.RootPath), "diy");
         _diyManager = new DiyPackageManager(diyRoot, new SqliteCardDatabaseManager());
+        AgentSessionManager sessionManager = _coordinator.GetOrCreateAgentSessionManager(_serverHost, _options.NamedCardRepositoryProvider);
+        _mcpEngine = new McpServerEngine(new McpRuntimeDependencies
+        {
+            ServerHost = _serverHost,
+            Store = _store,
+            SessionManager = sessionManager,
+            DiyManager = _diyManager,
+            NamedCardRepositoryProvider = () => _options.NamedCardRepositoryProvider?.Invoke() ?? EmptyNamedCardRepository.Instance
+        });
 
         _coordinator.OnPublicEventPublished += HandlePublicEvent;
     }
@@ -154,7 +168,8 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
             surface = "portal",
             gamePort = _serverHost.Server.Options.Port,
             publicGameHost = _options.PublicGameHost,
-            portalPort = _options.Port
+            portalPort = _options.Port,
+            mcpPortHint = _options.McpPortHint
         }));
 
         app.MapGet("/healthz", async (CancellationToken ct) =>
@@ -190,6 +205,7 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
                 catalogVersion = srv.ReloadableCards.CatalogVersion,
                 presetDeckCount = srv.PresetDecks.Count,
                 enabledDiyPackageCount = enabledDiy.Count,
+                banlists = BanlistManager.Banlists.Select(static (b, idx) => new { index = idx, b.Name, b.WhitelistOnly }).ToArray(),
                 ruleGuides = new object[]
                 {
                     new { prefix = "M#房间名", title = "三局两胜比赛 (Match)", desc = "标准 BO3 备牌局" },
@@ -203,7 +219,111 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
             });
         });
 
-        // 2. 公开大厅房间列表与观战详情（100% 剥离玩家 IP 与私密口令）
+        // 1.5 玩家账号自助注册、登录与会话接口（独立 Cookie ygp_portal_sid，固定 ai_operator 权限边界）
+        app.MapPost("/api/portal/auth/register", async (HttpContext http, PortalRegisterRequestDto body, CancellationToken ct) =>
+        {
+            string? ip = GetRemoteIp(http);
+            string? ua = http.Request.Headers.UserAgent.ToString();
+            LoginResult res = await _store.RegisterPlayerAccountAsync(
+                body.Username ?? string.Empty,
+                body.Password ?? string.Empty,
+                body.DisplayName,
+                ip,
+                ua,
+                ct).ConfigureAwait(false);
+
+            if (!res.Success || res.SessionToken is null || res.Principal is null)
+            {
+                int status = res.StatusCode == "rate_limited" ? StatusCodes.Status429TooManyRequests : StatusCodes.Status400BadRequest;
+                return Results.Json(new { success = false, error = res.StatusCode, message = res.Message }, statusCode: status);
+            }
+
+            AppendPortalSessionCookie(http, res.SessionToken, res.ExpiresAt);
+            return Results.Ok(new
+            {
+                success = true,
+                message = res.Message,
+                accessToken = res.SessionToken,
+                csrfToken = res.CsrfToken,
+                expiresAt = res.ExpiresAt,
+                user = BuildPortalUserDto(res.Principal)
+            });
+        });
+
+        app.MapPost("/api/portal/auth/login", async (HttpContext http, LoginRequestDto body, CancellationToken ct) =>
+        {
+            string? ip = GetRemoteIp(http);
+            string? ua = http.Request.Headers.UserAgent.ToString();
+            LoginResult res = await _store.LoginAsync(body.Username ?? string.Empty, body.Password ?? string.Empty, ip, ua, ct).ConfigureAwait(false);
+
+            if (!res.Success || res.SessionToken is null || res.Principal is null)
+            {
+                int code = res.StatusCode switch
+                {
+                    "rate_limited" => StatusCodes.Status429TooManyRequests,
+                    "locked" or "account_locked" or "account_disabled" => StatusCodes.Status423Locked,
+                    _ => StatusCodes.Status401Unauthorized
+                };
+                return Results.Json(new { success = false, error = res.StatusCode, message = res.Message }, statusCode: code);
+            }
+
+            AppendPortalSessionCookie(http, res.SessionToken, res.ExpiresAt);
+            return Results.Ok(new
+            {
+                success = true,
+                message = res.Message,
+                accessToken = res.SessionToken,
+                csrfToken = res.CsrfToken,
+                expiresAt = res.ExpiresAt,
+                user = BuildPortalUserDto(res.Principal)
+            });
+        });
+
+        app.MapPost("/api/portal/auth/logout", async (HttpContext http, CancellationToken ct) =>
+        {
+            (string? rawToken, _) = ExtractPortalSessionToken(http);
+            await _store.LogoutSessionAsync(rawToken, GetRemoteIp(http), ct).ConfigureAwait(false);
+            http.Response.Cookies.Delete(_options.SessionCookieName, new CookieOptions { Path = "/" });
+            return Results.Ok(new { success = true });
+        });
+
+        app.MapGet("/api/portal/auth/me", async (HttpContext http, CancellationToken ct) =>
+        {
+            (string? rawToken, _) = ExtractPortalSessionToken(http);
+            if (string.IsNullOrWhiteSpace(rawToken))
+                return Results.Ok(new { authenticated = false, user = (object?)null });
+
+            AuthenticatedPrincipal? principal = await _store.ValidateSessionAsync(rawToken, ct).ConfigureAwait(false);
+            if (principal is null)
+                return Results.Ok(new { authenticated = false, user = (object?)null });
+
+            return Results.Ok(new { authenticated = true, user = BuildPortalUserDto(principal) });
+        });
+
+        app.MapPost("/api/portal/auth/change-password", async (HttpContext http, ChangePasswordRequestDto body, CancellationToken ct) =>
+        {
+            (AuthenticatedPrincipal? principal, IResult? err) = await AuthenticatePortalUserAsync(http, allowWhenMustChangePassword: true, ct).ConfigureAwait(false);
+            if (err is not null) return err;
+
+            (bool ok, string msg) = await _store.ChangeOwnPasswordAsync(
+                principal!.UserId,
+                principal.SessionId,
+                body.CurrentPassword ?? string.Empty,
+                body.NewPassword,
+                GetRemoteIp(http),
+                ct,
+                newUsername: body.NewUsername,
+                newDisplayName: body.DisplayName).ConfigureAwait(false);
+
+            if (!ok)
+                return Results.BadRequest(new { success = false, message = msg });
+
+            (string? rawToken, _) = ExtractPortalSessionToken(http);
+            AuthenticatedPrincipal? refreshed = await _store.ValidateSessionAsync(rawToken, ct).ConfigureAwait(false);
+            return Results.Ok(new { success = true, message = msg, user = refreshed is not null ? BuildPortalUserDto(refreshed) : null });
+        });
+
+        // 2. 公开大厅房间列表、观战观众列表、玩家建房与个人 AI Token 接口（100% 剥离玩家 IP 与私密口令）
         app.MapGet("/api/portal/rooms", async (CancellationToken ct) =>
         {
             PortalRoomSummaryDto[] rooms = await _store.Cache.GetOrCreateAsync(
@@ -227,12 +347,228 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
             {
                 room = new
                 {
-                    summary = BuildSinglePublicRoomSummary(game),
+                    summary = BuildSinglePublicRoomSummary(game, activity),
+                    startHand = game.StartHand,
+                    drawCount = game.DrawCount,
+                    timer = game.Timer,
+                    noCheckDeck = game.NoCheckDeck,
+                    noShuffleDeck = game.NoShuffleDeck,
                     chats = activity?.GetChats() ?? [],
                     publicEvents = activity?.GetPublicEvents() ?? []
                 }
             });
         });
+
+        app.MapPost("/api/portal/rooms", async (HttpContext http, CreateRoomRequestDto body, CancellationToken ct) =>
+        {
+            (AuthenticatedPrincipal? principal, IResult? err) = await AuthenticatePortalUserAsync(http, allowWhenMustChangePassword: false, ct).ConfigureAwait(false);
+            if (err is not null) return err;
+
+            if (!RbacPolicyEvaluator.HasAnyPermission(principal!.EffectivePermissions, [RbacPermissions.RoomCreate, RbacPermissions.RoomCreateOwn]))
+                return Results.Json(new { message = "当前账号无建房权限。" }, statusCode: StatusCodes.Status403Forbidden);
+
+            if (!_serverHost.Server.IsMultiRoom)
+                return Results.BadRequest(new { message = "当前服务端未开启多房间模式（MultiRoom=true），无法通过网页新建独立房间。" });
+
+            if (_serverHost.Server.IsMaintenanceMode)
+                return Results.BadRequest(new { message = "服务器当前处于维护模式，暂不开放新建房间。" });
+
+            string ip = GetRemoteIp(http) ?? "unknown";
+            RateLimitDecision rl = await _store.Cache.CheckSlidingWindowAsync($"portal_room:{principal.UserId}", 8, TimeSpan.FromMinutes(3), ct).ConfigureAwait(false);
+            if (!rl.Allowed)
+                return Results.Json(new { message = "建房操作过于频繁，请稍后再试。" }, statusCode: StatusCodes.Status429TooManyRequests);
+
+            if (!principal.HasPermission(RbacPermissions.RoomCreate))
+            {
+                int ownedActive = _coordinator.CountOwnedActiveRooms(principal.UserId, _serverHost.Server);
+                if (ownedActive >= 3)
+                    return Results.BadRequest(new { message = "每人最多同时保留 3 个自建活动房间，请先关闭旧房间后再新建。" });
+            }
+
+            string roomName = string.IsNullOrWhiteSpace(body.RoomName)
+                ? $"Room-{TokenCrypto.GenerateShortCode(5)}"
+                : body.RoomName.Trim();
+
+            if (roomName.Length > 24 || roomName.Any(static c => char.IsControl(c) || c is '#' or '$' or ',' or ';'))
+                return Results.BadRequest(new { message = "房间名称长度不超过 24 字符，且不要包含 # $ , ; 等符号。" });
+
+            GameOptions roomOptions = RoomConfigHelper.ResolveCreateRoomOptions(
+                _serverHost.Server.Options.Game,
+                _serverHost.Server.PasswordParser,
+                roomName,
+                body,
+                out string canonicalFullHostPassword);
+
+            if (!_serverHost.Server.TryCreateRoom(roomName, out Game? createdRoom, roomOptions) || createdRoom is null)
+                return Results.Conflict(new { message = $"无法创建房间 '{roomName}'（房名已存在或服务器房间数已满）。" });
+
+            RoomActivityState state = _coordinator.GetOrCreateRoomState(createdRoom.RoomName);
+            state.OwnerUserId = principal.UserId;
+            state.OwnerUsername = principal.Username;
+            state.RawJoinPassword = canonicalFullHostPassword;
+
+            List<object> issuedTokens = new();
+            if (body.IssuePlayerTokens && RbacPolicyEvaluator.CanIssueMcpRole(principal.RoleCodes, principal.EffectivePermissions, McpRoleCodes.Player))
+            {
+                int defaultCount = createdRoom.IsTag ? 4 : 2;
+                int count = Math.Clamp(body.AiTokenCount ?? defaultCount, 1, 4);
+                for (int i = 0; i < count; i++)
+                {
+                    (bool issuedOk, _, IssuedMcpTokenResult? issued) = await _store.IssueMcpTokenAsync(
+                        principal,
+                        name: $"{createdRoom.RoomName}-AI{i + 1}",
+                        mcpRole: McpRoleCodes.Player,
+                        allowedRooms: [createdRoom.RoomName],
+                        maxSessions: 1,
+                        requireApproval: true,
+                        expiresInHours: 12,
+                        ip: ip,
+                        cancellationToken: ct).ConfigureAwait(false);
+
+                    if (issuedOk && issued is not null)
+                    {
+                        issuedTokens.Add(new
+                        {
+                            seat = i,
+                            name = issued.Entity.Name,
+                            mcpRole = issued.Entity.McpRole,
+                            rawToken = issued.RawToken
+                        });
+                    }
+                }
+            }
+
+            await _store.Cache.FlushNamespaceAsync("portal", ct).ConfigureAwait(false);
+            await _store.Cache.FlushNamespaceAsync("rooms", ct).ConfigureAwait(false);
+            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "portal.room_create", RbacPermissions.RoomCreateOwn, createdRoom.RoomName, ip, "ok", null, ct).ConfigureAwait(false);
+            _coordinator.PublishEvent("room.created", new { roomName = createdRoom.RoomName });
+
+            return Results.Ok(new
+            {
+                success = true,
+                hostPassword = createdRoom.RoomName,
+                fullHostPassword = canonicalFullHostPassword,
+                room = BuildSinglePublicRoomSummary(createdRoom, state),
+                issuedPlayerTokens = issuedTokens
+            });
+        });
+
+        app.MapDelete("/api/portal/rooms/{roomName}", async (HttpContext http, string roomName, CancellationToken ct) =>
+        {
+            (AuthenticatedPrincipal? principal, IResult? err) = await AuthenticatePortalUserAsync(http, allowWhenMustChangePassword: false, ct).ConfigureAwait(false);
+            if (err is not null) return err;
+
+            if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
+                return Results.NotFound(new { message = $"房间 '{roomName}' 不存在或已关闭。" });
+
+            RoomActivityState? state = _coordinator.TryGetRoomState(game.RoomName);
+            bool canClose = principal!.HasPermission(RbacPermissions.RoomClose) ||
+                            (principal.HasPermission(RbacPermissions.RoomCreateOwn) && state?.OwnerUserId == principal.UserId);
+            if (!canClose)
+                return Results.Json(new { message = "仅房间创建者本人可关闭该房间。" }, statusCode: StatusCodes.Status403Forbidden);
+
+            if (!_serverHost.Server.IsMultiRoom)
+                return Results.BadRequest(new { message = "单房间模式下不支持关闭默认房间。" });
+
+            foreach (Player? p in game.Players.ToArray())
+                p?.Disconnect();
+            foreach (Player obs in RoomConfigHelper.SnapshotObservers(game))
+                obs.Disconnect();
+            game.End();
+
+            await _store.Cache.FlushNamespaceAsync("portal", ct).ConfigureAwait(false);
+            await _store.Cache.FlushNamespaceAsync("rooms", ct).ConfigureAwait(false);
+            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "portal.room_close", RbacPermissions.RoomCreateOwn, game.RoomName, GetRemoteIp(http), "ok", null, ct).ConfigureAwait(false);
+            return Results.Ok(new { success = true });
+        });
+
+        app.MapGet("/api/portal/mcp/tokens", async (HttpContext http, CancellationToken ct) =>
+        {
+            (AuthenticatedPrincipal? principal, IResult? err) = await AuthenticatePortalUserAsync(http, allowWhenMustChangePassword: false, ct).ConfigureAwait(false);
+            if (err is not null) return err;
+
+            await using OperationalDbContext db = _store.Database.CreateDbContext();
+            List<McpTokenEntity> owned = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ToListAsync(
+                db.McpTokens
+                    .Where(t => t.OwnerUserId == principal!.UserId)
+                    .OrderByDescending(t => t.CreatedAt),
+                ct).ConfigureAwait(false);
+
+            string[] allowedRoles = RbacPolicyEvaluator.GetAllowedMcpRolesToIssue(principal!.RoleCodes, principal.EffectivePermissions)
+                .Where(static r => r is McpRoleCodes.Player or McpRoleCodes.Spectator)
+                .ToArray();
+
+            return Results.Ok(new
+            {
+                allowedRolesToIssue = allowedRoles,
+                mcpPortHint = _options.McpPortHint,
+                tokens = owned.Select(static t => new
+                {
+                    t.Id,
+                    t.Name,
+                    t.TokenPrefix,
+                    t.McpRole,
+                    allowedRooms = string.IsNullOrWhiteSpace(t.AllowedRoomsJson) ? [] : (JsonSerializer.Deserialize<string[]>(t.AllowedRoomsJson) ?? []),
+                    t.MaxSessions,
+                    t.ExpiresAt,
+                    t.RevokedAt,
+                    t.CreatedAt
+                })
+            });
+        });
+
+        app.MapPost("/api/portal/mcp/tokens", async (HttpContext http, IssueMcpTokenRequestDto body, CancellationToken ct) =>
+        {
+            (AuthenticatedPrincipal? principal, IResult? err) = await AuthenticatePortalUserAsync(http, allowWhenMustChangePassword: false, ct).ConfigureAwait(false);
+            if (err is not null) return err;
+
+            string requestedRole = string.IsNullOrWhiteSpace(body.McpRole) ? McpRoleCodes.Player : body.McpRole.Trim().ToLowerInvariant();
+            if (requestedRole is not (McpRoleCodes.Player or McpRoleCodes.Spectator))
+                return Results.Json(new { message = "前台玩家面板仅允许签发 player（对战 AI）或 spectator（观战 AI）令牌。" }, statusCode: StatusCodes.Status403Forbidden);
+
+            (bool ok, string msg, IssuedMcpTokenResult? issued) = await _store.IssueMcpTokenAsync(
+                principal!,
+                body.Name ?? string.Empty,
+                requestedRole,
+                body.AllowedRooms,
+                Math.Clamp(body.MaxSessions ?? 1, 1, 4),
+                requireApproval: true,
+                expiresInHours: Math.Clamp(body.ExpiresInHours ?? 48, 1, 720),
+                ip: GetRemoteIp(http),
+                cancellationToken: ct).ConfigureAwait(false);
+
+            if (!ok || issued is null)
+                return Results.BadRequest(new { success = false, message = msg });
+
+            return Results.Ok(new
+            {
+                success = true,
+                message = msg,
+                rawToken = issued.RawToken,
+                token = new
+                {
+                    issued.Entity.Id,
+                    issued.Entity.Name,
+                    issued.Entity.McpRole,
+                    issued.Entity.TokenPrefix,
+                    issued.Entity.ExpiresAt
+                }
+            });
+        });
+
+        app.MapDelete("/api/portal/mcp/tokens/{id:guid}", async (HttpContext http, Guid id, CancellationToken ct) =>
+        {
+            (AuthenticatedPrincipal? principal, IResult? err) = await AuthenticatePortalUserAsync(http, allowWhenMustChangePassword: false, ct).ConfigureAwait(false);
+            if (err is not null) return err;
+
+            bool revoked = await _store.RevokeMcpTokenAsync(principal!, id, GetRemoteIp(http), ct).ConfigureAwait(false);
+            if (revoked)
+                _coordinator.RevokeMcpTokenSessions(id);
+            return revoked ? Results.Ok(new { success = true }) : Results.NotFound(new { message = "未找到属于您的有效 AI Token。" });
+        });
+
+        // 在玩家门户端口挂载受限 Streamable HTTP MCP 入口（严格仅放行 player / spectator 角色，绝不暴露 admin / diy_creator 工具）
+        app.MapMcpStreamableHttp(_mcpEngine, _store, allowedSurfaceRoles: [McpRoleCodes.Player, McpRoleCodes.Spectator]);
 
         // 3. 历史对局战报与云录像下载（剥离 IP；进行中不会入库，仅展示已结束对局）
         app.MapGet("/api/portal/replays", async (int? limit, string? player, CancellationToken ct) =>
@@ -545,7 +881,9 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
             string indexHtml = Path.Combine(staticRoot, "index.html");
             app.MapFallback(async (HttpContext http) =>
             {
-                if (http.Request.Path.StartsWithSegments("/api") || http.Request.Path.StartsWithSegments("/ws"))
+                if (http.Request.Path.StartsWithSegments("/api") ||
+                    http.Request.Path.StartsWithSegments("/ws") ||
+                    http.Request.Path.StartsWithSegments("/mcp"))
                 {
                     http.Response.StatusCode = StatusCodes.Status404NotFound;
                     await http.Response.WriteAsJsonAsync(new { error = "not_found", message = "前台用户面板不存在该接口。" });
@@ -565,16 +903,24 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
         foreach (RoomSnapshot snap in snapshots)
         {
             if (_serverHost.Server.TryGetRoom(snap.RoomName, out Game? g) && g is not null)
-                list.Add(BuildSinglePublicRoomSummary(g));
+                list.Add(BuildSinglePublicRoomSummary(g, _coordinator.TryGetRoomState(g.RoomName)));
         }
         return list.ToArray();
     }
 
-    private static PortalRoomSummaryDto BuildSinglePublicRoomSummary(Game g)
+    private PortalRoomSummaryDto BuildSinglePublicRoomSummary(Game g, RoomActivityState? activity)
     {
         RoomSnapshot snap = g.CreateSnapshot();
+        Player[] obsPlayers = RoomConfigHelper.SnapshotObservers(g);
+        PortalRoomObserverDto[] observers = obsPlayers
+            .Select(static (o, i) => new PortalRoomObserverDto(o.Name ?? $"观众{i + 1}", o.SeatOrigin))
+            .ToArray();
+
         return new PortalRoomSummaryDto(
             snap.RoomName,
+            snap.RoomName,
+            RoomConfigHelper.FormatPublicRuleHostPassword(g, _serverHost.Server.Options.Game),
+            activity?.OwnerUsername,
             snap.State.ToString(),
             snap.Mode,
             snap.Region,
@@ -597,7 +943,74 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
                 p?.Name,
                 idx < g.IsReady.Length && g.IsReady[idx],
                 p is not null && g.IsHost(p),
-                p?.SeatOrigin ?? "empty")).ToArray());
+                p?.SeatOrigin ?? "empty")).ToArray(),
+            observers);
+    }
+
+    private void AppendPortalSessionCookie(HttpContext http, string rawToken, DateTime? expiresAt)
+    {
+        http.Response.Cookies.Append(_options.SessionCookieName, rawToken, new CookieOptions
+        {
+            HttpOnly = true,
+            SameSite = SameSiteMode.Strict,
+            Secure = _options.RequireHttpsCookie || http.Request.IsHttps,
+            Expires = expiresAt,
+            Path = "/"
+        });
+    }
+
+    private (string? RawToken, bool IsBearer) ExtractPortalSessionToken(HttpContext http)
+    {
+        string authHeader = http.Request.Headers.Authorization.ToString();
+        if (!string.IsNullOrWhiteSpace(authHeader) && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            return (authHeader[7..].Trim(), true);
+
+        if (http.Request.Cookies.TryGetValue(_options.SessionCookieName, out string? cookieVal) && !string.IsNullOrWhiteSpace(cookieVal))
+            return (cookieVal.Trim(), false);
+
+        return (null, false);
+    }
+
+    private async Task<(AuthenticatedPrincipal? Principal, IResult? ErrorResult)> AuthenticatePortalUserAsync(
+        HttpContext http,
+        bool allowWhenMustChangePassword,
+        CancellationToken ct)
+    {
+        (string? rawToken, bool isBearer) = ExtractPortalSessionToken(http);
+        if (string.IsNullOrWhiteSpace(rawToken))
+            return (null, Results.Json(new { error = "unauthenticated", message = "请先注册或登录玩家账号。" }, statusCode: StatusCodes.Status401Unauthorized));
+
+        AuthenticatedPrincipal? principal = await _store.ValidateSessionAsync(rawToken, ct).ConfigureAwait(false);
+        if (principal is null)
+            return (null, Results.Json(new { error = "session_expired", message = "玩家登录状态已过期，请重新登录。" }, statusCode: StatusCodes.Status401Unauthorized));
+
+        if (!isBearer && (HttpMethods.IsPost(http.Request.Method) || HttpMethods.IsPut(http.Request.Method) || HttpMethods.IsPatch(http.Request.Method) || HttpMethods.IsDelete(http.Request.Method)))
+        {
+            string csrf = http.Request.Headers["X-CSRF-Token"].ToString();
+            if (string.IsNullOrWhiteSpace(csrf) || !TokenCrypto.FixedTimeEqualsString(csrf, principal.CsrfToken))
+                return (null, Results.Json(new { error = "csrf_invalid", message = "CSRF 校验未通过，请刷新页面重试。" }, statusCode: StatusCodes.Status403Forbidden));
+        }
+
+        if (!allowWhenMustChangePassword && principal.MustChangePassword)
+            return (null, Results.Json(new { error = "must_change_password", message = "请先确认或修改账号初始密码。" }, statusCode: StatusCodes.Status403Forbidden));
+
+        return (principal, null);
+    }
+
+    private static object BuildPortalUserDto(AuthenticatedPrincipal p)
+    {
+        return new
+        {
+            p.UserId,
+            p.Username,
+            p.DisplayName,
+            p.MustChangePassword,
+            p.CsrfToken,
+            roleCodes = p.RoleCodes,
+            allowedMcpRolesToIssue = RbacPolicyEvaluator.GetAllowedMcpRolesToIssue(p.RoleCodes, p.EffectivePermissions)
+                .Where(static r => r is McpRoleCodes.Player or McpRoleCodes.Spectator)
+                .ToArray()
+        };
     }
 
     private PortalCardItemDto[] SearchPublicCards(string query, int limit, bool diyOnly)
@@ -734,8 +1147,13 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
     }
 }
 
+public sealed record PortalRegisterRequestDto(string? Username, string? Password, string? DisplayName = null);
 public sealed record PortalVpassRequestDto(string? PlayerName, string? Vpass);
 public sealed record PortalSubmitProposalDto(string? PackageId, string? AuthorName, DiyCardEntryDto? Card, string? LuaScript);
+
+public sealed record PortalRoomObserverDto(
+    string PlayerName,
+    string SeatOrigin);
 
 public sealed record PortalRoomSlotDto(
     int SeatIndex,
@@ -747,6 +1165,9 @@ public sealed record PortalRoomSlotDto(
 
 public sealed record PortalRoomSummaryDto(
     string RoomName,
+    string HostPassword,
+    string FullHostPassword,
+    string? OwnerUsername,
     string State,
     int Mode,
     int Region,
@@ -763,7 +1184,8 @@ public sealed record PortalRoomSummaryDto(
     string RandomDeckMode,
     bool IsSuddenDeath,
     string? BanlistName,
-    IReadOnlyList<PortalRoomSlotDto> Slots);
+    IReadOnlyList<PortalRoomSlotDto> Slots,
+    IReadOnlyList<PortalRoomObserverDto> Observers);
 
 public sealed record PortalCardItemDto(
     int Id,

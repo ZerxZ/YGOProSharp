@@ -15,7 +15,9 @@
 
     <ItemGroup>
       <ProjectReference Include="..\YGOProSharp.Abstractions\YGOProSharp.Abstractions.csproj" />
+      <ProjectReference Include="..\YGOProSharp.AgentBridge\YGOProSharp.AgentBridge.csproj" />
       <ProjectReference Include="..\YGOProSharp.Core\YGOProSharp.Core.csproj" />
+      <ProjectReference Include="..\YGOProSharp.Mcp\YGOProSharp.Mcp.csproj" />
       <ProjectReference Include="..\YGOProSharp.Native\YGOProSharp.Native.csproj"
                         ReferenceOutputAssembly="false"
                         PrivateAssets="all" />

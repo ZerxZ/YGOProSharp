@@ -322,6 +322,105 @@ namespace WindBot.Game.AI.Lua
         public void LogDebug(string message) => Logger.DebugWriteLine($"[LuaDeck:{ScriptChunkName}] {message}");
         public void LogError(string message) => Logger.WriteErrorLine($"[LuaDeck:{ScriptChunkName}] {message}");
 
+        private readonly List<LuaThoughtEntry> _thoughts = new List<LuaThoughtEntry>();
+
+        /// <summary>
+        /// 全局 Lua 思考事件（用于自博弈复盘与围观气泡订阅）。
+        /// </summary>
+        public static event Action<LuaThoughtEntry> GlobalThoughtEmitted;
+
+        /// <summary>
+        /// 当前执行器实例的思考事件。
+        /// </summary>
+        public event Action<LuaThoughtEntry> ThoughtEmitted;
+
+        /// <summary>
+        /// 可选全局双脑慢思考决策提供器（仅在脚本主动调用 <see cref="AskExternalAgent"/> 时触发）。
+        /// </summary>
+        public static Func<ExternalAgentDecisionRequest, int?> GlobalExternalAgentHandler { get; set; }
+
+        /// <summary>
+        /// 可选单实例双脑慢思考决策提供器。
+        /// </summary>
+        public Func<ExternalAgentDecisionRequest, int?> ExternalAgentHandler { get; set; }
+
+        /// <summary>
+        /// 最近输出的思考记录（最多保留 64 条）。
+        /// </summary>
+        public IReadOnlyList<LuaThoughtEntry> ThoughtHistory => _thoughts;
+
+        /// <summary>
+        /// 供 Lua 脚本记录四层决策摘要（如宏观计划、交康理由、斩杀计算）。
+        /// </summary>
+        public void EmitThought(string summary)
+        {
+            if (string.IsNullOrWhiteSpace(summary))
+                return;
+
+            string clean = summary.Trim();
+            if (clean.Length > 240)
+                clean = clean.Substring(0, 240);
+
+            LuaThoughtEntry entry = new LuaThoughtEntry(
+                ScriptChunkName,
+                Duel?.Turn ?? 0,
+                Duel?.Phase.ToString() ?? "Lobby",
+                clean,
+                DateTime.UtcNow);
+
+            if (_thoughts.Count >= 64)
+                _thoughts.RemoveAt(0);
+            _thoughts.Add(entry);
+
+            Logger.DebugWriteLine($"[Thought:{ScriptChunkName} T{entry.Turn} {entry.Phase}] {clean}");
+            ThoughtEmitted?.Invoke(entry);
+            GlobalThoughtEmitted?.Invoke(entry);
+        }
+
+        /// <summary>
+        /// 双脑混合决策桥接：在关键交康、斩杀或陌生卡节点挂起询问外部 Agent，返回候选下标（未挂载或超时返回 <c>null</c> 回退快思考）。
+        /// </summary>
+        public object AskExternalAgent(string reason, object candidates = null)
+        {
+            Func<ExternalAgentDecisionRequest, int?> handler = ExternalAgentHandler ?? GlobalExternalAgentHandler;
+            if (handler == null)
+                return null;
+
+            List<string> candidateList = new List<string>();
+            if (candidates is IEnumerable<string> strSeq)
+            {
+                candidateList.AddRange(strSeq);
+            }
+            else if (_context != null && _context.TryConvertList(candidates, out IList<string> luaStrings) && luaStrings != null)
+            {
+                candidateList.AddRange(luaStrings);
+            }
+            else if (candidates != null)
+            {
+                candidateList.Add(candidates.ToString());
+            }
+
+            ExternalAgentDecisionRequest req = new ExternalAgentDecisionRequest(
+                ScriptChunkName,
+                Duel?.Turn ?? 0,
+                Duel?.Phase.ToString() ?? "Unknown",
+                Bot?.LifePoints ?? 0,
+                Enemy?.LifePoints ?? 0,
+                reason ?? string.Empty,
+                candidateList);
+
+            try
+            {
+                int? chosen = handler(req);
+                return chosen.HasValue ? (object)chosen.Value : null;
+            }
+            catch (Exception ex)
+            {
+                Logger.WriteErrorLine($"[LuaDeck:{ScriptChunkName}] AskExternalAgent failed: {ex.Message}");
+                return null;
+            }
+        }
+
         public override int OnRockPaperScissors()
         {
             if (_onRockPaperScissors != null &&
@@ -1419,4 +1518,20 @@ namespace WindBot.Game.AI.Lua
             }
         }
     }
+
+    public sealed record LuaThoughtEntry(
+        string ScriptChunkName,
+        int Turn,
+        string Phase,
+        string Summary,
+        DateTime TimestampUtc);
+
+    public sealed record ExternalAgentDecisionRequest(
+        string ScriptChunkName,
+        int Turn,
+        string Phase,
+        int BotLp,
+        int EnemyLp,
+        string Reason,
+        IReadOnlyList<string> Candidates);
 }

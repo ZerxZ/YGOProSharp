@@ -13,8 +13,10 @@ using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using YGOProSharp.Abstractions.Logging;
+using YGOProSharp.AgentBridge;
 using YGOProSharp.Core;
 using YGOProSharp.Core.Cards;
+using YGOProSharp.Mcp;
 using YGOProSharp.Persistence;
 using YGOProSharp.Persistence.Caching;
 using YGOProSharp.Persistence.Entities;
@@ -39,6 +41,7 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
     private readonly LogRingBuffer _logBuffer;
     private readonly WebEventHub _eventHub;
     private readonly DiyPackageManager _diyManager;
+    private readonly McpServerEngine _mcpEngine;
     private readonly DateTime _startedAtUtc = DateTime.UtcNow;
 
     private WebApplication? _app;
@@ -60,6 +63,17 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
 
         string diyRoot = Path.Combine(Path.GetFullPath(_serverHost.Server.Options.RootPath), "diy");
         _diyManager = new DiyPackageManager(diyRoot, new SqliteCardDatabaseManager());
+        AgentSessionManager sessionManager = _coordinator.GetOrCreateAgentSessionManager(_serverHost, _options.NamedCardRepositoryProvider);
+        _mcpEngine = new McpServerEngine(new McpRuntimeDependencies
+        {
+            ServerHost = _serverHost,
+            Store = _store,
+            SessionManager = sessionManager,
+            DiyManager = _diyManager,
+            NamedCardRepositoryProvider = () => _options.NamedCardRepositoryProvider?.Invoke() ?? EmptyNamedCardRepository.Instance,
+            LuaRuntimeProvider = _options.LuaRuntimeProvider,
+            SpawnWindBotCallback = _options.WindBotSpawner
+        });
 
         _coordinator.OnPublicEventPublished += HandleCoordinatorEvent;
         _logBuffer.OnEntryAdded += HandleBufferedLogAdded;
@@ -484,14 +498,12 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
                 ? $"Arena-{TokenCrypto.GenerateShortCode(5)}"
                 : body.RoomName.Trim();
 
-            string rulePrefix = BuildTemplateRulePrefix(body.Template, body.RulePrefix);
-            GameOptions roomOptions = _serverHost.Server.Options.Game;
-            if (!string.IsNullOrWhiteSpace(rulePrefix))
-            {
-                string fullSpec = rulePrefix.Contains('#') ? rulePrefix : $"{rulePrefix}#{roomName}";
-                ParsedRoomPassword parsed = _serverHost.Server.PasswordParser.Parse(fullSpec);
-                roomOptions = parsed.ApplyTo(roomOptions);
-            }
+            GameOptions roomOptions = RoomConfigHelper.ResolveCreateRoomOptions(
+                _serverHost.Server.Options.Game,
+                _serverHost.Server.PasswordParser,
+                roomName,
+                body,
+                out string canonicalFullHostPassword);
 
             if (!_serverHost.Server.TryCreateRoom(roomName, out Game? createdRoom, roomOptions) || createdRoom is null)
                 return Results.Conflict(new { success = false, message = $"无法创建房间 '{roomName}'（可能房名已存在、处于维护模式或已达上限）。" });
@@ -499,14 +511,14 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
             RoomActivityState state = _coordinator.GetOrCreateRoomState(createdRoom.RoomName);
             state.OwnerUserId = principal!.UserId;
             state.OwnerUsername = principal.Username;
-            if (!string.IsNullOrWhiteSpace(rulePrefix))
-                state.RawJoinPassword = $"{rulePrefix}#{roomName}";
+            state.RawJoinPassword = canonicalFullHostPassword;
 
-            // 若勾选了签发斗蛐蛐临时 player Token（1v1 签发 2 枚，2v2 签发 4 枚），自动校验权限并生成
+            // 若勾选了签发斗蛐蛐临时 player Token（支持指定 1~4 枚，未指定时 1v1 默认 2 枚、2v2 默认 4 枚），自动校验权限并生成
             List<object> issuedTokens = new();
             if (body.IssuePlayerTokens && RbacPolicyEvaluator.CanIssueMcpRole(principal.RoleCodes, principal.EffectivePermissions, McpRoleCodes.Player))
             {
-                int count = createdRoom.IsTag ? 4 : 2;
+                int defaultCount = createdRoom.IsTag ? 4 : 2;
+                int count = Math.Clamp(body.AiTokenCount ?? defaultCount, 1, 4);
                 for (int i = 0; i < count; i++)
                 {
                     (bool issuedOk, _, IssuedMcpTokenResult? issued) = await _store.IssueMcpTokenAsync(
@@ -534,11 +546,14 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
             }
 
             await _store.Cache.FlushNamespaceAsync("rooms", ct).ConfigureAwait(false);
+            await _store.Cache.FlushNamespaceAsync("portal", ct).ConfigureAwait(false);
             await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.create", RbacPermissions.RoomCreate, createdRoom.RoomName, GetRemoteIp(http), "ok", null, ct).ConfigureAwait(false);
 
             return Results.Ok(new
             {
                 success = true,
+                hostPassword = principal.IsStreamerOnly ? null : createdRoom.RoomName,
+                fullHostPassword = principal.IsStreamerOnly ? null : canonicalFullHostPassword,
                 room = SanitizeRoomSummary(BuildSingleRawRoomSummary(createdRoom), principal),
                 issuedPlayerTokens = issuedTokens
             });
@@ -692,7 +707,11 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
             if (body.SlotIndex.HasValue && body.SlotIndex.Value >= 0 && body.SlotIndex.Value < game.Players.Length)
                 target = game.Players[body.SlotIndex.Value];
             else if (!string.IsNullOrWhiteSpace(body.PlayerName))
-                target = game.Players.FirstOrDefault(p => p is not null && string.Equals(p.Name, body.PlayerName.Trim(), StringComparison.OrdinalIgnoreCase));
+            {
+                string trimmedName = body.PlayerName.Trim();
+                target = game.Players.FirstOrDefault(p => p is not null && string.Equals(p.Name, trimmedName, StringComparison.OrdinalIgnoreCase))
+                         ?? RoomConfigHelper.SnapshotObservers(game).FirstOrDefault(o => string.Equals(o.Name, trimmedName, StringComparison.OrdinalIgnoreCase));
+            }
 
             if (target is null)
                 return Results.NotFound(new { message = "未找到目标玩家。" });
@@ -1660,8 +1679,13 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
             if (err is not null) return err;
 
             bool ok = await _store.RevokeMcpTokenAsync(principal!, id, GetRemoteIp(http), ct).ConfigureAwait(false);
+            if (ok)
+                _coordinator.RevokeMcpTokenSessions(id);
             return ok ? Results.Ok(new { success = true }) : Results.NotFound(new { success = false, message = "Token 不存在或无权吊销。" });
         });
+
+        // 挂载标准 Streamable HTTP MCP 服务端（支持全角色 player / spectator / diy_creator / admin，兼容 Bearer Header 与 ?key=）
+        app.MapMcpStreamableHttp(_mcpEngine, _store);
 
         app.MapGet("/api/v1/audit-logs", async (HttpContext http, int? limit, string? actor, string? action, string? result, CancellationToken ct) =>
         {
@@ -1864,6 +1888,19 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
                 ClientIp: p?.RemoteAddress));
         }
 
+        Player[] observerPlayers = RoomConfigHelper.SnapshotObservers(g);
+        List<RawObserverDto> observers = new(observerPlayers.Length);
+        for (int i = 0; i < observerPlayers.Length; i++)
+        {
+            Player obs = observerPlayers[i];
+            observers.Add(new RawObserverDto(
+                obs.Name ?? $"Observer{i + 1}",
+                obs.SeatOrigin,
+                obs.RemoteAddress));
+        }
+
+        string fullHostPw = activity?.RawJoinPassword ?? RoomConfigHelper.FormatPublicRuleHostPassword(g, _serverHost.Server.Options.Game);
+
         return new RawRoomSummaryDto(
             RoomName: snap.RoomName,
             State: snap.State.ToString(),
@@ -1886,9 +1923,11 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
             NoCheckDeck: g.NoCheckDeck,
             NoShuffleDeck: g.NoShuffleDeck,
             JoinPassword: activity?.RawJoinPassword,
+            FullHostPassword: fullHostPw,
             OwnerUsername: activity?.OwnerUsername,
             CreatedAtUtc: activity?.CreatedAtUtc ?? DateTime.UtcNow,
-            Slots: slots);
+            Slots: slots,
+            Observers: observers);
     }
 
     private static object SanitizeRoomSummary(RawRoomSummaryDto raw, AuthenticatedPrincipal principal)
@@ -1916,6 +1955,8 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
             raw.NoCheckDeck,
             raw.NoShuffleDeck,
             joinPassword = principal.IsStreamerOnly ? null : raw.JoinPassword,
+            hostPassword = principal.IsStreamerOnly ? null : raw.RoomName,
+            fullHostPassword = principal.IsStreamerOnly ? null : raw.FullHostPassword,
             raw.OwnerUsername,
             raw.CreatedAtUtc,
             slots = raw.Slots.Select(s => new
@@ -1927,6 +1968,12 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
                 s.IsHost,
                 s.SeatOrigin,
                 clientIp = IpPrivacyHelper.SanitizeIp(s.ClientIp, principal.CanViewIp, principal.IsStreamerOnly)
+            }),
+            observers = raw.Observers.Select(o => new
+            {
+                o.PlayerName,
+                o.SeatOrigin,
+                clientIp = IpPrivacyHelper.SanitizeIp(o.ClientIp, principal.CanViewIp, principal.IsStreamerOnly)
             })
         };
     }
@@ -2311,6 +2358,11 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
         string SeatOrigin,
         string? ClientIp);
 
+    private sealed record RawObserverDto(
+        string PlayerName,
+        string SeatOrigin,
+        string? ClientIp);
+
     private sealed record RawRoomSummaryDto(
         string RoomName,
         string State,
@@ -2333,9 +2385,11 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
         bool NoCheckDeck,
         bool NoShuffleDeck,
         string? JoinPassword,
+        string FullHostPassword,
         string? OwnerUsername,
         DateTime CreatedAtUtc,
-        IReadOnlyList<RawSlotDto> Slots);
+        IReadOnlyList<RawSlotDto> Slots,
+        IReadOnlyList<RawObserverDto> Observers);
 }
 
 public sealed record LoginRequestDto(string? Username, string? Password);
@@ -2343,7 +2397,27 @@ public sealed record ChangePasswordRequestDto(string? CurrentPassword, string? N
 public sealed record FlushCacheRequestDto(string? Namespace);
 public sealed record MaintenanceRequestDto(bool Enabled, string? Reason);
 public sealed record MessageRequestDto(string? Message);
-public sealed record CreateRoomRequestDto(string? RoomName, string? Template, string? RulePrefix, bool IssuePlayerTokens);
+public sealed record CreateRoomRequestDto(
+    string? RoomName,
+    string? Template,
+    string? RulePrefix,
+    bool IssuePlayerTokens,
+    int? AiTokenCount = null,
+    int? Mode = null,
+    int? Region = null,
+    int? MasterRule = null,
+    int? BanlistIndex = null,
+    bool? NoBanlist = null,
+    int? StartLp = null,
+    int? StartHand = null,
+    int? DrawCount = null,
+    int? GameTimer = null,
+    string? RandomDeckMode = null,
+    int? ChaosMainDeckSize = null,
+    bool? NoCheckDeck = null,
+    bool? NoShuffleDeck = null,
+    bool? EnablePriority = null,
+    bool? SuddenDeath = null);
 public sealed record UpdateRoomRulesRequestDto(
     string? PresetRuleString,
     int? Mode,

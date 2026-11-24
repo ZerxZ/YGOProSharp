@@ -13,20 +13,84 @@ public sealed class NLuaRuntime : ILuaRuntime
 {
     public static NLuaRuntime Instance { get; } = new();
 
+    private readonly int _maxInstructionBatches;
+    private readonly int _maxCallDurationMs;
+
+    public NLuaRuntime(int maxInstructionBatches = 250, int maxCallDurationMs = 2000)
+    {
+        _maxInstructionBatches = Math.Max(5, maxInstructionBatches);
+        _maxCallDurationMs = Math.Max(50, maxCallDurationMs);
+    }
+
     public ILuaScriptContext CreateContext(string? name = null)
     {
-        return new NLuaScriptContext();
+        return new NLuaScriptContext(_maxInstructionBatches, _maxCallDurationMs);
     }
 
     private sealed class NLuaScriptContext : ILuaScriptContext
     {
+        private const string SandboxBootstrapLua = """
+            if debug and debug.sethook then
+                local guard = __ygp_step_guard
+                debug.sethook(function() guard() end, "", 2000)
+            end
+            os = nil
+            io = nil
+            package = nil
+            debug = nil
+            dofile = nil
+            loadfile = nil
+            load = nil
+            require = nil
+            luanet = nil
+            import = nil
+            collectgarbage = nil
+            __ygp_step_guard = nil
+            """;
+
         private readonly Lua _lua;
+        private readonly int _maxInstructionBatches;
+        private readonly int _maxCallDurationMs;
+        private int _callDepth;
+        private int _currentBatches;
+        private long _deadlineTickCount;
         private bool _disposed;
 
-        public NLuaScriptContext()
+        public NLuaScriptContext(int maxInstructionBatches, int maxCallDurationMs)
         {
+            _maxInstructionBatches = maxInstructionBatches;
+            _maxCallDurationMs = maxCallDurationMs;
             _lua = new Lua();
             _lua.State.Encoding = Encoding.UTF8;
+            _lua["__ygp_step_guard"] = (Action)CheckExecutionBudget;
+            _lua.DoString(SandboxBootstrapLua, "ygp_sandbox_init");
+        }
+
+        internal void EnterExecutionScope()
+        {
+            ThrowIfDisposed();
+            if (_callDepth == 0)
+            {
+                _currentBatches = 0;
+                _deadlineTickCount = Environment.TickCount64 + _maxCallDurationMs;
+            }
+            _callDepth++;
+        }
+
+        internal void ExitExecutionScope()
+        {
+            if (_callDepth > 0)
+                _callDepth--;
+        }
+
+        private void CheckExecutionBudget()
+        {
+            if (_callDepth <= 0)
+                return;
+
+            _currentBatches++;
+            if (_currentBatches > _maxInstructionBatches || Environment.TickCount64 > _deadlineTickCount)
+                throw new TimeoutException("Lua 脚本单次执行指令数或耗时超出安全沙箱上限（疑似死循环）。");
         }
 
         public void SetGlobal(string name, object? value)
@@ -55,14 +119,21 @@ public sealed class NLuaRuntime : ILuaRuntime
 
         public object? DoString(string code, string? chunkName = null)
         {
-            ThrowIfDisposed();
-            object[]? results = _lua.DoString(code, chunkName ?? "LuaDeck.lua");
-            if (results is null || results.Length == 0)
-                return null;
+            EnterExecutionScope();
+            try
+            {
+                object[]? results = _lua.DoString(code, chunkName ?? "LuaDeck.lua");
+                if (results is null || results.Length == 0)
+                    return null;
 
-            return results[0] is LuaTable table
-                ? new NLuaTableAdapter(table)
-                : results[0];
+                return results[0] is LuaTable table
+                    ? new NLuaTableAdapter(table, this)
+                    : results[0];
+            }
+            finally
+            {
+                ExitExecutionScope();
+            }
         }
 
         public bool TryGetFunction(string name, out ILuaFunction? function)
@@ -70,7 +141,7 @@ public sealed class NLuaRuntime : ILuaRuntime
             ThrowIfDisposed();
             if (_lua[name] is LuaFunction luaFunction)
             {
-                function = new NLuaFunctionAdapter(luaFunction);
+                function = new NLuaFunctionAdapter(luaFunction, this);
                 return true;
             }
 
@@ -82,7 +153,7 @@ public sealed class NLuaRuntime : ILuaRuntime
         {
             if (rawFunction is LuaFunction luaFunction)
             {
-                function = new NLuaFunctionAdapter(luaFunction);
+                function = new NLuaFunctionAdapter(luaFunction, this);
                 return true;
             }
 
@@ -185,11 +256,13 @@ public sealed class NLuaRuntime : ILuaRuntime
     private sealed class NLuaTableAdapter : ILuaTable
     {
         private readonly LuaTable _table;
+        private readonly NLuaScriptContext _owner;
         private bool _disposed;
 
-        public NLuaTableAdapter(LuaTable table)
+        public NLuaTableAdapter(LuaTable table, NLuaScriptContext owner)
         {
             _table = table;
+            _owner = owner;
         }
 
         public bool TryGet(string key, out object? value)
@@ -208,7 +281,7 @@ public sealed class NLuaRuntime : ILuaRuntime
         {
             if (!_disposed && _table[key] is LuaFunction luaFunction)
             {
-                function = new NLuaFunctionAdapter(luaFunction);
+                function = new NLuaFunctionAdapter(luaFunction, _owner);
                 return true;
             }
 
@@ -229,11 +302,13 @@ public sealed class NLuaRuntime : ILuaRuntime
     private sealed class NLuaFunctionAdapter : ILuaFunction
     {
         private readonly LuaFunction _function;
+        private readonly NLuaScriptContext _owner;
         private bool _disposed;
 
-        public NLuaFunctionAdapter(LuaFunction function)
+        public NLuaFunctionAdapter(LuaFunction function, NLuaScriptContext owner)
         {
             _function = function;
+            _owner = owner;
         }
 
         public object? Call(params object?[] args)
@@ -241,8 +316,16 @@ public sealed class NLuaRuntime : ILuaRuntime
             if (_disposed)
                 return null;
 
-            object[]? results = _function.Call(args);
-            return results is { Length: > 0 } ? results[0] : null;
+            _owner.EnterExecutionScope();
+            try
+            {
+                object[]? results = _function.Call(args);
+                return results is { Length: > 0 } ? results[0] : null;
+            }
+            finally
+            {
+                _owner.ExitExecutionScope();
+            }
         }
 
         public void Dispose()

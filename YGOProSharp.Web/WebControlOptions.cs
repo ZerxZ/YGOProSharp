@@ -1,3 +1,4 @@
+using YGOProSharp.Abstractions.Scripting;
 using YGOProSharp.Core.Cards;
 using YGOProSharp.Server;
 
@@ -57,4 +58,9 @@ public sealed record WebControlOptions
     /// 可选：提供带名称与效果文本的卡片查询仓库（供管理面板卡片搜索与盲盒预览展示卡名，不污染 Server 核心层）。
     /// </summary>
     public Func<INamedCardRepository>? NamedCardRepositoryProvider { get; init; }
+
+    /// <summary>
+    /// 可选：提供硬化后的 Lua 沙箱运行时（供 MCP <c>windbot_write_deck_script</c> 进行 DSL 干跑预检）。
+    /// </summary>
+    public Func<ILuaRuntime>? LuaRuntimeProvider { get; init; }
 }

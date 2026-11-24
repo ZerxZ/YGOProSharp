@@ -111,6 +111,8 @@ namespace WindBot.Game.AI.Lua
             _context.SetGlobal("on_goto_main2", (LuaDslAction1)OnGoToMain2Rule);
             _context.SetGlobal("on_goto_end", (LuaDslAction1)OnGoToEndRule);
             _context.SetGlobal("on_surrender", (LuaDslAction1)OnSurrenderRule);
+            _context.SetGlobal("emit_thought", (LuaDslAction1)EmitThoughtGlobal);
+            _context.SetGlobal("ask_external_agent", (Func<object, object, object>)AskExternalAgentGlobal);
 
             // 生命周期与决策钩子（类似 xmake 的 on_load / on_build / on_clean）
             BindHook("on_init", LuaDeckHookNames.OnInit);
@@ -245,6 +247,17 @@ namespace WindBot.Game.AI.Lua
                 return;
 
             DeclaredAuthor = author?.ToString();
+        }
+
+        public void EmitThoughtGlobal(object summary = null)
+        {
+            if (summary != null)
+                _executor.EmitThought(summary.ToString());
+        }
+
+        public object AskExternalAgentGlobal(object reason = null, object candidates = null)
+        {
+            return _executor.AskExternalAgent(reason?.ToString() ?? string.Empty, candidates);
         }
 
         public void SetThrowOnError(object enable)

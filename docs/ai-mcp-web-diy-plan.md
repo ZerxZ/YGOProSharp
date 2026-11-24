@@ -601,10 +601,10 @@ flowchart LR
 - [x] 前端完成 Studio 页面（参考 `DataEditorY` & `YGODIY`：盲盒卡组池管理 + 左侧筛选卡表与字段配置 + 右侧 `Card / Script + Sandbox / Image / Proposals` 四面板联动）。
 - [x] 端到端验证：提交 DIY 卡与 `.ydk` 提案 → `ocgcore` 沙盒预检通过 → 审批并热重载 → 导出 `.ypk` → 客户端用 `DIYRD,NC#Test` 进房免传卡组随机抽到并在实战中发动新卡。
 
-### Phase 3：受限视角协议代理（`YGOProSharp.AgentBridge`）、WindBot Lua 创作闭环与 MCP Server（`YGOProSharp.Mcp`）
-- [ ] 加固 [NLuaRuntime.cs](../YGOProSharp.Cli/NLuaRuntime.cs) 沙箱（移除危险全局表 + 指令计数/超时熔断），在 `YGOProSharp.WindBot` 为 `LuaDeckExecutor` 新增 `EmitThought(summary)` 与可选 `AskExternalAgent(...)` 双脑挂起桥接接口。
-- [ ] 实现 `YGOProSharp.AgentBridge` 与 `YGOProSharp.Mcp`：接入 `mcp_tokens` 表与 Redis 热缓存、强制校验面板用户签发权限不放大、实现玩家对局工具、双脑慢思考接管、`windbot_write_*` 与 `windbot_simulate_match`（进程内闪电自博弈 + Decision Trace）。
-- [ ] 前端完成「AI 斗蛐蛐围观面板」、「WindBot Lua 实验室」与「MCP Token 签发 & 一键接入配置页」。
+### Phase 3：受限视角协议代理（`YGOProSharp.AgentBridge`）、WindBot Lua 创作闭环与 MCP Server（`YGOProSharp.Mcp`）（已完成）
+- [x] 加固 [NLuaRuntime.cs](../YGOProSharp.Cli/NLuaRuntime.cs) 沙箱（移除危险全局表 + 指令计数/超时熔断），在 `YGOProSharp.WindBot` 为 `LuaDeckExecutor` 新增 `EmitThought(summary)` 与可选 `AskExternalAgent(...)` 双脑挂起桥接接口。
+- [x] 实现 `YGOProSharp.AgentBridge` 与 `YGOProSharp.Mcp`：接入 `mcp_tokens` 表与 Redis 热缓存、强制校验面板用户签发权限不放大、实现玩家对局工具、会话隔离与战争迷雾保护、`windbot_write_*` 与 `windbot_simulate_match`（进程内闪电自博弈 + 思考轨迹），同时兼容 `Authorization: Bearer`、无 Header 客户端 `?key=`（日志自动脱敏）与 CLI `stdio` 转发模式。
+- [x] 前端在玩家大厅、房间配置器与管理后台完成 AI Token 一键复制 `streamable-http` 直连 URL 及公开思考气泡展示。
 
 ### Phase 4：Docker 容器化与单机/生产双模编排
 - [ ] 新增四阶段净化 `Dockerfile`、支持默认 SQLite 与 `--profile prod`（`PostgreSQL + Redis`）的 `docker-compose.yml`、`.dockerignore`、`.env.example`，并完善 `.gitignore`。

@@ -1,7 +1,9 @@
 <Solution>
   <Project Path="YGOProSharp.Abstractions/YGOProSharp.Abstractions.csproj" />
+  <Project Path="YGOProSharp.AgentBridge/YGOProSharp.AgentBridge.csproj" />
   <Project Path="YGOProSharp.Cli/YGOProSharp.Cli.csproj" />
   <Project Path="YGOProSharp.Core/YGOProSharp.Core.csproj" />
+  <Project Path="YGOProSharp.Mcp/YGOProSharp.Mcp.csproj" />
   <Project Path="YGOProSharp.Native/YGOProSharp.Native.csproj" />
   <Project Path="YGOProSharp.NativeApi/YGOProSharp.NativeApi.csproj" />
   <Project Path="YGOProSharp.Persistence/YGOProSharp.Persistence.csproj" />

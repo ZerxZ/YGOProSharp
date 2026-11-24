@@ -2,7 +2,9 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using YGOProSharp.Abstractions.Logging;
+using YGOProSharp.AgentBridge;
 using YGOProSharp.Core;
+using YGOProSharp.Core.Cards;
 using YGOProSharp.Persistence;
 using YGOProSharp.Persistence.Entities;
 using YGOProSharp.Protocol.Enums;
@@ -81,17 +83,69 @@ public sealed class RoomActivityState
 /// 解耦连接 <see cref="CoreServer"/> 与 <see cref="OperationalStore"/> 的协调服务：
 /// 负责房间事件订阅、战报与云录像 <c>R#&lt;id&gt;</c> 落库、IP/昵称封禁拦截与 <c>vpass</c> 身份核验。
 /// </summary>
-public sealed class OperationalServerCoordinator
+public sealed class OperationalServerCoordinator : IDisposable
 {
     private readonly ILogger<OperationalServerCoordinator> _logger = AppLog.CreateLogger<OperationalServerCoordinator>();
     private readonly OperationalStore _store;
     private readonly ConcurrentDictionary<string, RoomActivityState> _roomStates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _agentGate = new();
+    private AgentSessionManager? _agentSessionManager;
 
     public event Action<string, object>? OnPublicEventPublished;
 
     public OperationalServerCoordinator(OperationalStore store)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
+    }
+
+    public AgentSessionManager GetOrCreateAgentSessionManager(
+        YGOProSharpServerHost serverHost,
+        Func<INamedCardRepository>? namedCardRepositoryProvider = null)
+    {
+        lock (_agentGate)
+        {
+            if (_agentSessionManager is not null)
+                return _agentSessionManager;
+
+            _agentSessionManager = new AgentSessionManager(
+                () => serverHost.CreateLocalTransport(),
+                () => namedCardRepositoryProvider?.Invoke() ?? EmptyNamedCardRepository.Instance,
+                serverHost.Server.Options.ClientVersion);
+
+            _agentSessionManager.OnThoughtPublished += thought =>
+            {
+                RoomActivityState state = GetOrCreateRoomState(thought.RoomName);
+                state.AddPublicEvent("ai.thought", $"[AI 思考 · {thought.PlayerName}] {thought.Summary}");
+                PublishEvent("ai.thought", new
+                {
+                    roomName = thought.RoomName,
+                    playerName = thought.PlayerName,
+                    turnCount = thought.TurnCount,
+                    phase = thought.Phase,
+                    summary = thought.Summary,
+                    timestampUtc = thought.TimestampUtc
+                });
+            };
+
+            return _agentSessionManager;
+        }
+    }
+
+    public int RevokeMcpTokenSessions(Guid tokenId)
+    {
+        lock (_agentGate)
+        {
+            return _agentSessionManager?.RevokeSessionsByToken(tokenId) ?? 0;
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_agentGate)
+        {
+            _agentSessionManager?.Dispose();
+            _agentSessionManager = null;
+        }
     }
 
     public RoomActivityState GetOrCreateRoomState(string roomName)
@@ -108,6 +162,17 @@ public sealed class OperationalServerCoordinator
     public void RemoveRoomState(string roomName)
     {
         _roomStates.TryRemove(roomName, out _);
+    }
+
+    public int CountOwnedActiveRooms(Guid userId, CoreServer server)
+    {
+        int count = 0;
+        foreach (RoomSnapshot snap in server.GetRooms())
+        {
+            if (_roomStates.TryGetValue(snap.RoomName, out RoomActivityState? state) && state.OwnerUserId == userId)
+                count++;
+        }
+        return count;
     }
 
     /// <summary>
@@ -223,6 +288,7 @@ public sealed class OperationalServerCoordinator
             Game.OnNetworkReady += HandleNetworkReady;
             Game.OnPlayerJoin += HandlePlayerJoin;
             Game.OnPlayerLeave += HandlePlayerLeave;
+            Game.OnPlayerMove += HandlePlayerMove;
             Game.OnPlayerReady += HandlePlayerReady;
             Game.OnPlayerChat += HandlePlayerChat;
             Game.OnGameStart += HandleGameStart;
@@ -262,6 +328,18 @@ public sealed class OperationalServerCoordinator
 
             EnsureState().AddPublicEvent("player.leave", $"{p.Name} 离开了房间。");
             _coordinator.PublishEvent("room.updated", new { roomName = Game.RoomName, reason = "player.leave", player = p.Name });
+        }
+
+        private void HandlePlayerMove(object sender, PlayerMoveEventArgs e)
+        {
+            if (e.Player is not Player p)
+                return;
+
+            string moveDesc = p.Type == (int)PlayerType.Observer
+                ? $"{p.Name} 切换到了观战席。"
+                : $"{p.Name} 坐上了决斗席 #{p.Type}。";
+            EnsureState().AddPublicEvent("player.move", moveDesc);
+            _coordinator.PublishEvent("room.updated", new { roomName = Game.RoomName, reason = "player.move", player = p.Name });
         }
 
         private void HandlePlayerReady(object sender, PlayerEventArgs e)
@@ -441,6 +519,7 @@ public sealed class OperationalServerCoordinator
             Game.OnNetworkReady -= HandleNetworkReady;
             Game.OnPlayerJoin -= HandlePlayerJoin;
             Game.OnPlayerLeave -= HandlePlayerLeave;
+            Game.OnPlayerMove -= HandlePlayerMove;
             Game.OnPlayerReady -= HandlePlayerReady;
             Game.OnPlayerChat -= HandlePlayerChat;
             Game.OnGameStart -= HandleGameStart;
@@ -448,6 +527,233 @@ public sealed class OperationalServerCoordinator
             Game.OnDuelEnd -= HandleDuelEnd;
             Game.OnGameEnd -= HandleGameEnd;
             _coordinator.RemoveRoomState(Game.RoomName);
+        }
+    }
+}
+
+/// <summary>
+/// 建房配置解析、标准主机密码拼接与安全观众快照辅助类（供管理后台与玩家面板共用）。
+/// </summary>
+public static class RoomConfigHelper
+{
+    public static string BuildTemplateRulePrefix(string? template, string? customRulePrefix)
+    {
+        string basePrefix = (template?.Trim().ToLowerInvariant()) switch
+        {
+            "match" => "M,MR5",
+            "tag" or "2v2" => "2V2,MR5",
+            "blind_box" => "RD,MR5,NC",
+            "mirror_box" => "RDM,MR5,NC",
+            "chaos" => "CHAOS,MR5,NC",
+            "chaos60" => "CHAOS60,MR5,NC",
+            "cricket_1v1" => "MR5,TM300,NC",
+            "cricket_1v1_mirror" => "RDM,MR5,TM300,NC",
+            "cricket_2v2" => "2V2,RDM,MR5,TM300,NC",
+            "cricket_2v2_chaos" => "2V2,CHAOS,MR5,TM300,NC",
+            "diy_test" => "DIY,MR5,NC,NF",
+            _ => string.Empty
+        };
+
+        if (string.IsNullOrWhiteSpace(customRulePrefix))
+            return basePrefix;
+        if (string.IsNullOrWhiteSpace(basePrefix))
+            return customRulePrefix.Trim();
+
+        return $"{basePrefix},{customRulePrefix.Trim()}";
+    }
+
+    public static GameOptions ResolveCreateRoomOptions(
+        GameOptions baseGameOptions,
+        RoomPasswordParser parser,
+        string roomName,
+        CreateRoomRequestDto body,
+        out string canonicalFullHostPassword)
+    {
+        string rulePrefix = BuildTemplateRulePrefix(body.Template, body.RulePrefix);
+        GameOptions opts = baseGameOptions;
+
+        if (!string.IsNullOrWhiteSpace(rulePrefix))
+        {
+            string fullSpec = rulePrefix.Contains('#') ? rulePrefix : $"{rulePrefix}#{roomName}";
+            ParsedRoomPassword parsed = parser.Parse(fullSpec);
+            opts = parsed.ApplyTo(opts);
+        }
+
+        RoomRuleOverrides explicitOverrides = new();
+        if (body.Mode.HasValue)
+            explicitOverrides.Mode = Math.Clamp(body.Mode.Value, 0, 2);
+        if (body.Region.HasValue)
+            explicitOverrides.Region = Math.Clamp(body.Region.Value, 0, 5);
+        if (body.MasterRule.HasValue)
+            explicitOverrides.MasterRule = Math.Clamp(body.MasterRule.Value, 1, 5);
+        if (body.NoBanlist == true || body.BanlistIndex is < 0)
+        {
+            explicitOverrides.NoBanlist = true;
+            explicitOverrides.BanlistIndex = -1;
+        }
+        else if (body.BanlistIndex.HasValue)
+        {
+            explicitOverrides.NoBanlist = false;
+            explicitOverrides.BanlistIndex = body.BanlistIndex.Value;
+        }
+
+        if (body.StartLp.HasValue)
+            explicitOverrides.StartLp = Math.Clamp(body.StartLp.Value, 1, 999999);
+        if (body.StartHand.HasValue)
+            explicitOverrides.StartHand = Math.Clamp(body.StartHand.Value, 0, 40);
+        if (body.DrawCount.HasValue)
+            explicitOverrides.DrawCount = Math.Clamp(body.DrawCount.Value, 0, 35);
+        if (body.GameTimer.HasValue)
+            explicitOverrides.GameTimer = Math.Clamp(body.GameTimer.Value, 0, 9999);
+        if (body.NoCheckDeck.HasValue)
+            explicitOverrides.NoCheckDeck = body.NoCheckDeck.Value;
+        if (body.NoShuffleDeck.HasValue)
+            explicitOverrides.NoShuffleDeck = body.NoShuffleDeck.Value;
+        if (body.EnablePriority.HasValue)
+            explicitOverrides.EnablePriority = body.EnablePriority.Value;
+        if (body.SuddenDeath.HasValue)
+            explicitOverrides.SuddenDeath = body.SuddenDeath.Value;
+        if (body.ChaosMainDeckSize.HasValue)
+            explicitOverrides.ChaosMainDeckSize = Math.Clamp(body.ChaosMainDeckSize.Value, 20, 60);
+
+        if (!string.IsNullOrWhiteSpace(body.RandomDeckMode))
+        {
+            string rm = body.RandomDeckMode.Trim();
+            if (string.Equals(rm, "Chaos60", StringComparison.OrdinalIgnoreCase))
+            {
+                explicitOverrides.RandomDeck = RandomDeckMode.ChaosDraft;
+                explicitOverrides.ChaosMainDeckSize = 60;
+            }
+            else if (Enum.TryParse(rm, ignoreCase: true, out RandomDeckMode parsedMode))
+            {
+                explicitOverrides.RandomDeck = parsedMode;
+                if (parsedMode is RandomDeckMode.DiyRandom or RandomDeckMode.DiyChaos && !explicitOverrides.Region.HasValue && opts.Region == 0)
+                    explicitOverrides.Region = 3;
+            }
+        }
+
+        if (explicitOverrides.HasAnyOverride)
+        {
+            opts = explicitOverrides.ApplyTo(opts);
+            canonicalFullHostPassword = BuildCanonicalHostPassword(opts, roomName, baseGameOptions, explicitOverrides);
+        }
+        else
+        {
+            canonicalFullHostPassword = string.IsNullOrWhiteSpace(rulePrefix)
+                ? roomName
+                : (rulePrefix.Contains('#') ? rulePrefix : $"{rulePrefix}#{roomName}");
+        }
+
+        return opts;
+    }
+
+    public static string FormatPublicRuleHostPassword(Game g, GameOptions? baseOptions = null)
+    {
+        List<string> tokens = new();
+        if (g.Mode == 1) tokens.Add("M");
+        else if (g.Mode == 2) tokens.Add("2V2");
+
+        if (g.Region == 1) tokens.Add("TCG");
+        else if (g.Region == 2) tokens.Add("OT");
+        else if (g.Region == 3) tokens.Add("DIY");
+
+        if (g.MasterRule != 5)
+            tokens.Add($"MR{g.MasterRule}");
+
+        switch (g.RandomDeckMode)
+        {
+            case RandomDeckMode.PresetRandom: tokens.Add("RD"); break;
+            case RandomDeckMode.MirrorRandom: tokens.Add("RDM"); break;
+            case RandomDeckMode.ChaosDraft:
+                tokens.Add(g.ChaosMainDeckSize == 60 ? "CHAOS60" : "CHAOS");
+                break;
+            case RandomDeckMode.PureChaos: tokens.Add("PURECHAOS"); break;
+            case RandomDeckMode.DiyRandom: tokens.Add("DIYRD"); break;
+            case RandomDeckMode.DiyChaos: tokens.Add("DIYCHAOS"); break;
+        }
+
+        int defaultLp = g.IsTag ? Game.DEFAULT_TAG_LIFEPOINTS : Game.DEFAULT_LIFEPOINTS;
+        if (g.StartLp != defaultLp)
+            tokens.Add($"LP{g.StartLp}");
+        if (g.StartHand != Game.DEFAULT_START_HAND)
+            tokens.Add($"ST{g.StartHand}");
+        if (g.DrawCount != Game.DEFAULT_DRAW_COUNT)
+            tokens.Add($"DR{g.DrawCount}");
+        if (g.Timer != Game.DEFAULT_TIMER)
+            tokens.Add($"TM{g.Timer}");
+        if (g.NoCheckDeck && (baseOptions is null || !baseOptions.NoCheckDeck))
+            tokens.Add("NC");
+        if (g.NoShuffleDeck && (baseOptions is null || !baseOptions.NoShuffleDeck))
+            tokens.Add("NS");
+        if (g.Banlist is null && BanlistManager.Banlists.Count > 0 && (baseOptions is null || baseOptions.Banlist >= 0))
+            tokens.Add("NF");
+        if (g.IsSuddenDeath && (baseOptions is null || !baseOptions.SuddenDeath))
+            tokens.Add("ED");
+
+        return tokens.Count == 0 ? g.RoomName : $"{string.Join(',', tokens)}#{g.RoomName}";
+    }
+
+    public static string BuildCanonicalHostPassword(
+        GameOptions opts,
+        string roomName,
+        GameOptions? baseOptions = null,
+        RoomRuleOverrides? explicitOverrides = null)
+    {
+        List<string> tokens = new();
+        if (opts.Mode == 1) tokens.Add("M");
+        else if (opts.Mode == 2) tokens.Add("2V2");
+
+        if (opts.Region == 1) tokens.Add("TCG");
+        else if (opts.Region == 2) tokens.Add("OT");
+        else if (opts.Region == 3) tokens.Add("DIY");
+
+        if (opts.MasterRule != 5)
+            tokens.Add($"MR{opts.MasterRule}");
+
+        switch (opts.RandomDeck)
+        {
+            case RandomDeckMode.PresetRandom: tokens.Add("RD"); break;
+            case RandomDeckMode.MirrorRandom: tokens.Add("RDM"); break;
+            case RandomDeckMode.ChaosDraft:
+                tokens.Add(opts.ChaosMainDeckSize == 60 ? "CHAOS60" : "CHAOS");
+                break;
+            case RandomDeckMode.PureChaos: tokens.Add("PURECHAOS"); break;
+            case RandomDeckMode.DiyRandom: tokens.Add("DIYRD"); break;
+            case RandomDeckMode.DiyChaos: tokens.Add("DIYCHAOS"); break;
+        }
+
+        int defaultLp = opts.Mode == 2 ? Game.DEFAULT_TAG_LIFEPOINTS : Game.DEFAULT_LIFEPOINTS;
+        if (opts.StartLp != defaultLp)
+            tokens.Add($"LP{opts.StartLp}");
+        if (opts.StartHand != Game.DEFAULT_START_HAND)
+            tokens.Add($"ST{opts.StartHand}");
+        if (opts.DrawCount != Game.DEFAULT_DRAW_COUNT)
+            tokens.Add($"DR{opts.DrawCount}");
+        if (opts.GameTimer != Game.DEFAULT_TIMER)
+            tokens.Add($"TM{opts.GameTimer}");
+        if (explicitOverrides?.NoCheckDeck == true || (opts.NoCheckDeck && (baseOptions is null || !baseOptions.NoCheckDeck)))
+            tokens.Add("NC");
+        if (explicitOverrides?.NoShuffleDeck == true || (opts.NoShuffleDeck && (baseOptions is null || !baseOptions.NoShuffleDeck)))
+            tokens.Add("NS");
+        if (explicitOverrides?.NoBanlist == true || (opts.Banlist < 0 && BanlistManager.Banlists.Count > 0 && (baseOptions is null || baseOptions.Banlist >= 0)))
+            tokens.Add("NF");
+        else if (explicitOverrides?.BanlistIndex is >= 0 && opts.Banlist >= 0 && (baseOptions is null || opts.Banlist != baseOptions.Banlist))
+            tokens.Add($"LF{opts.Banlist + 1}");
+        if (explicitOverrides?.SuddenDeath == true || (opts.SuddenDeath && (baseOptions is null || !baseOptions.SuddenDeath)))
+            tokens.Add("ED");
+
+        return tokens.Count == 0 ? roomName : $"{string.Join(',', tokens)}#{roomName}";
+    }
+
+    public static Player[] SnapshotObservers(Game g)
+    {
+        try
+        {
+            return g.Observers.Where(static o => o is not null).ToArray();
+        }
+        catch
+        {
+            return [];
         }
     }
 }

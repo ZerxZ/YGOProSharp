@@ -4,6 +4,7 @@ using WindBot.Game.AI;
 using YGOProSharp.Abstractions.Logging;
 using YGOProSharp.Cli;
 using YGOProSharp.Core.Cards;
+using YGOProSharp.Mcp;
 using YGOProSharp.NativeApi;
 using YGOProSharp.Persistence;
 using YGOProSharp.Protocol.Enums;
@@ -39,7 +40,8 @@ try
     string command = args[0].Trim().ToLowerInvariant();
     CliConfiguration configuration = CliConfiguration.Load(args.Skip(1));
     LogLevel logLevel = AppLog.ParseLevel(configuration.GetString("LogLevel"));
-    runtimeLoggerFactory = CreateLoggerFactory(logLevel, sharedLogBuffer);
+    bool isMcpStdio = command == "mcp";
+    runtimeLoggerFactory = CreateLoggerFactory(logLevel, sharedLogBuffer, includeConsole: !isMcpStdio);
     AppLog.Configure(runtimeLoggerFactory);
     logger = AppLog.CreateLogger("YGOProSharp.Cli");
 
@@ -53,6 +55,7 @@ try
     {
         "server" => await RunServerAsync(configuration, sharedLogBuffer, shutdown.Token).ConfigureAwait(false),
         "windbot" => await RunWindBotAsync(configuration, shutdown.Token).ConfigureAwait(false),
+        "mcp" => await RunMcpStdioAsync(configuration, shutdown.Token).ConfigureAwait(false),
         _ => UnknownCommand(command)
     };
 }
@@ -282,7 +285,10 @@ static async Task<int> RunServerAsync(CliConfiguration configuration, LogRingBuf
             configuration,
             windBotSpawner: SpawnBotsIntoRoom,
             availableBotDecksProvider: CollectAvailableBotDeckNames,
-            namedCardRepositoryProvider: GetNamedCardRepository)
+            namedCardRepositoryProvider: GetNamedCardRepository) with
+        {
+            LuaRuntimeProvider = static () => NLuaRuntime.Instance
+        }
         : null;
 
     UserPortalOptions? plannedPortalOptions = enablePortal
@@ -394,6 +400,8 @@ static async Task<int> RunServerAsync(CliConfiguration configuration, LogRingBuf
 
         await serverHost.StopAsync().ConfigureAwait(false);
 
+        coordinator?.Dispose();
+
         if (operationalStore is not null)
             await operationalStore.DisposeAsync().ConfigureAwait(false);
     }
@@ -432,10 +440,29 @@ static async Task<int> RunWindBotAsync(CliConfiguration configuration, Cancellat
     return 0;
 }
 
+static async Task<int> RunMcpStdioAsync(CliConfiguration configuration, CancellationToken cancellationToken)
+{
+    string endpoint = configuration.GetString("Endpoint")
+        ?? configuration.GetString("Url")
+        ?? Environment.GetEnvironmentVariable("YGOPRO_MCP_ENDPOINT")
+        ?? "http://127.0.0.1:7913/mcp";
+    string token = configuration.GetString("Token")
+        ?? configuration.GetString("Key")
+        ?? Environment.GetEnvironmentVariable("YGOPRO_MCP_TOKEN")
+        ?? string.Empty;
+
+    if (!Uri.TryCreate(endpoint, UriKind.Absolute, out Uri? uri))
+        return 2;
+
+    await using Stream input = Console.OpenStandardInput();
+    await using Stream output = Console.OpenStandardOutput();
+    return await McpStdioRelay.RunAsync(uri, token, input, output, cancellationToken: cancellationToken).ConfigureAwait(false);
+}
+
 static int UnknownCommand(string command)
 {
     AppLog.CreateLogger("YGOProSharp.Cli")
-        .LogError("Unknown command '{Command}'. Usage: YGOProSharp.Cli server Key=Value ... | YGOProSharp.Cli windbot Key=Value ...", command);
+        .LogError("Unknown command '{Command}'. Usage: YGOProSharp.Cli server Key=Value ... | YGOProSharp.Cli windbot Key=Value ... | YGOProSharp.Cli mcp Endpoint=http://127.0.0.1:7913/mcp Token=ygp_mcp_...", command);
     return 2;
 }
 
@@ -455,16 +482,19 @@ static void ValidateDistinctPorts(ServerOptions serverOptions, WebControlOptions
         throw new InvalidOperationException($"后台管理面板端口 ({adminPort}) 与前台用户面板端口 ({portalPort}) 必须相互独立，禁止共用同一端口。");
 }
 
-static ILoggerFactory CreateLoggerFactory(LogLevel logLevel, LogRingBuffer logRingBuffer)
+static ILoggerFactory CreateLoggerFactory(LogLevel logLevel, LogRingBuffer logRingBuffer, bool includeConsole = true)
 {
     return LoggerFactory.Create(builder =>
     {
         builder.SetMinimumLevel(logLevel);
         builder.AddProvider(new RingBufferLoggerProvider(logRingBuffer));
-        builder.AddSimpleConsole(options =>
+        if (includeConsole)
         {
-            options.SingleLine = true;
-            options.TimestampFormat = "yyyy-MM-dd HH:mm:ss ";
-        });
+            builder.AddSimpleConsole(options =>
+            {
+                options.SingleLine = true;
+                options.TimestampFormat = "yyyy-MM-dd HH:mm:ss ";
+            });
+        }
     });
 }

@@ -9,8 +9,10 @@
 
     <ItemGroup>
       <ProjectReference Include="..\YGOProSharp.Abstractions\YGOProSharp.Abstractions.csproj" />
+      <ProjectReference Include="..\YGOProSharp.AgentBridge\YGOProSharp.AgentBridge.csproj" />
       <ProjectReference Include="..\YGOProSharp.Cli\YGOProSharp.Cli.csproj" />
       <ProjectReference Include="..\YGOProSharp.Core\YGOProSharp.Core.csproj" />
+      <ProjectReference Include="..\YGOProSharp.Mcp\YGOProSharp.Mcp.csproj" />
       <ProjectReference Include="..\YGOProSharp.NativeApi\YGOProSharp.NativeApi.csproj" />
       <ProjectReference Include="..\YGOProSharp.Persistence\YGOProSharp.Persistence.csproj" />
       <ProjectReference Include="..\YGOProSharp.Protocol\YGOProSharp.Protocol.csproj" />

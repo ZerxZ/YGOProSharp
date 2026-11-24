@@ -458,11 +458,24 @@ public static class CliOptionsFactory
 
         int port = ResolvePortalPort(configuration);
 
+        int? adminPortHint = null;
+        if (ShouldEnableAdminPanel(configuration))
+        {
+            if (configuration.Has("AdminPort"))
+                adminPortHint = configuration.GetInt("AdminPort", 7912);
+            else if (configuration.Has("WebPort"))
+                adminPortHint = configuration.GetInt("WebPort", 7912);
+            else
+                adminPortHint = 7912;
+        }
+
         return new UserPortalOptions
         {
             Host = host,
             Port = port,
             PublicGameHost = configuration.GetString("PublicGameHost") ?? Environment.GetEnvironmentVariable("YGOPRO_PUBLIC_GAME_HOST"),
+            RequireHttpsCookie = configuration.GetBool("RequireHttpsCookie", false),
+            McpPortHint = adminPortHint,
             StaticFilesRoot = configuration.GetString("WebStaticRoot"),
             NamedCardRepositoryProvider = namedCardRepositoryProvider
         };

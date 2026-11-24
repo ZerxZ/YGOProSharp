@@ -19,11 +19,13 @@ import {
   Video,
   Copy,
   Check,
+  Eye,
   EyeOff,
   Lock
 } from 'lucide-react';
 import { ApiError, apiFetch, AuthUser, hasPerm, openAuthenticatedWebSocket, setCsrfToken } from './api';
 import { SurfaceInfo, UserPortalApp } from './PortalView';
+import { BanlistOption, QuickCopyPill, RoomConfigurator } from './RoomConfigurator';
 
 type TabKey = 'dashboard' | 'rooms' | 'studio' | 'mcp' | 'security';
 
@@ -680,15 +682,11 @@ function DashboardView({ user, notify }: { user: AuthUser; notify: (t: string, k
 
 function RoomsView({ user, notify }: { user: AuthUser; notify: (t: string, k?: 'ok' | 'err') => void }) {
   const [rooms, setRooms] = useState<any[]>([]);
+  const [banlists, setBanlists] = useState<BanlistOption[]>([]);
   const [botDecks, setBotDecks] = useState<string[]>([]);
   const [replays, setReplays] = useState<any[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<any>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [newRoomName, setNewRoomName] = useState('');
-  const [template, setTemplate] = useState('standard');
-  const [customRule, setCustomRule] = useState('');
-  const [issueTokens, setIssueTokens] = useState(false);
-  const [createdTokens, setCreatedTokens] = useState<any[]>([]);
   const [roomChatMsg, setRoomChatMsg] = useState('');
   const [selectedBotDeck, setSelectedBotDeck] = useState('random');
 
@@ -696,6 +694,7 @@ function RoomsView({ user, notify }: { user: AuthUser; notify: (t: string, k?: '
     try {
       const res = await apiFetch('/api/v1/rooms');
       setRooms(res.rooms || []);
+      setBanlists(res.banlists || []);
       setBotDecks(res.availableBotDecks || []);
       if (hasPerm(user, 'duel_log:view') || hasPerm(user, 'duel_log:view_own')) {
         const rep = await apiFetch('/api/v1/replays?limit=25');
@@ -723,28 +722,6 @@ function RoomsView({ user, notify }: { user: AuthUser; notify: (t: string, k?: '
     const timer = setInterval(loadRooms, 3000);
     return () => clearInterval(timer);
   }, [loadRooms]);
-
-  const createRoom = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const res = await apiFetch('/api/v1/rooms', {
-        method: 'POST',
-        body: JSON.stringify({
-          roomName: newRoomName,
-          template,
-          rulePrefix: customRule,
-          issuePlayerTokens: issueTokens
-        })
-      });
-      setCreatedTokens(res.issuedPlayerTokens || []);
-      setNewRoomName('');
-      notify(`房间 ${res.room.roomName} 创建成功`);
-      loadRooms();
-      if (!res.issuedPlayerTokens?.length) setCreateOpen(false);
-    } catch (err) {
-      notify(err instanceof Error ? err.message : '建房失败', 'err');
-    }
-  };
 
   const spawnBot = async (roomName: string, fillAll: boolean) => {
     try {
@@ -803,6 +780,20 @@ function RoomsView({ user, notify }: { user: AuthUser; notify: (t: string, k?: '
     }
   };
 
+  const kickByName = async (roomName: string, playerName: string) => {
+    try {
+      await apiFetch(`/api/v1/rooms/${encodeURIComponent(roomName)}/kick`, {
+        method: 'POST',
+        body: JSON.stringify({ playerName })
+      });
+      notify(`已将 ${playerName} 请出房间`);
+      loadRoomDetail(roomName);
+      loadRooms();
+    } catch (err) {
+      notify(err instanceof Error ? err.message : '踢人失败', 'err');
+    }
+  };
+
   const closeRoom = async (roomName: string) => {
     try {
       await apiFetch(`/api/v1/rooms/${encodeURIComponent(roomName)}`, { method: 'DELETE' });
@@ -829,137 +820,108 @@ function RoomsView({ user, notify }: { user: AuthUser; notify: (t: string, k?: '
           </button>
           {(hasPerm(user, 'room:create') || hasPerm(user, 'room:create_own')) && (
             <button
-              onClick={() => {
-                setCreatedTokens([]);
-                setCreateOpen(true);
-              }}
+              onClick={() => setCreateOpen((v) => !v)}
               className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold flex items-center gap-1 cursor-pointer"
             >
-              <Plus className="w-4 h-4" /> 新建房间 / 斗蛐蛐房
+              <Plus className="w-4 h-4" /> {createOpen ? '收起建房面板' : '新建房间 / 选择规则配置'}
             </button>
           )}
         </div>
       </div>
 
       {createOpen && (
-        <div className="bg-slate-900 border border-indigo-500/40 rounded-xl p-4 space-y-4">
-          <form onSubmit={createRoom} className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
-            <div>
-              <label className="block text-xs text-slate-400 mb-1">房间名称（留空自动生成）</label>
-              <input
-                value={newRoomName}
-                onChange={(e) => setNewRoomName(e.target.value)}
-                placeholder="如 Cricket01"
-                className="w-full px-3 py-1.5 rounded bg-slate-950 border border-slate-700 text-xs"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-slate-400 mb-1">房间模板</label>
-              <select
-                value={template}
-                onChange={(e) => setTemplate(e.target.value)}
-                className="w-full px-3 py-1.5 rounded bg-slate-950 border border-slate-700 text-xs"
-              >
-                <option value="standard">常规构筑房 (1v1)</option>
-                <option value="blind_box">随机盲盒娱乐房 (RD#)</option>
-                <option value="mirror_box">镜像同卡组内战 (RDM#)</option>
-                <option value="chaos">全卡池混沌大乱斗 (CHAOS#)</option>
-                <option value="cricket_1v1_mirror">1v1 AI 镜像斗蛐蛐 (300s)</option>
-                <option value="cricket_2v2">2v2 战队镜像斗蛐蛐 (Tag 16000LP)</option>
-                <option value="diy_test">DIY 新卡测试房 (DIY,NC,NF)</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs text-slate-400 mb-1">附加房号规则（可选，如 LP12000,ED）</label>
-              <input
-                value={customRule}
-                onChange={(e) => setCustomRule(e.target.value)}
-                placeholder="LP12000"
-                className="w-full px-3 py-1.5 rounded bg-slate-950 border border-slate-700 text-xs"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
-                <input type="checkbox" checked={issueTokens} onChange={(e) => setIssueTokens(e.target.checked)} />
-                签发斗蛐蛐 Token
-              </label>
-              <button className="px-4 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold cursor-pointer">创建</button>
-              <button type="button" onClick={() => setCreateOpen(false)} className="px-2.5 py-1.5 rounded bg-slate-800 text-xs cursor-pointer">
-                关闭
-              </button>
-            </div>
-          </form>
-
-          {createdTokens.length > 0 && (
-            <div className="p-3 rounded-lg bg-emerald-950/60 border border-emerald-500/40 space-y-2">
-              <div className="text-xs font-semibold text-emerald-300">已自动签发房间专属外部 AI Player Token（仅显示一次，请复制给对应 AI 客户端）：</div>
-              {createdTokens.map((t) => (
-                <div key={t.name} className="flex items-center justify-between text-xs font-mono bg-slate-950 p-2 rounded">
-                  <span>{t.name}: {t.rawToken}</span>
-                  <CopyButton text={t.rawToken} />
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <RoomConfigurator
+          apiEndpoint="/api/v1/rooms"
+          theme="indigo"
+          canCreateOnServer={hasPerm(user, 'room:create') || hasPerm(user, 'room:create_own')}
+          canIssueAiTokens={user.allowedMcpRolesToIssue.includes('player')}
+          banlists={banlists}
+          onCreated={(res) => {
+            loadRooms();
+            if (res?.room?.roomName) loadRoomDetail(res.room.roomName);
+          }}
+          onClose={() => setCreateOpen(false)}
+          notify={notify}
+        />
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-3">
           {rooms.length === 0 && (
             <div className="col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-8 text-center text-xs text-slate-400">
-              当前暂无活动房间，可点击右上角「新建房间」或从游戏客户端直接输入房号密码连入。
+              当前暂无活动房间，可点击右上角「新建房间 / 选择规则配置」或从游戏客户端直接输入房号密码连入。
             </div>
           )}
-          {rooms.map((r) => (
-            <div
-              key={r.roomName}
-              onClick={() => loadRoomDetail(r.roomName)}
-              className={`bg-slate-900 border rounded-xl p-4 space-y-3 cursor-pointer transition ${
-                selectedRoom?.summary?.roomName === r.roomName ? 'border-indigo-500' : 'border-slate-800 hover:border-slate-700'
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-sm">{r.roomName}</span>
-                <div className="flex items-center gap-1.5">
-                  <span className="px-2 py-0.5 rounded text-[11px] bg-indigo-500/20 text-indigo-300">
-                    {r.mode === 2 ? '2v2 Tag' : r.mode === 1 ? 'Match' : 'Single'}
-                  </span>
-                  {r.randomDeckMode !== 'None' && (
-                    <span className="px-2 py-0.5 rounded text-[11px] bg-purple-500/20 text-purple-300">{r.randomDeckMode}</span>
-                  )}
-                  {r.isSuddenDeath && <span className="px-2 py-0.5 rounded text-[11px] bg-rose-500/20 text-rose-300">ED</span>}
-                  <span className="px-2 py-0.5 rounded text-[11px] bg-slate-800 text-slate-300">{r.state}</span>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 text-xs bg-slate-950 p-2.5 rounded-lg">
-                <div>
-                  <div className="text-slate-400">A 队 LP</div>
-                  <div className="font-mono font-bold text-emerald-400">{r.team0Lp}</div>
-                </div>
-                <div>
-                  <div className="text-slate-400">B 队 LP · T{r.turnCount}</div>
-                  <div className="font-mono font-bold text-sky-400">{r.team1Lp}</div>
-                </div>
-              </div>
-
-              <div className="space-y-1 text-xs">
-                {r.slots.map((s: any) => (
-                  <div key={s.seatIndex} className="flex items-center justify-between text-slate-300">
-                    <span>
-                      #{s.seatIndex} {s.playerName || '<空位>'}{' '}
-                      {s.isHost && <span className="text-amber-400">[房主]</span>}
+          {rooms.map((r) => {
+            const observers: any[] = r.observers || [];
+            const copyPw = r.hostPassword || r.joinPassword;
+            return (
+              <div
+                key={r.roomName}
+                onClick={() => loadRoomDetail(r.roomName)}
+                className={`bg-slate-900 border rounded-xl p-4 space-y-3 cursor-pointer transition ${
+                  selectedRoom?.summary?.roomName === r.roomName ? 'border-indigo-500' : 'border-slate-800 hover:border-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-sm truncate">{r.roomName}</span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="px-2 py-0.5 rounded text-[11px] bg-indigo-500/20 text-indigo-300">
+                      {r.mode === 2 ? '2v2 Tag' : r.mode === 1 ? 'Match' : 'Single'}
                     </span>
-                    <span className="text-[11px] text-slate-400">
-                      {s.clientIp ? `${s.clientIp} · ` : ''}
-                      {s.playerName ? (s.isReady ? '已准备' : s.seatOrigin) : ''}
-                    </span>
+                    {r.randomDeckMode !== 'None' && (
+                      <span className="px-2 py-0.5 rounded text-[11px] bg-purple-500/20 text-purple-300">{r.randomDeckMode}</span>
+                    )}
+                    {r.isSuddenDeath && <span className="px-2 py-0.5 rounded text-[11px] bg-rose-500/20 text-rose-300">ED</span>}
+                    <span className="px-2 py-0.5 rounded text-[11px] bg-slate-800 text-slate-300">{r.state}</span>
                   </div>
-                ))}
+                </div>
+
+                {!user.isStreamerOnly && copyPw && (
+                  <div className="flex items-center justify-between bg-slate-950 px-2.5 py-1.5 rounded border border-slate-800/80 text-xs">
+                    <span className="text-slate-400 truncate">
+                      主机密码: <code className="font-mono text-indigo-300 font-semibold">{copyPw}</code>
+                    </span>
+                    <QuickCopyPill text={copyPw} label="复制主机密码" onCopied={() => notify(`已复制主机密码：${copyPw}`)} />
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-2 text-xs bg-slate-950 p-2.5 rounded-lg">
+                  <div>
+                    <div className="text-slate-400">A 队 LP</div>
+                    <div className="font-mono font-bold text-emerald-400">{r.team0Lp}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">B 队 LP · T{r.turnCount}</div>
+                    <div className="font-mono font-bold text-sky-400">{r.team1Lp}</div>
+                  </div>
+                </div>
+
+                <div className="space-y-1 text-xs">
+                  {r.slots.map((s: any) => (
+                    <div key={s.seatIndex} className="flex items-center justify-between text-slate-300">
+                      <span>
+                        #{s.seatIndex} {s.playerName || '<空位>'}{' '}
+                        {s.isHost && <span className="text-amber-400">[房主]</span>}
+                      </span>
+                      <span className="text-[11px] text-slate-400">
+                        {s.clientIp ? `${s.clientIp} · ` : ''}
+                        {s.playerName ? (s.isReady ? '已准备' : s.seatOrigin) : ''}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="pt-2 border-t border-slate-800/80 flex items-center gap-1 text-[11px] text-slate-400 truncate">
+                  <Eye className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                  <span>观众 ({r.observerCount ?? observers.length})：</span>
+                  <span className="text-slate-300 truncate">
+                    {observers.length > 0 ? observers.map((o: any) => o.playerName).join('、') : '暂无观众'}
+                  </span>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-4">
@@ -981,6 +943,34 @@ function RoomsView({ user, notify }: { user: AuthUser; notify: (t: string, k?: '
                   </button>
                 )}
               </div>
+
+              {!user.isStreamerOnly && selectedRoom.summary.hostPassword && (
+                <div className="bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <span className="text-slate-400">
+                      主机密码: <code className="font-mono text-white">{selectedRoom.summary.hostPassword}</code>
+                    </span>
+                    <QuickCopyPill
+                      text={selectedRoom.summary.hostPassword}
+                      label="复制主机密码"
+                      onCopied={() => notify(`已复制主机密码：${selectedRoom.summary.hostPassword}`)}
+                    />
+                  </div>
+                  {selectedRoom.summary.fullHostPassword &&
+                    selectedRoom.summary.fullHostPassword !== selectedRoom.summary.hostPassword && (
+                      <div className="flex items-center justify-between gap-2 flex-wrap pt-1 border-t border-slate-800/70">
+                        <span className="text-slate-400 truncate">
+                          完整口令: <code className="font-mono text-indigo-300">{selectedRoom.summary.fullHostPassword}</code>
+                        </span>
+                        <QuickCopyPill
+                          text={selectedRoom.summary.fullHostPassword}
+                          label="复制规则串"
+                          onCopied={() => notify(`已复制规则口令：${selectedRoom.summary.fullHostPassword}`)}
+                        />
+                      </div>
+                    )}
+                </div>
+              )}
 
               {hasPerm(user, 'bot:spawn') && selectedRoom.summary.state === 'Lobby' && (
                 <div className="space-y-2 bg-slate-950 p-3 rounded-lg border border-slate-800">
@@ -1045,6 +1035,33 @@ function RoomsView({ user, notify }: { user: AuthUser; notify: (t: string, k?: '
                     )}
                   </div>
                 ))}
+              </div>
+
+              <div className="space-y-1">
+                <div className="text-xs font-semibold text-sky-300 flex items-center gap-1">
+                  <Eye className="w-3.5 h-3.5" /> 观战观众列表 ({(selectedRoom.summary.observers || []).length} 人)
+                </div>
+                {(selectedRoom.summary.observers || []).length > 0 ? (
+                  <div className="space-y-1 max-h-28 overflow-y-auto">
+                    {(selectedRoom.summary.observers || []).map((obs: any, idx: number) => (
+                      <div key={`${obs.playerName}-${idx}`} className="flex items-center justify-between text-xs bg-slate-950 px-2.5 py-1.5 rounded">
+                        <span>
+                          {obs.playerName} {obs.clientIp ? `(${obs.clientIp})` : ''}
+                        </span>
+                        {hasPerm(user, 'room:kick') && (
+                          <button
+                            onClick={() => kickByName(selectedRoom.summary.roomName, obs.playerName)}
+                            className="text-rose-400 hover:underline cursor-pointer"
+                          >
+                            踢出观众
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-slate-500 bg-slate-950 px-2.5 py-2 rounded">当前暂无观战观众</div>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -2191,15 +2208,13 @@ function McpHubView({ user, notify }: { user: AuthUser; notify: (t: string, k?: 
   };
 
   const mcpUrl = `${window.location.origin}/mcp`;
+  const directMcpUrl = `${mcpUrl}?key=${newlyIssuedRaw ? encodeURIComponent(newlyIssuedRaw) : '<粘贴你签发的_ygp_mcp_Token>'}`;
   const sampleConfig = JSON.stringify(
     {
       mcpServers: {
         ygoprosharp: {
-          type: 'http',
-          url: mcpUrl,
-          headers: {
-            Authorization: `Bearer ${newlyIssuedRaw || '<粘贴你签发的_ygp_mcp_Token>'}`
-          }
+          type: 'streamable-http',
+          url: directMcpUrl
         }
       }
     },
@@ -2250,9 +2265,15 @@ function McpHubView({ user, notify }: { user: AuthUser; notify: (t: string, k?: 
         </form>
 
         {newlyIssuedRaw && (
-          <div className="p-3 rounded-lg bg-emerald-950/70 border border-emerald-500/40 flex items-center justify-between text-xs font-mono">
-            <span className="break-all">新签发明文 Token（仅展示一次）：{newlyIssuedRaw}</span>
-            <CopyButton text={newlyIssuedRaw} />
+          <div className="p-3 rounded-lg bg-emerald-950/70 border border-emerald-500/40 space-y-1.5 text-xs font-mono">
+            <div className="flex items-center justify-between gap-2">
+              <span className="break-all text-emerald-200">streamable-http 直连 URL：{directMcpUrl}</span>
+              <CopyButton text={directMcpUrl} />
+            </div>
+            <div className="flex items-center justify-between gap-2 text-slate-300">
+              <span className="break-all">纯明文 Token（仅展示一次）：{newlyIssuedRaw}</span>
+              <CopyButton text={newlyIssuedRaw} />
+            </div>
           </div>
         )}
       </div>

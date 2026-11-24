@@ -23,6 +23,18 @@ public sealed record UserPortalOptions
     public string? PublicGameHost { get; init; }
 
     /// <summary>
+    /// 玩家面板专属会话 Cookie 名称（与管理后台 <c>ygp_sid</c> 独立，避免同域名双开互相覆盖）。
+    /// </summary>
+    public string SessionCookieName { get; init; } = "ygp_portal_sid";
+
+    public bool RequireHttpsCookie { get; init; }
+
+    /// <summary>
+    /// 可选：管理面/MCP 端口提示，用于玩家面板生成外部 AI MCP 接入示例 URL。
+    /// </summary>
+    public int? McpPortHint { get; init; }
+
+    /// <summary>
     /// 前端静态构建产物目录（为空时自动探测 <c>wwwroot</c>）。
     /// </summary>
     public string? StaticFilesRoot { get; init; }

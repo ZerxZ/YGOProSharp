@@ -263,6 +263,114 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
         return new LoginResult(true, "ok", "登录成功。", rawToken, csrfToken, expiresAt, null, null, principal);
     }
 
+    /// <summary>
+    /// 面向前台玩家面板的自助账号注册（固定分配 <c>ai_operator</c> 玩家角色，禁止越权，注册后自动创建登录会话）。
+    /// </summary>
+    public async Task<LoginResult> RegisterPlayerAccountAsync(
+        string username,
+        string password,
+        string? displayName,
+        string? ip,
+        string? userAgent,
+        CancellationToken cancellationToken = default)
+    {
+        string normalizedIp = string.IsNullOrWhiteSpace(ip) ? "unknown" : ip.Trim();
+        RateLimitDecision rl = await _cache.CheckSlidingWindowAsync(
+            $"register:{normalizedIp}",
+            limit: 8,
+            window: TimeSpan.FromMinutes(10),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        if (!rl.Allowed)
+        {
+            await AppendAuditAsync("anonymous", null, username ?? "unknown", "auth.register", null, username, ip, "rate_limited",
+                $"{{\"retryAfterSeconds\":{rl.RetryAfterSeconds}}}", cancellationToken).ConfigureAwait(false);
+            return new LoginResult(false, "rate_limited", $"注册请求过于频繁，请在 {rl.RetryAfterSeconds} 秒后重试。", null, null, null, 0, rl.RetryAfterSeconds, null);
+        }
+
+        string trimmedUsername = username?.Trim() ?? string.Empty;
+        if (trimmedUsername.Length < 2 || trimmedUsername.Length > 32)
+            return new LoginResult(false, "invalid_username", "用户名长度需在 2 到 32 个字符之间。", null, null, null, null, null, null);
+
+        if (trimmedUsername.Any(static c => char.IsControl(c) || char.IsWhiteSpace(c) || c is '$' or '#' or ':' or '/' or '\\'))
+            return new LoginResult(false, "invalid_username", "用户名不能包含空格或 $ # / \\ : 等特殊分隔符。", null, null, null, null, null, null);
+
+        (bool pwValid, string? pwError) = Argon2PasswordHasher.ValidatePasswordStrength(password, trimmedUsername);
+        if (!pwValid)
+            return new LoginResult(false, "weak_password", pwError ?? $"密码长度至少需要 {Argon2PasswordHasher.MinPasswordLength} 位字符。", null, null, null, null, null, null);
+
+        string normalizedUser = trimmedUsername.ToLowerInvariant();
+        await using OperationalDbContext db = _dbManager.CreateDbContext();
+
+        if (await db.PanelUsers.AnyAsync(u => u.NormalizedUsername == normalizedUser, cancellationToken).ConfigureAwait(false))
+            return new LoginResult(false, "username_taken", $"用户名 '{trimmedUsername}' 已被注册，请换一个名称。", null, null, null, null, null, null);
+
+        PanelRoleEntity? operatorRole = await db.PanelRoles
+            .FirstOrDefaultAsync(r => r.Code == BuiltInRoleCodes.AiOperator, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (operatorRole is null)
+            return new LoginResult(false, "role_missing", "系统尚未完成角色初始化，请稍后再试。", null, null, null, null, null, null);
+
+        DateTime now = DateTime.UtcNow;
+        PanelUserEntity created = new()
+        {
+            Username = trimmedUsername,
+            NormalizedUsername = normalizedUser,
+            DisplayName = string.IsNullOrWhiteSpace(displayName) ? trimmedUsername : displayName.Trim(),
+            PasswordHash = _passwordHasher.HashPassword(password),
+            Enabled = true,
+            MustChangePassword = false,
+            LastLoginAt = now,
+            LastLoginIp = ip
+        };
+        db.PanelUsers.Add(created);
+
+        PanelUserRoleEntity userRole = new()
+        {
+            UserId = created.Id,
+            User = created,
+            RoleId = operatorRole.Id,
+            Role = operatorRole
+        };
+        created.UserRoles.Add(userRole);
+        db.PanelUserRoles.Add(userRole);
+
+        (string rawToken, string prefix, string tokenSha256) = TokenCrypto.GeneratePrefixedToken("ygp_sess");
+        string csrfToken = TokenCrypto.GenerateNonce(24);
+        DateTime expiresAt = now.AddHours(Math.Max(1, _options.SessionTtlHours));
+
+        PanelSessionEntity session = new()
+        {
+            UserId = created.Id,
+            TokenPrefix = prefix,
+            TokenSha256 = tokenSha256,
+            CsrfToken = csrfToken,
+            Ip = ip,
+            UserAgent = userAgent is { Length: > 500 } ? userAgent[..500] : userAgent,
+            ExpiresAt = expiresAt,
+            LastSeenAt = now
+        };
+        db.PanelSessions.Add(session);
+
+        db.AuditLogs.Add(new AuditLogEntity
+        {
+            ActorType = "panel_user",
+            ActorId = created.Id.ToString(),
+            ActorName = created.Username,
+            Action = "auth.register",
+            Target = created.Username,
+            Ip = ip,
+            Result = "ok",
+            DetailJson = "{\"role\":\"ai_operator\"}"
+        });
+
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        AuthenticatedPrincipal principal = BuildPrincipal(session, created);
+        return new LoginResult(true, "ok", $"账号 '{created.Username}' 注册成功，已自动登录！", rawToken, csrfToken, expiresAt, null, null, principal);
+    }
+
     public async Task<AuthenticatedPrincipal?> ValidateSessionAsync(
         string? rawSessionToken,
         CancellationToken cancellationToken = default)
@@ -1029,6 +1137,17 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
         };
 
         await using OperationalDbContext db = _dbManager.CreateDbContext();
+
+        if (!actor.HasPermission(RbacPermissions.McpTokenManageAll) && !actor.HasPermission(RbacPermissions.UserManage))
+        {
+            DateTime now = DateTime.UtcNow;
+            int activeCount = await db.McpTokens
+                .CountAsync(t => t.OwnerUserId == actor.UserId && t.RevokedAt == null && (t.ExpiresAt == null || t.ExpiresAt > now), cancellationToken)
+                .ConfigureAwait(false);
+            if (activeCount >= 20)
+                return (false, "个人活跃 AI Token 数量已达上限（最多 20 个），请先吊销不再使用的旧 Token。", null);
+        }
+
         db.McpTokens.Add(entity);
         db.AuditLogs.Add(new AuditLogEntity
         {

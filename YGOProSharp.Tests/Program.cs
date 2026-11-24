@@ -17,7 +17,9 @@ using YGOProSharp.Abstractions.Scripting;
 using YGOProSharp.Core;
 using YGOProSharp.Core.Cards;
 using YGOProSharp.Abstractions.Logging;
+using YGOProSharp.AgentBridge;
 using YGOProSharp.Cli;
+using YGOProSharp.Mcp;
 using YGOProSharp.Persistence;
 using YGOProSharp.Persistence.Caching;
 using YGOProSharp.Persistence.Entities;
@@ -133,6 +135,8 @@ await RunAsync("Web control host enforces auth, mandatory password change, CSRF,
 Run("Core DIY card editor, strings.conf parser, multi-package conflict analyzer, and .ypk export work", CoreDiyCardEditorConflictAnalyzerStringsConfAndYpkExportWork);
 await RunAsync("Web DIY Studio sandbox, proposal approval hot-reload, .ypk export, and DIYRD live duel work end-to-end", WebDiyStudioSandboxProposalsHotReloadAndDiyDuelEndToEndAsync);
 await RunAsync("Empty catalog startup and three-port isolation between game server, admin panel, and user portal work", EmptyCatalogStartupAndThreePortAdminPortalIsolationWorkAsync);
+Run("NLua sandbox blocks dangerous globals, aborts infinite loops, and supports WindBot thought/dual-brain hooks", NLuaSandboxBlocksDangerousGlobalsInfiniteLoopsAndSupportsDualBrainHooks);
+await RunAsync("MCP Streamable HTTP (?key= & Bearer), stdio relay, session isolation, and AI duel fog-of-war work end-to-end", McpStreamableHttpQueryKeyStdioAndAgentDuelFogOfWarWorkEndToEndAsync);
 
 static void AppLogParsesLogLevels()
 {
@@ -4891,6 +4895,12 @@ static void ProjectBoundariesIsolatePersistenceWebAndForbidLlmSdks()
         ["YGOProSharp.Protocol", "YGOProSharp.Server", "YGOProSharp.NativeApi", "YGOProSharp.WindBot", "YGOProSharp.Web"],
         "Persistence upward dependency isolation");
 
+    string agentBridgeDir = Path.Combine(root, "YGOProSharp.AgentBridge");
+    AssertDoesNotContainAny(
+        ProjectText(agentBridgeDir),
+        ["YGOProSharp.Server", "YGOProSharp.NativeApi", "YGOProSharp.Persistence", "YGOProSharp.Web", "YGOProSharp.Mcp"],
+        "AgentBridge pure protocol isolation");
+
     string[] forbiddenLlmSdkTokens =
     [
         "PackageReference Include=\"OpenAI",
@@ -6026,7 +6036,7 @@ static async Task EmptyCatalogStartupAndThreePortAdminPortalIsolationWorkAsync()
                 AssertEqual((int)HttpStatusCode.NotFound, (int)res.StatusCode);
             }
 
-            // 4. 模拟玩家进房，验证前台用户面板公开大厅剥离玩家 IP 与私密密码
+            // 4. 模拟决斗者与观战者进房，验证观众列表 (observers)、快速主机密码与前台用户面板剥离玩家 IP
             YGOClient p0 = serverHost.ConnectLocalClient();
             SendPlayerJoin(p0, "PublicDuelist", "M#OpenTable1");
             DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
@@ -6038,14 +6048,130 @@ static async Task EmptyCatalogStartupAndThreePortAdminPortalIsolationWorkAsync()
                 await Task.Delay(10);
             }
 
+            YGOClient spectatorClient = serverHost.ConnectLocalClient();
+            SendPlayerJoin(spectatorClient, "WatcherOne", "OpenTable1");
+            DateTime specJoinDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+            while (DateTime.UtcNow < specJoinDeadline)
+            {
+                spectatorClient.Update();
+                if (serverHost.Server.TryGetRoom("OpenTable1", out Game? g) && g is not null && g.CreateSnapshot().DuelistCount == 2)
+                    break;
+                await Task.Delay(10);
+            }
+            spectatorClient.Send(CtosMessage.HsToObserver);
+            DateTime specMoveDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+            while (DateTime.UtcNow < specMoveDeadline)
+            {
+                spectatorClient.Update();
+                if (serverHost.Server.TryGetRoom("OpenTable1", out Game? g) && g is not null && g.CreateSnapshot().ObserverCount == 1)
+                    break;
+                await Task.Delay(10);
+            }
+            await store.Cache.FlushNamespaceAsync("portal");
+
             using (HttpResponseMessage portalRoomsRes = await portalHttp.GetAsync("/api/portal/rooms"))
             {
                 AssertEqual((int)HttpStatusCode.OK, (int)portalRoomsRes.StatusCode);
                 using JsonDocument doc = JsonDocument.Parse(await portalRoomsRes.Content.ReadAsStringAsync());
                 JsonElement room = doc.RootElement.GetProperty("rooms")[0];
                 AssertEqual("OpenTable1", room.GetProperty("roomName").GetString()!);
+                AssertEqual("OpenTable1", room.GetProperty("hostPassword").GetString()!);
+                AssertEqual("M#OpenTable1", room.GetProperty("fullHostPassword").GetString()!);
                 AssertFalse(room.TryGetProperty("joinPassword", out _));
                 AssertFalse(room.GetProperty("slots")[0].TryGetProperty("clientIp", out _));
+
+                JsonElement observers = room.GetProperty("observers");
+                AssertEqual(1, observers.GetArrayLength());
+                AssertEqual("WatcherOne", observers[0].GetProperty("playerName").GetString()!);
+                AssertFalse(observers[0].TryGetProperty("clientIp", out _));
+            }
+
+            // 4.5 验证前台玩家自助注册账号、选择完整房间配置建房并生成 AI Token、独立签发/吊销个人 AI Token 及越权拦截
+            CookieContainer playerCookies = new();
+            using HttpClient playerHttp = new(new HttpClientHandler { CookieContainer = playerCookies, UseCookies = true })
+            {
+                BaseAddress = portalUri
+            };
+
+            using (HttpResponseMessage regRes = await playerHttp.PostAsync(
+                       "/api/portal/auth/register",
+                       new StringContent(JsonSerializer.Serialize(new { username = "judai", password = "123456" }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)regRes.StatusCode);
+                using JsonDocument regDoc = JsonDocument.Parse(await regRes.Content.ReadAsStringAsync());
+                AssertEqual("judai", regDoc.RootElement.GetProperty("user").GetProperty("username").GetString()!);
+                playerHttp.DefaultRequestHeaders.Add("X-CSRF-Token", regDoc.RootElement.GetProperty("csrfToken").GetString()!);
+            }
+
+            using (HttpResponseMessage createPortalRoomRes = await playerHttp.PostAsync(
+                       "/api/portal/rooms",
+                       new StringContent(JsonSerializer.Serialize(new
+                       {
+                           roomName = "HeroTag01",
+                           mode = 2,
+                           region = 3,
+                           masterRule = 5,
+                           randomDeckMode = "MirrorRandom",
+                           startLp = 12000,
+                           gameTimer = 300,
+                           noCheckDeck = true,
+                           suddenDeath = true,
+                           issuePlayerTokens = true,
+                           aiTokenCount = 3
+                       }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)createPortalRoomRes.StatusCode);
+                using JsonDocument cDoc = JsonDocument.Parse(await createPortalRoomRes.Content.ReadAsStringAsync());
+                AssertEqual("HeroTag01", cDoc.RootElement.GetProperty("hostPassword").GetString()!);
+                AssertEqual("2V2,DIY,RDM,LP12000,TM300,NC,ED#HeroTag01", cDoc.RootElement.GetProperty("fullHostPassword").GetString()!);
+                AssertEqual(3, cDoc.RootElement.GetProperty("issuedPlayerTokens").GetArrayLength());
+            }
+
+            AssertTrue(serverHost.Server.TryGetRoom("HeroTag01", out Game? heroRoom) && heroRoom is not null);
+            AssertTrue(heroRoom!.IsTag);
+            AssertEqual(3, heroRoom.Region);
+            AssertEqual(12000, heroRoom.StartLp);
+            AssertEqual(300, heroRoom.Timer);
+            AssertTrue(heroRoom.IsSuddenDeath);
+
+            // 普通玩家禁止在前台签发 diy_creator / admin 令牌，允许签发 spectator / player 令牌并吊销
+            using (HttpResponseMessage forbiddenMcpRes = await playerHttp.PostAsync(
+                       "/api/portal/mcp/tokens",
+                       new StringContent(JsonSerializer.Serialize(new { name = "EscalateAttempt", mcpRole = "admin" }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.Forbidden, (int)forbiddenMcpRes.StatusCode);
+            }
+
+            string specTokenId;
+            using (HttpResponseMessage issueSpecRes = await playerHttp.PostAsync(
+                       "/api/portal/mcp/tokens",
+                       new StringContent(JsonSerializer.Serialize(new { name = "MyCasterAI", mcpRole = "spectator", allowedRooms = new[] { "HeroTag01" } }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)issueSpecRes.StatusCode);
+                using JsonDocument iDoc = JsonDocument.Parse(await issueSpecRes.Content.ReadAsStringAsync());
+                specTokenId = iDoc.RootElement.GetProperty("token").GetProperty("id").GetString()!;
+            }
+
+            using (HttpResponseMessage listTokensRes = await playerHttp.GetAsync("/api/portal/mcp/tokens"))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)listTokensRes.StatusCode);
+                using JsonDocument ltDoc = JsonDocument.Parse(await listTokensRes.Content.ReadAsStringAsync());
+                AssertEqual(4, ltDoc.RootElement.GetProperty("tokens").GetArrayLength());
+            }
+
+            using (HttpResponseMessage revokeRes = await playerHttp.DeleteAsync($"/api/portal/mcp/tokens/{specTokenId}"))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)revokeRes.StatusCode);
+            }
+
+            // 禁止关闭他人房间，允许关闭本人创建的房间
+            using (HttpResponseMessage closeOthersRes = await playerHttp.DeleteAsync("/api/portal/rooms/OpenTable1"))
+            {
+                AssertEqual((int)HttpStatusCode.Forbidden, (int)closeOthersRes.StatusCode);
+            }
+            using (HttpResponseMessage closeOwnRes = await playerHttp.DeleteAsync("/api/portal/rooms/HeroTag01"))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)closeOwnRes.StatusCode);
             }
 
             // 5. 验证玩家在前台用户面板自助绑定 $vpass、提交赛事 .ydk 卡组及投递 DIY 新卡提案，并在管理后台收到待审提案
@@ -6099,6 +6225,7 @@ static async Task EmptyCatalogStartupAndThreePortAdminPortalIsolationWorkAsync()
             }
 
             p0.Close();
+            spectatorClient.Close();
             await serverHost.StopAsync();
         }
     }
@@ -6106,6 +6233,394 @@ static async Task EmptyCatalogStartupAndThreePortAdminPortalIsolationWorkAsync()
     {
         Directory.Delete(emptyRoot, recursive: true);
     }
+}
+
+static void NLuaSandboxBlocksDangerousGlobalsInfiniteLoopsAndSupportsDualBrainHooks()
+{
+    NLuaRuntime tightRuntime = new(maxInstructionBatches: 10, maxCallDurationMs: 250);
+    using (ILuaScriptContext ctx = tightRuntime.CreateContext("sandbox_check"))
+    {
+        object? checkRes = ctx.DoString(
+            "return (os == nil) and (io == nil) and (package == nil) and (debug == nil) and (dofile == nil) and (loadfile == nil) and (require == nil) and (luanet == nil)",
+            "check_globals.lua");
+        AssertTrue(checkRes is true);
+
+        bool loopAborted = false;
+        try
+        {
+            ctx.DoString("while true do end", "infinite_loop.lua");
+        }
+        catch (Exception ex) when (ex is TimeoutException || ex.InnerException is TimeoutException || ex.Message.Contains("沙箱上限", StringComparison.Ordinal))
+        {
+            loopAborted = true;
+        }
+        AssertTrue(loopAborted);
+    }
+
+    WindBot.Game.Duel duel = new();
+    WindBot.Game.GameClient client = new(new WindBot.WindBotInfo { Name = "DualBrainBot" }, EmptyNamedCardRepository.Instance);
+    WindBot.Game.GameAI ai = new(client, duel);
+    const string luaScript = """
+        deck("DualBrainTest")
+            set_deckfile("AI_Yubel")
+            on_rock_paper_scissors(function(ctx)
+                emit_thought("准备猜拳策略")
+                local ext = ask_external_agent("猜拳选择", {"剪刀", "石头", "布"})
+                if ext ~= nil then
+                    return ext
+                end
+                return 2
+            end)
+        deck_end()
+        """;
+
+    using WindBot.Game.AI.Lua.LuaDeckExecutor exec = new(ai, duel, NLuaRuntime.Instance, luaScript, "DualBrainTest.lua", throwOnScriptError: true);
+    exec.ExternalAgentHandler = req =>
+    {
+        AssertEqual("猜拳选择", req.Reason);
+        AssertEqual(3, req.Candidates.Count);
+        return 3;
+    };
+
+    int rps = exec.OnRockPaperScissors();
+    AssertEqual(3, rps);
+    AssertEqual(1, exec.ThoughtHistory.Count);
+    AssertEqual("准备猜拳策略", exec.ThoughtHistory[0].Summary);
+}
+
+static async Task McpStreamableHttpQueryKeyStdioAndAgentDuelFogOfWarWorkEndToEndAsync()
+{
+    string tempRoot = Path.Combine(Path.GetTempPath(), "YGOProSharpMcpTest_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(tempRoot);
+
+    try
+    {
+        // 构建一个含 1 张通常怪兽的最小测试 cards.cdb 以便真实跑通 ocgcore 1v1 发牌与主阶段询问
+        string cdbPath = Path.Combine(tempRoot, "cards.cdb");
+        using (SqliteConnection conn = new($"Data Source={cdbPath};Pooling=False"))
+        {
+            conn.Open();
+            using SqliteCommand cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                CREATE TABLE datas (id INTEGER PRIMARY KEY, ot INTEGER, alias INTEGER, setcode INTEGER, type INTEGER, atk INTEGER, def INTEGER, level INTEGER, race INTEGER, attribute INTEGER, category INTEGER);
+                CREATE TABLE texts (id INTEGER PRIMARY KEY, name TEXT, desc TEXT, str1 TEXT, str2 TEXT, str3 TEXT, str4 TEXT, str5 TEXT, str6 TEXT, str7 TEXT, str8 TEXT, str9 TEXT, str10 TEXT, str11 TEXT, str12 TEXT, str13 TEXT, str14 TEXT, str15 TEXT, str16 TEXT);
+                INSERT INTO datas VALUES (89631139, 3, 0, 0, 17, 3000, 2500, 8, 8192, 16, 0);
+                INSERT INTO texts VALUES (89631139, '青眼白龙', '以高攻击力著称的传说之龙。', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '');
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        SqliteCardDatabaseManager cdbMgr = new();
+        INamedCardRepository namedRepo = cdbMgr.LoadNamedCards([cdbPath]);
+
+        PersistenceOptions pOpts = new()
+        {
+            DbProvider = OperationalDbProvider.Sqlite,
+            ConnectionString = $"Data Source={Path.Combine(tempRoot, "mcp_ops.db")}",
+            BootstrapAdminUser = "admin",
+            BootstrapAdminPassword = "AdminPass123",
+            Argon2MemoryKb = 4096,
+            Argon2Iterations = 1,
+            Argon2Parallelism = 1
+        };
+
+        await using OperationalStore store = new(pOpts);
+        await store.InitializeAsync();
+        using OperationalServerCoordinator coordinator = new(store);
+
+        ServerOptions srvOpts = new()
+        {
+            RootPath = tempRoot,
+            DatabaseFile = "cards.cdb",
+            EnableNetworkListener = false,
+            EnableMultiRoom = true,
+            AddonFactories = [coordinator.CreateRoomAddonFactory()],
+            JoinAccessValidator = coordinator.CreateJoinAccessValidator(),
+            Game = new GameOptions
+            {
+                NoCheckDeck = true,
+                StartHand = 5,
+                DrawCount = 1
+            }
+        };
+
+        using NativeOcgRuntime ocgRuntime = new();
+        await using YGOProSharpServerHost serverHost = YGOProSharpServerHost.Create(srvOpts, ocgRuntime);
+        serverHost.StartBackgroundLoop(tickDelayMilliseconds: 1, embedded: true);
+
+        await using WebControlHost adminHost = new(
+            serverHost,
+            store,
+            coordinator,
+            new WebControlOptions
+            {
+                Host = "127.0.0.1",
+                Port = 0,
+                NamedCardRepositoryProvider = () => namedRepo,
+                LuaRuntimeProvider = static () => NLuaRuntime.Instance
+            });
+        await using UserPortalHost portalHost = new(
+            serverHost,
+            store,
+            coordinator,
+            new UserPortalOptions
+            {
+                Host = "127.0.0.1",
+                Port = 0,
+                NamedCardRepositoryProvider = () => namedRepo
+            });
+
+        await adminHost.StartAsync();
+        await portalHost.StartAsync();
+
+        Uri adminBase = new(adminHost.BoundAddresses.First());
+        Uri portalBase = new(portalHost.BoundAddresses.First());
+
+        // 1. 玩家在前台注册账号并建房，自动生成 2 枚限定该房间的 player AI Token
+        CookieContainer pCookies = new();
+        using HttpClient playerWeb = new(new HttpClientHandler { CookieContainer = pCookies, UseCookies = true }) { BaseAddress = portalBase };
+        using (HttpResponseMessage regRes = await playerWeb.PostAsync(
+                   "/api/portal/auth/register",
+                   new StringContent(JsonSerializer.Serialize(new { username = "kaiba", password = "123456" }), Encoding.UTF8, "application/json")))
+        {
+            AssertEqual((int)HttpStatusCode.OK, (int)regRes.StatusCode);
+            using JsonDocument regDoc = JsonDocument.Parse(await regRes.Content.ReadAsStringAsync());
+            playerWeb.DefaultRequestHeaders.Add("X-CSRF-Token", regDoc.RootElement.GetProperty("csrfToken").GetString()!);
+        }
+
+        string tokenA;
+        string tokenB;
+        string tokenAId;
+        using (HttpResponseMessage roomRes = await playerWeb.PostAsync(
+                   "/api/portal/rooms",
+                   new StringContent(JsonSerializer.Serialize(new
+                   {
+                       roomName = "McpArena01",
+                       mode = 0,
+                       noCheckDeck = true,
+                       issuePlayerTokens = true,
+                       aiTokenCount = 2
+                   }), Encoding.UTF8, "application/json")))
+        {
+            AssertEqual((int)HttpStatusCode.OK, (int)roomRes.StatusCode);
+            using JsonDocument rDoc = JsonDocument.Parse(await roomRes.Content.ReadAsStringAsync());
+            JsonElement issued = rDoc.RootElement.GetProperty("issuedPlayerTokens");
+            AssertEqual(2, issued.GetArrayLength());
+            tokenA = issued[0].GetProperty("rawToken").GetString()!;
+            tokenB = issued[1].GetProperty("rawToken").GetString()!;
+        }
+
+        using (HttpResponseMessage listTokRes = await playerWeb.GetAsync("/api/portal/mcp/tokens"))
+        {
+            using JsonDocument ltDoc = JsonDocument.Parse(await listTokRes.Content.ReadAsStringAsync());
+            tokenAId = ltDoc.RootElement.GetProperty("tokens")[1].GetProperty("id").GetString()!;
+        }
+
+        // 2. 验证管理员签发的 admin MCP Token 在前台门户 :7913/mcp 被拦截 (403)，在后台 :7912/mcp 正常可用
+        LoginResult adminLogin = await store.LoginAsync("admin", "AdminPass123", "127.0.0.1", "Test");
+        AssertTrue(adminLogin.Success && adminLogin.Principal is not null);
+        (_, _, IssuedMcpTokenResult? adminMcp) = await store.IssueMcpTokenAsync(adminLogin.Principal!, "OpsAI", McpRoleCodes.Admin, null, 2, false, 12, "127.0.0.1");
+        AssertTrue(adminMcp is not null);
+
+        using HttpClient rawHttp = new();
+        using (HttpResponseMessage portalAdminBlocked = await rawHttp.PostAsync(
+                   new Uri(portalBase, $"/mcp?key={Uri.EscapeDataString(adminMcp!.RawToken)}"),
+                   new StringContent("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}""", Encoding.UTF8, "application/json")))
+        {
+            AssertEqual((int)HttpStatusCode.Forbidden, (int)portalAdminBlocked.StatusCode);
+        }
+
+        using (HttpResponseMessage adminMcpOk = await rawHttp.PostAsync(
+                   new Uri(adminBase, $"/mcp?key={Uri.EscapeDataString(adminMcp.RawToken)}"),
+                   new StringContent("""{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"server_get_status","arguments":{}}}""", Encoding.UTF8, "application/json")))
+        {
+            AssertEqual((int)HttpStatusCode.OK, (int)adminMcpOk.StatusCode);
+            using JsonDocument envDoc = JsonDocument.Parse(await adminMcpOk.Content.ReadAsStringAsync());
+            string statusText = envDoc.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString()!;
+            using JsonDocument statusDoc = JsonDocument.Parse(statusText);
+            AssertTrue(statusDoc.RootElement.GetProperty("roomCount").GetInt32() >= 1);
+        }
+
+        // 3. 验证客户端通过无 Header 的 ?key= 直连 Streamable HTTP MCP：initialize -> notifications/initialized (202) -> tools/list 最小权限裁剪
+        Uri mcpUrlKeyA = new(portalBase, $"/mcp?key={Uri.EscapeDataString(tokenA)}");
+        string mcpSessionA;
+        using (HttpResponseMessage initRes = await rawHttp.PostAsync(
+                   mcpUrlKeyA,
+                   new StringContent("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}""", Encoding.UTF8, "application/json")))
+        {
+            AssertEqual((int)HttpStatusCode.OK, (int)initRes.StatusCode);
+            mcpSessionA = initRes.Headers.GetValues("Mcp-Session-Id").First();
+            AssertTrue(mcpSessionA.StartsWith("mcp_", StringComparison.Ordinal));
+        }
+
+        using (HttpRequestMessage notifReq = new(HttpMethod.Post, mcpUrlKeyA)
+               {
+                   Content = new StringContent("""{"jsonrpc":"2.0","method":"notifications/initialized"}""", Encoding.UTF8, "application/json")
+               })
+        {
+            notifReq.Headers.Add("Mcp-Session-Id", mcpSessionA);
+            using HttpResponseMessage notifRes = await rawHttp.SendAsync(notifReq);
+            AssertEqual((int)HttpStatusCode.Accepted, (int)notifRes.StatusCode);
+        }
+
+        using (HttpResponseMessage toolsRes = await rawHttp.PostAsync(
+                   mcpUrlKeyA,
+                   new StringContent("""{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}""", Encoding.UTF8, "application/json")))
+        {
+            string toolsJson = await toolsRes.Content.ReadAsStringAsync();
+            AssertTrue(toolsJson.Contains("duel_join_room", StringComparison.Ordinal));
+            AssertTrue(toolsJson.Contains("duel_wait_for_turn", StringComparison.Ordinal));
+            AssertFalse(toolsJson.Contains("server_get_status", StringComparison.Ordinal));
+            AssertFalse(toolsJson.Contains("diy_upsert_card", StringComparison.Ordinal));
+        }
+
+        // 4. 验证 stdio 转发模式 (McpStdioRelay) 零杂音工作
+        using (MemoryStream stdioIn = new(Encoding.UTF8.GetBytes("""{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"room_list","arguments":{}}}""" + "\n")))
+        using (MemoryStream stdioOut = new())
+        {
+            int code = await McpStdioRelay.RunAsync(new Uri(portalBase, "/mcp"), tokenB, stdioIn, stdioOut);
+            AssertEqual(0, code);
+            string outText = Encoding.UTF8.GetString(stdioOut.ToArray()).Trim();
+            using JsonDocument outDoc = JsonDocument.Parse(outText);
+            AssertEqual(99, outDoc.RootElement.GetProperty("id").GetInt32());
+            AssertTrue(outDoc.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString()!.Contains("McpArena01", StringComparison.Ordinal));
+        }
+
+        // 5. 两个外部 AI (Token A 与 Token B) 分别进房、组卡、准备、猜拳并进入第 1 回合主要阶段，验证战争迷雾与跨会话防越权
+        async Task<JsonDocument> CallMcpToolAsync(string rawTok, string toolName, object arguments)
+        {
+            string rpc = JsonSerializer.Serialize(new
+            {
+                jsonrpc = "2.0",
+                id = 10,
+                method = "tools/call",
+                @params = new { name = toolName, arguments }
+            });
+            using HttpRequestMessage req = new(HttpMethod.Post, new Uri(portalBase, $"/mcp?key={Uri.EscapeDataString(rawTok)}"))
+            {
+                Content = new StringContent(rpc, Encoding.UTF8, "application/json")
+            };
+            using HttpResponseMessage resp = await rawHttp.SendAsync(req);
+            AssertEqual((int)HttpStatusCode.OK, (int)resp.StatusCode);
+            using JsonDocument envelope = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            JsonElement resElem = envelope.RootElement.GetProperty("result");
+            string innerText = resElem.GetProperty("content")[0].GetProperty("text").GetString()!;
+            return JsonDocument.Parse(innerText);
+        }
+
+        // 房间白名单校验：尝试进未授权的其他房间应被拒绝
+        using (JsonDocument wrongRoomDoc = await CallMcpToolAsync(tokenA, "duel_join_room", new { room = "UnauthorizedRoom", playerName = "ClaudeAI" }))
+        {
+            AssertFalse(wrongRoomDoc.RootElement.GetProperty("success").GetBoolean());
+        }
+
+        string sessionA;
+        string sessionB;
+        using (JsonDocument joinA = await CallMcpToolAsync(tokenA, "duel_join_room", new { room = "McpArena01", playerName = "ClaudeAI" }))
+        using (JsonDocument joinB = await CallMcpToolAsync(tokenB, "duel_join_room", new { room = "McpArena01", playerName = "GeminiAI" }))
+        {
+            sessionA = joinA.RootElement.GetProperty("sessionId").GetString()!;
+            sessionB = joinB.RootElement.GetProperty("sessionId").GetString()!;
+        }
+
+        // 跨 Token 越权访问对方 sessionId 必须被拦截
+        using (JsonDocument crossSteal = await CallMcpToolAsync(tokenA, "duel_get_observation", new { sessionId = sessionB }))
+        {
+            AssertTrue(crossSteal.RootElement.GetProperty("message").GetString()!.Contains("越权拒绝", StringComparison.Ordinal));
+        }
+
+        int[] fortyBlueEyes = Enumerable.Repeat(89631139, 40).ToArray();
+        using (await CallMcpToolAsync(tokenA, "duel_set_deck", new { sessionId = sessionA, main = fortyBlueEyes })) { }
+        using (await CallMcpToolAsync(tokenB, "duel_set_deck", new { sessionId = sessionB, main = fortyBlueEyes })) { }
+        using (await CallMcpToolAsync(tokenA, "duel_set_ready", new { sessionId = sessionA, ready = true, startIfHost = true })) { }
+        using (await CallMcpToolAsync(tokenB, "duel_set_ready", new { sessionId = sessionB, ready = true, startIfHost = true })) { }
+
+        // 驱动猜拳与先后攻直至进入 InDuel 主阶段询问
+        for (int step = 0; step < 20; step++)
+        {
+            using JsonDocument obsA = await CallMcpToolAsync(tokenA, "duel_get_observation", new { sessionId = sessionA });
+            using JsonDocument obsB = await CallMcpToolAsync(tokenB, "duel_get_observation", new { sessionId = sessionB });
+
+            bool reachedIdle = obsA.RootElement.GetProperty("state").GetInt32() == (int)AgentSessionState.InDuel &&
+                ((obsA.RootElement.TryGetProperty("pendingPrompt", out JsonElement pa) && pa.ValueKind == JsonValueKind.Object && pa.GetProperty("promptType").GetString() == "select_idle_cmd") ||
+                 (obsB.RootElement.TryGetProperty("pendingPrompt", out JsonElement pb) && pb.ValueKind == JsonValueKind.Object && pb.GetProperty("promptType").GetString() == "select_idle_cmd"));
+            if (reachedIdle)
+                break;
+
+            bool acted = false;
+            if (obsA.RootElement.GetProperty("hasPendingAction").GetBoolean())
+            {
+                using (await CallMcpToolAsync(tokenA, "duel_submit_action", new { sessionId = sessionA, actionIndex = 0 })) { }
+                acted = true;
+            }
+
+            if (obsB.RootElement.GetProperty("hasPendingAction").GetBoolean())
+            {
+                string pt = obsB.RootElement.GetProperty("pendingPrompt").GetProperty("promptType").GetString()!;
+                int pick = pt == "rock_paper_scissors" ? 2 : 0; // B 出布，避免猜拳平局
+                using (await CallMcpToolAsync(tokenB, "duel_submit_action", new { sessionId = sessionB, actionIndex = pick })) { }
+                acted = true;
+            }
+
+            if (!acted)
+                await Task.Delay(30);
+        }
+
+        // 验证进入对局后：己方手牌真实可见，对手手牌严格遮蔽为 isHidden=true, code=0
+        using (JsonDocument duelObsA = await CallMcpToolAsync(tokenA, "duel_get_observation", new { sessionId = sessionA }))
+        using (JsonDocument duelObsB = await CallMcpToolAsync(tokenB, "duel_get_observation", new { sessionId = sessionB }))
+        {
+            JsonElement handA = duelObsA.RootElement.GetProperty("selfSide").GetProperty("hand");
+            JsonElement oppoHandFromA = duelObsA.RootElement.GetProperty("opponentSide").GetProperty("hand");
+            AssertTrue(handA.GetArrayLength() >= 5);
+            AssertEqual(89631139, handA[0].GetProperty("code").GetInt32());
+            AssertFalse(handA[0].GetProperty("isHidden").GetBoolean());
+
+            AssertTrue(oppoHandFromA.GetArrayLength() >= 5);
+            foreach (JsonElement oppCard in oppoHandFromA.EnumerateArray())
+            {
+                AssertEqual(0, oppCard.GetProperty("code").GetInt32());
+                AssertTrue(oppCard.GetProperty("isHidden").GetBoolean());
+            }
+
+            // 当前先攻方提交通召青眼白龙并附带公开思考气泡
+            string activeTok = duelObsA.RootElement.GetProperty("hasPendingAction").GetBoolean() ? tokenA : tokenB;
+            string activeSid = duelObsA.RootElement.GetProperty("hasPendingAction").GetBoolean() ? sessionA : sessionB;
+            using JsonDocument submitDoc = await CallMcpToolAsync(activeTok, "duel_submit_action", new
+            {
+                sessionId = activeSid,
+                actionIndex = 0,
+                thoughtSummary = "先攻回合尝试展开场面压制"
+            });
+            AssertTrue(submitDoc.RootElement.GetProperty("success").GetBoolean());
+        }
+
+        using (HttpResponseMessage roomDetailRes = await portalWebOrRawGetAsync(rawHttp, new Uri(portalBase, "/api/portal/rooms/McpArena01")))
+        {
+            string detailJson = await roomDetailRes.Content.ReadAsStringAsync();
+            AssertTrue(detailJson.Contains("先攻回合尝试展开场面压制", StringComparison.Ordinal));
+        }
+
+        // 吊销 Token 后对应活跃对局会话立即断开清理
+        Guid realTokenAGuid = (await store.ValidateMcpTokenAsync(tokenA))!.TokenId;
+        using (HttpResponseMessage revRes = await playerWeb.DeleteAsync($"/api/portal/mcp/tokens/{realTokenAGuid}"))
+        {
+            AssertEqual((int)HttpStatusCode.OK, (int)revRes.StatusCode);
+        }
+        using (JsonDocument afterRevoke = await CallMcpToolAsync(tokenB, "duel_list_sessions", new { }))
+        {
+            AssertEqual(1, afterRevoke.RootElement.GetProperty("sessions").GetArrayLength());
+        }
+
+        await serverHost.StopAsync();
+    }
+    finally
+    {
+        SqliteConnection.ClearAllPools();
+        try { Directory.Delete(tempRoot, recursive: true); } catch { }
+    }
+
+    static Task<HttpResponseMessage> portalWebOrRawGetAsync(HttpClient client, Uri uri) => client.GetAsync(uri);
 }
 
 internal static class TestLog
