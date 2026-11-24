@@ -73,16 +73,18 @@ target("lua")
 
         target:add("includedirs", lua_src, {public = true})
 
-        -- 对齐原 Premake: compileas "C++"
-        target:add("files", path.join(lua_src, "*.c"), {sourcekind = "cxx"})
-
-        -- 对齐原 Premake removefiles
-        target:add("remove_files",
-            path.join(lua_src, "lua.c"),
-            path.join(lua_src, "luac.c"),
-            path.join(lua_src, "linit.c"),
-            path.join(lua_src, "onelua.c")
-        )
+        -- 对齐原 Premake: compileas "C++" 并排除独立 CLI / 聚合源码
+        local excluded_lua_files = {
+            ["lua.c"] = true,
+            ["luac.c"] = true,
+            ["linit.c"] = true,
+            ["onelua.c"] = true
+        }
+        for _, filepath in ipairs(os.files(path.join(lua_src, "*.c"))) do
+            if not excluded_lua_files[path.filename(filepath)] then
+                target:add("files", filepath, {sourcekind = "cxx"})
+            end
+        end
     end)
 
     if is_plat("windows") then
@@ -107,6 +109,7 @@ target("lua")
 target("ocgcore")
     set_kind("shared")
     add_deps("lua")
+    add_defines("OCGCORE_EXPORT_FUNCTIONS")
 
     on_load(function (target)
         import("devel.git")

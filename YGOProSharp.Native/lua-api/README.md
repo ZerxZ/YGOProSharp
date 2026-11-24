@@ -6,25 +6,27 @@
 
 | 文件 | 说明 |
 |---|---|
-| `ygopro-core.lua` | LuaLS/EmmyLua `---@meta` 类型文件，覆盖 `Card`、`Effect`、`Group`、`Duel`、`Debug` 全部 native 注册 API。 |
+| `ygopro-core.lua` | LuaLS/EmmyLua `---@meta` 精确类型文件，覆盖 `Card`、`Effect`、`Group`、`Duel`、`Debug` 全部 616 个 native 注册 API（含 `---@overload`、`---@operator`、`self_table`/`self_code` 全局上下文与语义别名）。 |
 | `API-COVERAGE.md` | 从 `luaL_Reg` 注册表生成的覆盖报告，列出每个 API 的 C++ 入口和签名状态。 |
-| `generator.lua` | Xmake Lua 生成器，读取 `YGOProSharp.Native/ygopro-core/lib*.cpp` 并重建类型文件和覆盖报告。 |
+| `generator.lua` | Xmake Lua 生成器，读取 `YGOProSharp.Native/ygopro-core/lib*.cpp` 与 `signatures/*.lua`，校验过期/重复条目并重建类型文件和覆盖报告。 |
+| `signatures/*.lua` | 按 `card`、`effect`、`group`、`duel`、`debug` 拆分的精确签名与消歧说明表（逐项对照 `ygopro-core/lib*.cpp` 实现核对）。 |
 | `generate-ygopro-lua-api.lua` | 直接 `xmake lua` 调试入口，和 xmake task 使用同一份生成逻辑。 |
 | `examples/*.lua` | 原创最小调用示例，只用于说明脚本写法，不作为运行时脚本。 |
 
 ## 覆盖范围
 
-`ygopro-core.lua` 来自以下 native 注册表：
+`ygopro-core.lua` 来自以下 native 注册表（全部为精确签名）：
 
-| 全局表 / 类型 | 数量 | 来源 |
-|---|---:|---|
-| `Card` | 276 | `libcard.cpp` |
-| `Effect` | 55 | `libeffect.cpp` |
-| `Group` | 40 | `libgroup.cpp` |
-| `Duel` | 229 | `libduel.cpp` |
-| `Debug` | 11 | `libdebug.cpp` |
+| 全局表 / 类型 | 数量 | 精确签名 | 来源 |
+|---|---:|---:|---|
+| `Card` | 281 | 281 | `libcard.cpp` |
+| `Effect` | 55 | 55 | `libeffect.cpp` |
+| `Group` | 40 | 40 | `libgroup.cpp` |
+| `Duel` | 229 | 229 | `libduel.cpp` |
+| `Debug` | 11 | 11 | `libdebug.cpp` |
+| **合计** | **616** | **616** | `lib*.cpp` |
 
-这些数量应与 `API-COVERAGE.md` 保持一致。若上游 `ygopro-core` 增删 Lua API，先更新 native 注册表，再运行生成器。
+这些数量应与 `API-COVERAGE.md` 保持一致。若上游 `ygopro-core` 增删 Lua API，先更新 `signatures/*.lua`，再运行生成器；如果 `signatures/*.lua` 中存在已删除或拼写错误的键，生成器会直接报错。
 
 ## LuaLS 使用方式
 
@@ -67,14 +69,16 @@ end
 
 更多示例见 `examples/`。
 
-## 签名精度
+## 签名精度与消歧约定
 
-类型文件分为两类签名：
+当前全部 616 个 native API 均已对照 `YGOProSharp.Native/ygopro-core/lib*.cpp` 源码完成精确签名核对（保守签名为 0）：
 
-- **精确签名**：常用 API 已补充明确参数和返回值，例如 `Effect.SetTarget`、`Group.Filter`、`Duel.SelectMatchingCard`。
-- **保守签名**：长尾 API 只从 native 注册表确认函数名和 C++ 入口，参数使用 `...`，返回值使用宽类型。这样可以保证补全完整，同时避免在语义未逐项核对前写入错误窄类型。
+- **严格以本仓库 `ygopro-core` 实现为准**：不混入 EDOPro 等分支的额外参数（例如 `Card:GetColumnGroup()` 在本核心无参、`Card:RegisterEffect(e, forced?)` 仅 2 参数、`Effect:SetCountLimit(count, code?)` 仅 2 参数）。
+- **多形态调用使用 `---@overload`**：对参数个数决定重载分派的接口（如 `Duel.IsPlayerCanSummon`、`Duel.IsPlayerCanSpecialSummon`、`Duel.SwapControl` 等）显式声明重载，避免可选参数产生歧义。
+- **区分多返回值、位掩码语义与特殊边界**：明确标注多返回值接口（如 `Duel.GetLocationCount` 返回 `(count, usableZone)`、`Card:GetCode` 返回 `(code, anotherCode?)`、`Effect:GetProperty` 返回 `(flag1, flag2)`），明确区分“任意位匹配”（`IsType`/`IsReason`）与“全位匹配”（`IsAllTypes`/`IsAllReasons`/`IsSummonType`），并对触发玩家交互的接口标注 `[协程挂起]`。
+- **支持元表运算符**：为 `Card` 和 `Group` 标注了 `+` / `|` / `-` / `&` / `~` 集合运算符及 `#group` 长度运算符。
 
-需要继续精细化时，以 C++ 实现、上游脚本调用习惯和现有卡片脚本为准。每次精细化后同步更新 `API-COVERAGE.md`。
+后续若上游 `ygopro-core` 发生接口变更，以 C++ 实现为准同步更新 `signatures/*.lua` 并重新生成 `ygopro-core.lua` 与 `API-COVERAGE.md`。
 
 ## 重新生成
 
