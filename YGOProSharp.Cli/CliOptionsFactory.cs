@@ -18,6 +18,33 @@ public static class CliOptionsFactory
             ? configuration.GetInt("Region")
             : configuration.GetInt("Rule", 0);
 
+        List<string> expansionDirs = new();
+        AddSplitPaths(expansionDirs, configuration.GetString("ExpansionDir"));
+        AddSplitPaths(expansionDirs, configuration.GetString("ExpansionDirs"));
+
+        List<string> extraDatabases = new();
+        AddSplitPaths(extraDatabases, configuration.GetString("ExtraDb"));
+        AddSplitPaths(extraDatabases, configuration.GetString("ExtraDatabases"));
+
+        List<string> extraScriptDirs = new();
+        AddSplitPaths(extraScriptDirs, configuration.GetString("ExtraScriptDir"));
+        AddSplitPaths(extraScriptDirs, configuration.GetString("ExtraScriptDirs"));
+
+        List<string> extraScriptArchives = new();
+        AddSplitPaths(extraScriptArchives, configuration.GetString("ExtraScriptArchives"));
+
+        List<string> extraBanlists = new();
+        AddSplitPaths(extraBanlists, configuration.GetString("ExtraBanlist"));
+        AddSplitPaths(extraBanlists, configuration.GetString("ExtraBanlists"));
+        AddSplitPaths(extraBanlists, configuration.GetString("ExtraBanlistFiles"));
+
+        List<string> extraScripts = new();
+        AddSplitPaths(extraScripts, configuration.GetString("ExtraScripts"));
+
+        bool enableMultiRoom = configuration.Has("EnableMultiRoom")
+            ? configuration.GetBool("EnableMultiRoom")
+            : configuration.GetBool("MultiRoom");
+
         return new ServerOptions
         {
             RootPath = configuration.GetString("RootPath", "."),
@@ -27,6 +54,16 @@ public static class CliOptionsFactory
             Port = configuration.GetInt("Port", CoreServer.DefaultPort),
             ClientVersion = configuration.GetUInt("ClientVersion", YGOProSharpServer.DefaultClientVersion),
             StandardStreamProtocol = configuration.GetBool("StandardStreamProtocol"),
+            AutoLoadExpansions = configuration.GetBool("AutoLoadExpansions", true),
+            ExpansionDirectories = expansionDirs,
+            ExtraDatabases = extraDatabases,
+            ExtraScriptDirectories = extraScriptDirs,
+            ExtraScriptArchives = extraScriptArchives,
+            ExtraBanlistFiles = extraBanlists,
+            EnableMultiRoom = enableMultiRoom,
+            MaxRooms = configuration.GetInt("MaxRooms", 128),
+            ApplyPasswordRulesInSingleRoom = configuration.GetBool("ApplyPasswordRulesInSingleRoom", true),
+            EnableChatCommands = configuration.GetBool("EnableChatCommands", true),
             Game = new GameOptions
             {
                 Mode = configuration.GetInt("Mode"),
@@ -40,6 +77,8 @@ public static class CliOptionsFactory
                 NoCheckDeck = configuration.GetBool("NoCheckDeck"),
                 NoShuffleDeck = configuration.GetBool("NoShuffleDeck"),
                 GameTimer = configuration.GetInt("GameTimer", Game.DEFAULT_TIMER),
+                MatchWins = configuration.GetInt("MatchWins", 2),
+                ExtraScripts = extraScripts,
                 DeckRules = new DeckRules(
                     configuration.GetInt("MainDeckMinSize", 40),
                     configuration.GetInt("MainDeckMaxSize", 60),

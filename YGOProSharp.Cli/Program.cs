@@ -81,10 +81,17 @@ static async Task<int> RunServerAsync(CliConfiguration configuration, Cancellati
     await using YGOProSharpServerHost serverHost = YGOProSharpServerHost.Create(options, runtime);
     serverHost.StartBackgroundLoop(tickDelayMilliseconds: 1, embedded: !options.EnableNetworkListener, cancellationToken);
 
-    List<string> botDbPaths = CliOptionsFactory.ResolveWindBotDatabasePaths(configuration);
-    string serverDbPath = Path.Combine(Path.GetFullPath(options.RootPath), options.DatabaseFile);
-    if (File.Exists(serverDbPath) && !botDbPaths.Contains(serverDbPath, StringComparer.OrdinalIgnoreCase))
-        botDbPaths.Insert(0, serverDbPath);
+    List<string> botDbPaths = new();
+    foreach (string serverDbPath in YGOProSharpServer.ResolveDatabasePaths(options))
+    {
+        if (File.Exists(serverDbPath) && !botDbPaths.Contains(serverDbPath, StringComparer.OrdinalIgnoreCase))
+            botDbPaths.Add(serverDbPath);
+    }
+    foreach (string cliDbPath in CliOptionsFactory.ResolveWindBotDatabasePaths(configuration))
+    {
+        if (File.Exists(cliDbPath) && !botDbPaths.Contains(cliDbPath, StringComparer.OrdinalIgnoreCase))
+            botDbPaths.Add(cliDbPath);
+    }
 
     if (botDbPaths.Count == 0)
     {

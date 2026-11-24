@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Specialized;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
@@ -20,6 +21,7 @@ using YGOProSharp.Protocol.Enums;
 using YGOProSharp.Protocol.Utils;
 using YGOProSharp.NativeApi;
 using YGOProSharp.Server;
+using YGOProSharp.Server.Addons;
 
 ListLoggerProvider logProvider = TestLog.Provider;
 using ILoggerFactory loggerFactory = LoggerFactory.Create(builder =>
@@ -103,6 +105,11 @@ await RunAsync("Embedded server host connects local WindBot session and local cl
 Run("WindBotDirectClient produces CTOS packets synchronously from fed STOC packets", WindBotDirectClientProducesCtosPacketsSynchronously);
 Run("WindBot bundled Decks and Dialogs assets load from output directory", WindBotBundledDecksAndDialogsAssetsLoadFromOutputDirectory);
 await RunAsync("WindBotService StartBot captures startup error without leaking session", WindBotServiceStartBotCapturesStartupErrorAsync);
+Run("Core layered DIY resources override cards, scripts, archives, and banlists", CoreLayeredDiyResourcesOverrideCardsScriptsAndBanlists);
+Run("RoomPasswordParser parses built-in and custom DIY tokens", RoomPasswordParserParsesBuiltInAndCustomDiyTokens);
+await RunAsync("Server extensions support addons, custom deck validator, chat commands, and duel preload", ServerExtensionsSupportAddonsDeckValidatorChatCommandsAndDuelPreloadAsync);
+await RunAsync("CoreServer multi-room routes concurrent rooms and cleans up closed rooms", CoreServerMultiRoomRoutesConcurrentRoomsAndCleansUpAsync);
+Run("Server auto-discovers expansions/diy assets and CLI maps DIY & multi-room options", ServerAutoDiscoversExpansionsAndCliMapsOptions);
 
 static void AppLogParsesLogLevels()
 {
@@ -3408,6 +3415,532 @@ static async Task ServerBroadcastsChatToSenderAndOpponentAsync()
     await host.StopAsync();
 }
 
+static void CoreLayeredDiyResourcesOverrideCardsScriptsAndBanlists()
+{
+    string tempDir = Path.Combine(Path.GetTempPath(), "YGOProSharpDiyCore_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(tempDir);
+
+    try
+    {
+        // 1. 多 CDB 覆盖 + 内存 DIY 卡片覆盖
+        string baseDb = Path.Combine(tempDir, "cards.cdb");
+        string diyDb = Path.Combine(tempDir, "diy.cdb");
+        CreateTestCardDb(baseDb,
+        [
+            (1001, 1, 0, 0, (int)CardType.Monster, 4, 1, 1, 1800, 1000, "BaseOCG", "desc"),
+            (1002, 2, 0, 0, (int)CardType.Monster, 4, 1, 1, 1700, 1000, "BaseTCG", "desc")
+        ]);
+        CreateTestCardDb(diyDb,
+        [
+            (1001, 3, 0, 0, (int)CardType.Monster, 4, 1, 1, 2500, 1200, "OverriddenBase", "override"),
+            (9990001, 4, 0, 0, (int)CardType.Monster, 8, 1, 1, 3500, 2800, "DiyDragon", "custom")
+        ]);
+
+        SqliteCardDatabaseManager dbManager = new();
+        ICardRepository layeredCards = dbManager.LoadCards([baseDb, diyDb]);
+        AssertTrue(layeredCards.TryGetCard(1001, out Card overridden));
+        AssertEqual(2500, overridden.Attack);
+        AssertEqual(3, overridden.Ot);
+        AssertTrue(layeredCards.TryGetCard(9990001, out Card diyCard));
+        AssertEqual(4, diyCard.Ot);
+
+        Card inMemoryCard = new(9990002, 4, 0, 0, (int)CardType.Spell, 0, 0, 0, 0, 0, 0, 0, 0);
+        CompositeCardRepository compositeCards = new(new InMemoryCardRepository([inMemoryCard]), layeredCards);
+        AssertTrue(compositeCards.TryGetCard(9990002, out Card memFound));
+        AssertEqual((int)CardType.Spell, memFound.Type);
+        AssertTrue(compositeCards.TryGetCard(1002, out _));
+
+        // 2. DIY 卡片区域校验（Region=0/2 拒绝 ot=4，Region=3/5 放行 ot=4）
+        Deck diyDeck = new(compositeCards);
+        diyDeck.AddMain(9990001);
+        DeckRules minOne = new(MainDeckMinSize: 1);
+        AssertEqual(9990001, diyDeck.Check(null, ocg: true, tcg: true, allowCustom: false, minOne));
+        AssertEqual(0, diyDeck.Check(null, ocg: true, tcg: true, allowCustom: true, minOne));
+        AssertEqual((true, true, true), DefaultDeckValidator.ResolveRegionFlags(3));
+        AssertEqual((false, false, false), DefaultDeckValidator.ResolveRegionFlags(4));
+
+        // 3. 分层脚本（内存 > DIY 目录 > 基础目录 > .ypk 压缩包）+ 路径穿越保护
+        string baseScriptDir = Path.Combine(tempDir, "script");
+        string diyScriptDir = Path.Combine(tempDir, "diy", "script");
+        Directory.CreateDirectory(baseScriptDir);
+        Directory.CreateDirectory(diyScriptDir);
+        File.WriteAllText(Path.Combine(baseScriptDir, "c1001.lua"), "-- base");
+        File.WriteAllText(Path.Combine(diyScriptDir, "c1001.lua"), "-- diy dir");
+
+        string ypkPath = Path.Combine(tempDir, "pack.ypk");
+        using (ZipArchive archive = ZipFile.Open(ypkPath, ZipArchiveMode.Create))
+        {
+            ZipArchiveEntry entry = archive.CreateEntry("script/c9990001.lua");
+            using StreamWriter sw = new(entry.Open(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            sw.Write("-- from ypk");
+        }
+
+        InMemoryScriptProvider memoryScripts = new();
+        memoryScripts.RegisterText("c9990002.lua", "-- from memory");
+
+        using CompositeScriptProvider compositeScripts = new(
+            memoryScripts,
+            new FileScriptProvider([diyScriptDir, baseScriptDir]),
+            new ZipArchiveScriptProvider(ypkPath));
+
+        AssertTrue(compositeScripts.TryGetScript("./script/c1001.lua", out byte[] s1));
+        AssertEqual("-- diy dir", Encoding.UTF8.GetString(s1));
+        AssertTrue(compositeScripts.TryGetScript("./script/c9990001.lua", out byte[] s2));
+        AssertEqual("-- from ypk", Encoding.UTF8.GetString(s2));
+        AssertTrue(compositeScripts.TryGetScript("c9990002.lua", out byte[] s3));
+        AssertEqual("-- from memory", Encoding.UTF8.GetString(s3));
+        AssertFalse(compositeScripts.TryGetScript("./script/../../secret.lua", out _));
+
+        // 4. 多禁限表加载与名称/Hash 查询
+        string baseLf = Path.Combine(tempDir, "lflist.conf");
+        string diyLf = Path.Combine(tempDir, "diy_lflist.conf");
+        File.WriteAllText(baseLf, "!2026.04 OCG\n1001 1\n");
+        File.WriteAllText(diyLf, "!DIY Custom\n$whitelist\n9990001 3\n");
+
+        BanlistManager.Init([diyLf, baseLf]);
+        AssertEqual(2, BanlistManager.Banlists.Count);
+        AssertEqual("DIY Custom", BanlistManager.Banlists[0].Name);
+        AssertTrue(BanlistManager.Banlists[0].WhitelistOnly);
+        AssertEqual(3, BanlistManager.Banlists[0].GetQuantity(9990001));
+        AssertEqual(0, BanlistManager.Banlists[0].GetQuantity(1001));
+        AssertTrue(BanlistManager.FindByName("2026.04 OCG") is not null);
+        AssertTrue(BanlistManager.TryGetByHash(BanlistManager.Banlists[1].Hash, out Banlist? byHash));
+        AssertEqual("2026.04 OCG", byHash!.Name);
+    }
+    finally
+    {
+        try { Directory.Delete(tempDir, recursive: true); } catch { }
+    }
+}
+
+static void RoomPasswordParserParsesBuiltInAndCustomDiyTokens()
+{
+    RoomPasswordParser parser = new();
+    parser.RegisterToken(["BOSS"], static (o, _) =>
+    {
+        o.StartLp = 16000;
+        o.Region = 3;
+        o.ExtraScripts.Add("./script/boss_mode.lua");
+        o.CustomTags["Mode"] = "Boss";
+    });
+    parser.RegisterPrefixToken("SKILL:", static (o, arg) => o.CustomTags["Skill"] = arg);
+
+    ParsedRoomPassword complex = parser.Parse("M,DIY,LP4000,MR5,LF2,ST6,DR2,TM180,NC,NS,PR#DiyArena");
+    AssertTrue(complex.HasRulePrefix);
+    AssertEqual("DiyArena", complex.RoomName);
+    GameOptions applied = complex.ApplyTo(new GameOptions());
+    AssertEqual(1, applied.Mode);
+    AssertEqual(3, applied.Region);
+    AssertEqual(4000, applied.StartLp);
+    AssertEqual(5, applied.MasterRule);
+    AssertEqual(1, applied.Banlist);
+    AssertEqual(6, applied.StartHand);
+    AssertEqual(2, applied.DrawCount);
+    AssertEqual(180, applied.GameTimer);
+    AssertTrue(applied.NoCheckDeck);
+    AssertTrue(applied.NoShuffleDeck);
+    AssertTrue(applied.EnablePriority);
+
+    ParsedRoomPassword tag = parser.Parse("T#TagRoom");
+    GameOptions tagOpts = tag.ApplyTo(new GameOptions());
+    AssertEqual(2, tagOpts.Mode);
+    AssertEqual(16000, tagOpts.StartLp);
+
+    ParsedRoomPassword bo5 = parser.Parse("BO5,NF#Championship");
+    GameOptions bo5Opts = bo5.ApplyTo(new GameOptions());
+    AssertEqual(1, bo5Opts.Mode);
+    AssertEqual(3, bo5Opts.MatchWins);
+    AssertEqual(-1, bo5Opts.Banlist);
+
+    ParsedRoomPassword custom = parser.Parse("BOSS,SKILL:DestinyDraw#BossRoom");
+    GameOptions customOpts = custom.ApplyTo(new GameOptions());
+    AssertEqual(16000, customOpts.StartLp);
+    AssertEqual(3, customOpts.Region);
+    AssertTrue(customOpts.ExtraScripts.Contains("./script/boss_mode.lua"));
+    AssertEqual("Boss", customOpts.CustomTags!["Mode"]);
+    AssertEqual("DestinyDraw", customOpts.CustomTags["Skill"]);
+
+    ParsedRoomPassword plain = parser.Parse("PlainRoom");
+    AssertFalse(plain.HasRulePrefix);
+    AssertEqual("PlainRoom", plain.RoomName);
+}
+
+static async Task ServerExtensionsSupportAddonsDeckValidatorChatCommandsAndDuelPreloadAsync()
+{
+    Card c1 = new(1001, 4, 0, 0, (int)CardType.Monster, 4, 1, 1, 1800, 1000, 0, 0, 0);
+    InMemoryCardRepository repo = new([c1]);
+    ServerTestFakeDuelFactory duelFactory = new();
+    bool addonInitialized = false;
+    bool addonDisposed = false;
+    bool beforeDuelStartFired = false;
+    bool allowDeck = false;
+
+    ServerOptions options = new()
+    {
+        EnableNetworkListener = false,
+        EnableChatCommands = true,
+        ChatCommands =
+        [
+            new ChatCommandDefinition("ping", "测试命令", ctx => ctx.Reply($"PONG:{ctx.RawArguments}"))
+        ],
+        AddonFactories =
+        [
+            game => new ServerTestRecordingAddon(
+                game,
+                () => addonInitialized = true,
+                () => addonDisposed = true,
+                ctx =>
+                {
+                    beforeDuelStartFired = true;
+                    ctx.Session.AddCard(9990001, 0, CardLocation.Extra);
+                })
+        ],
+        Game = new GameOptions
+        {
+            Region = 3,
+            DeckRules = new DeckRules(MainDeckMinSize: 1),
+            ExtraScripts = ["./script/diy_rule.lua"],
+            DeckValidator = new ServerTestDelegateDeckValidator(_ => allowDeck ? 0 : 1001)
+        }
+    };
+
+    CoreServer server = new(duelFactory, repo, options);
+    server.StartEmbedded();
+    AssertTrue(addonInitialized);
+
+    YGOClient p1 = server.ConnectLocalClient();
+    YGOClient p2 = server.ConnectLocalClient();
+    List<(short Sender, string Text)> p1Chats = new();
+    List<(short Sender, string Text)> p2Chats = new();
+    List<int> p1DeckErrors = new();
+
+    void HookChat(YGOClient client, List<(short, string)> sink, List<int>? deckErrors)
+    {
+        client.PacketReceivedRaw += pkt =>
+        {
+            if (pkt.Length == 0)
+                return;
+            PacketReader r = new(pkt.Span);
+            StocMessage msg = (StocMessage)r.ReadByte();
+            if (msg == StocMessage.Chat)
+            {
+                short sender = r.ReadInt16();
+                string text = r.ReadUnicodeAutoLength(256);
+                sink.Add((sender, text));
+            }
+            else if (msg == StocMessage.ErrorMsg && deckErrors is not null)
+            {
+                byte errType = r.ReadByte();
+                r.ReadSpan(3);
+                int code = r.ReadInt32();
+                if (errType == 2)
+                    deckErrors.Add(code);
+            }
+        };
+    }
+
+    HookChat(p1, p1Chats, p1DeckErrors);
+    HookChat(p2, p2Chats, null);
+
+    SendPlayerJoin(p1, "Alice", "DIY,LP6000#");
+    SendPlayerJoin(p2, "Bob", "DIY,LP6000#");
+    PumpServerAndClients(server, p1, p2);
+
+    AssertEqual(6000, server.Game!.StartLp);
+    AssertEqual(3, server.Game.Region);
+
+    // 1. 聊天命令应被拦截，只回执给发送者，不广播给对手
+    SendChat(p1, "/ping hello");
+    SendChat(p1, "/rules");
+    PumpServerAndClients(server, p1, p2);
+    AssertTrue(p1Chats.Any(c => c.Text == "PONG:hello"));
+    AssertTrue(p1Chats.Any(c => c.Text.Contains("LP=6000") && c.Text.Contains("diy_rule.lua")));
+    AssertEqual(0, p2Chats.Count);
+
+    // 普通聊天正常广播
+    SendChat(p1, "normal hello");
+    PumpServerAndClients(server, p1, p2);
+    AssertTrue(p2Chats.Any(c => c.Text == "normal hello"));
+
+    // 2. 自定义 IDeckValidator 拦截不合法卡组并放行合法卡组
+    SendSingleCardDeck(p1, 1001);
+    SendSingleCardDeck(p2, 1001);
+    SendSimpleCtos(p1, CtosMessage.HsReady);
+    PumpServerAndClients(server, p1, p2);
+    AssertTrue(p1DeckErrors.Contains(1001));
+    AssertFalse(server.Game.IsReady[0]);
+
+    allowDeck = true;
+    SendSimpleCtos(p1, CtosMessage.HsReady);
+    SendSimpleCtos(p2, CtosMessage.HsReady);
+    PumpServerAndClients(server, p1, p2);
+    SendSimpleCtos(p1, CtosMessage.HsStart);
+    PumpServerAndClients(server, p1, p2);
+
+    // 3. 进入猜拳（1=剪刀, 2=石头, 3=布）-> p1 胜出并选先攻 -> 触发 ExtraScripts.PreloadScript 与 OnBeforeDuelStart
+    SendByteCtos(p1, CtosMessage.HandResult, 2); // Rock
+    SendByteCtos(p2, CtosMessage.HandResult, 1); // Scissors -> p1 wins
+    PumpServerAndClients(server, p1, p2);
+    SendByteCtos(p1, CtosMessage.TpResult, 1);
+    PumpServerAndClients(server, p1, p2);
+
+    AssertTrue(beforeDuelStartFired);
+    AssertTrue(duelFactory.LastSession is not null);
+    AssertTrue(duelFactory.LastSession!.PreloadedScripts.Contains("./script/diy_rule.lua"));
+    AssertTrue(duelFactory.LastSession.AddedCards.Any(c => c.CardId == 9990001 && c.Location == CardLocation.Extra));
+    AssertTrue(duelFactory.LastSession.Started);
+
+    server.Stop();
+    AssertTrue(addonDisposed);
+    await Task.CompletedTask;
+}
+
+static async Task CoreServerMultiRoomRoutesConcurrentRoomsAndCleansUpAsync()
+{
+    ServerOptions options = new()
+    {
+        EnableNetworkListener = false,
+        EnableMultiRoom = true,
+        EnableChatCommands = true
+    };
+
+    CoreServer server = new(options: options);
+    server.StartEmbedded();
+
+    List<string> createdRooms = new();
+    List<string> removedRooms = new();
+    server.OnRoomCreated += g => createdRooms.Add(g.RoomName);
+    server.OnRoomRemoved += g => removedRooms.Add(g.RoomName);
+
+    YGOClient p1 = server.ConnectLocalClient();
+    YGOClient p2 = server.ConnectLocalClient();
+    YGOClient p3 = server.ConnectLocalClient();
+
+    List<string> p1Messages = new();
+    p1.PacketReceivedRaw += pkt =>
+    {
+        PacketReader r = new(pkt.Span);
+        if (r.Remaining > 0 && (StocMessage)r.ReadByte() == StocMessage.Chat)
+        {
+            r.ReadInt16();
+            p1Messages.Add(r.ReadUnicodeAutoLength(256));
+        }
+    };
+
+    SendPlayerJoin(p1, "Alice", "DIY,LP4000#Alpha");
+    SendPlayerJoin(p2, "Bob", "Alpha");
+    SendPlayerJoin(p3, "Charlie", "T#Beta");
+    PumpServerAndClients(server, p1, p2, p3);
+
+    AssertEqual(2, server.RoomCount);
+    AssertTrue(createdRooms.Contains("Alpha"));
+    AssertTrue(createdRooms.Contains("Beta"));
+    AssertTrue(server.TryGetRoom("Alpha", out Game? alpha));
+    AssertTrue(server.TryGetRoom("Beta", out Game? beta));
+    AssertEqual(4000, alpha!.StartLp);
+    AssertEqual(3, alpha.Region);
+    AssertEqual(2, alpha.CreateSnapshot().DuelistCount);
+    AssertEqual(2, beta!.Mode);
+    AssertEqual(16000, beta.StartLp);
+    AssertEqual(1, beta.CreateSnapshot().DuelistCount);
+
+    SendChat(p1, "/rooms");
+    PumpServerAndClients(server, p1, p2, p3);
+    AssertTrue(p1Messages.Any(m => m.Contains("Alpha") && m.Contains("Beta")));
+
+    // 房主 Charlie 离开 Beta，只关闭 Beta，不关闭整个服务器也不影响 Alpha
+    SendSimpleCtos(p3, CtosMessage.LeaveGame);
+    PumpServerAndClients(server, p1, p2, p3);
+
+    AssertTrue(server.IsRunning);
+    AssertEqual(1, server.RoomCount);
+    AssertTrue(removedRooms.Contains("Beta"));
+    AssertTrue(server.TryGetRoom("Alpha", out _));
+    AssertFalse(server.TryGetRoom("Beta", out _));
+
+    server.Stop();
+    AssertEqual(0, server.RoomCount);
+    await Task.CompletedTask;
+}
+
+static void ServerAutoDiscoversExpansionsAndCliMapsOptions()
+{
+    string tempDir = Path.Combine(Path.GetTempPath(), "YGOProSharpAutoExp_" + Guid.NewGuid().ToString("N"));
+    string baseScriptDir = Path.Combine(tempDir, "script");
+    string expDir = Path.Combine(tempDir, "expansions");
+    string diyDir = Path.Combine(tempDir, "diy");
+    string diyScriptDir = Path.Combine(diyDir, "script");
+    Directory.CreateDirectory(baseScriptDir);
+    Directory.CreateDirectory(expDir);
+    Directory.CreateDirectory(diyScriptDir);
+
+    try
+    {
+        CreateTestCardDb(Path.Combine(tempDir, "cards.cdb"),
+            [(1001, 1, 0, 0, (int)CardType.Monster, 4, 1, 1, 1500, 1000, "Base", "d")]);
+        CreateTestCardDb(Path.Combine(expDir, "exp.cdb"),
+            [(1001, 3, 0, 0, (int)CardType.Monster, 4, 1, 1, 2000, 1000, "Exp", "d")]);
+        CreateTestCardDb(Path.Combine(diyDir, "custom.cdb"),
+            [(9990010, 4, 0, 0, (int)CardType.Monster, 4, 1, 1, 3000, 2000, "Diy", "d")]);
+
+        File.WriteAllText(Path.Combine(tempDir, "lflist.conf"), "!BaseLF\n1001 1\n");
+        File.WriteAllText(Path.Combine(diyDir, "lflist.conf"), "!DiyLF\n9990010 3\n");
+        File.WriteAllText(Path.Combine(baseScriptDir, "c1001.lua"), "-- base");
+        File.WriteAllText(Path.Combine(diyScriptDir, "c1001.lua"), "-- diy");
+
+        ServerOptions options = new()
+        {
+            RootPath = tempDir,
+            EnableNetworkListener = false,
+            AutoLoadExpansions = true
+        };
+
+        IReadOnlyList<string> dbPaths = YGOProSharpServer.ResolveDatabasePaths(options);
+        AssertEqual(3, dbPaths.Count);
+
+        using ServerTestFakeOcgRuntime fakeRuntime = new();
+        using YGOProSharpServerHost host = YGOProSharpServer.CreateHost(options, fakeRuntime);
+        AssertTrue(fakeRuntime.LastOptions is not null);
+        AssertTrue(fakeRuntime.LastOptions!.CardDataProvider.TryGetCardData(1001, out OcgCardData overridden));
+        AssertEqual(2000, overridden.Attack);
+        AssertTrue(fakeRuntime.LastOptions.CardDataProvider.TryGetCardData(9990010, out OcgCardData customCard));
+        AssertEqual(3000, customCard.Attack);
+        AssertTrue(fakeRuntime.LastOptions.ScriptProvider.TryGetScript("./script/c1001.lua", out byte[] scriptBytes));
+        AssertEqual("-- diy", Encoding.UTF8.GetString(scriptBytes));
+        AssertEqual("DiyLF", BanlistManager.Banlists[0].Name);
+
+        // CLI 配置映射验证
+        CliConfiguration config = CliConfiguration.Load(
+        [
+            "EnableMultiRoom=true",
+            "MaxRooms=64",
+            "AutoLoadExpansions=false",
+            "ExpansionDirs=exp1;exp2",
+            "ExtraDatabases=diy1.cdb,diy2.cdb",
+            "ExtraScriptDirs=diy/script",
+            "ExtraScripts=./script/global_diy.lua",
+            "EnableChatCommands=false",
+            "MatchWins=3"
+        ]);
+        ServerOptions cliOptions = CliOptionsFactory.CreateServerOptions(config);
+        AssertTrue(cliOptions.EnableMultiRoom);
+        AssertEqual(64, cliOptions.MaxRooms);
+        AssertFalse(cliOptions.AutoLoadExpansions);
+        AssertEqual(2, cliOptions.ExpansionDirectories.Count);
+        AssertEqual(2, cliOptions.ExtraDatabases.Count);
+        AssertEqual(1, cliOptions.ExtraScriptDirectories.Count);
+        AssertEqual(1, cliOptions.Game.ExtraScripts.Count);
+        AssertFalse(cliOptions.EnableChatCommands);
+        AssertEqual(3, cliOptions.Game.MatchWins);
+    }
+    finally
+    {
+        try { Directory.Delete(tempDir, recursive: true); } catch { }
+    }
+}
+
+static void CreateTestCardDb(
+    string dbPath,
+    IEnumerable<(int Id, int Ot, int Alias, long Setcode, int Type, int Level, int Race, int Attr, int Atk, int Def, string Name, string Desc)> cards)
+{
+    using SqliteConnection conn = new($"Data Source={dbPath}");
+    conn.Open();
+    using (SqliteCommand createCmd = conn.CreateCommand())
+    {
+        createCmd.CommandText = """
+            CREATE TABLE datas (id INTEGER PRIMARY KEY, ot INTEGER, alias INTEGER, setcode INTEGER, type INTEGER, atk INTEGER, def INTEGER, level INTEGER, race INTEGER, attribute INTEGER, category INTEGER);
+            CREATE TABLE texts (id INTEGER PRIMARY KEY, name TEXT, desc TEXT);
+            """;
+        createCmd.ExecuteNonQuery();
+    }
+
+    foreach (var c in cards)
+    {
+        using SqliteCommand insertData = conn.CreateCommand();
+        insertData.CommandText = "INSERT INTO datas VALUES ($id,$ot,$alias,$setcode,$type,$atk,$def,$level,$race,$attr,0)";
+        insertData.Parameters.AddWithValue("$id", c.Id);
+        insertData.Parameters.AddWithValue("$ot", c.Ot);
+        insertData.Parameters.AddWithValue("$alias", c.Alias);
+        insertData.Parameters.AddWithValue("$setcode", c.Setcode);
+        insertData.Parameters.AddWithValue("$type", c.Type);
+        insertData.Parameters.AddWithValue("$atk", c.Atk);
+        insertData.Parameters.AddWithValue("$def", c.Def);
+        insertData.Parameters.AddWithValue("$level", c.Level);
+        insertData.Parameters.AddWithValue("$race", c.Race);
+        insertData.Parameters.AddWithValue("$attr", c.Attr);
+        insertData.ExecuteNonQuery();
+
+        using SqliteCommand insertText = conn.CreateCommand();
+        insertText.CommandText = "INSERT INTO texts VALUES ($id,$name,$desc)";
+        insertText.Parameters.AddWithValue("$id", c.Id);
+        insertText.Parameters.AddWithValue("$name", c.Name);
+        insertText.Parameters.AddWithValue("$desc", c.Desc);
+        insertText.ExecuteNonQuery();
+    }
+}
+
+static void SendPlayerJoin(YGOClient client, string name, string password)
+{
+    using (MemoryStream ms = new())
+    using (BinaryWriter w = new(ms))
+    {
+        w.Write((byte)CtosMessage.PlayerInfo);
+        w.WriteUnicode(name, 20);
+        client.Send(ms.ToArray());
+    }
+
+    using (MemoryStream ms = new())
+    using (BinaryWriter w = new(ms))
+    {
+        w.Write((byte)CtosMessage.JoinGame);
+        w.Write((short)YGOProSharpServer.DefaultClientVersion);
+        w.Write(0);
+        w.Write((short)0);
+        w.WriteUnicode(password, 20);
+        client.Send(ms.ToArray());
+    }
+}
+
+static void SendChat(YGOClient client, string text)
+{
+    using MemoryStream ms = new();
+    using BinaryWriter w = new(ms);
+    w.Write((byte)CtosMessage.Chat);
+    w.WriteUnicode(text, text.Length + 1);
+    client.Send(ms.ToArray());
+}
+
+static void SendSingleCardDeck(YGOClient client, int cardId)
+{
+    using MemoryStream ms = new();
+    using BinaryWriter w = new(ms);
+    w.Write((byte)CtosMessage.UpdateDeck);
+    w.Write(1);
+    w.Write(0);
+    w.Write(cardId);
+    client.Send(ms.ToArray());
+}
+
+static void SendSimpleCtos(YGOClient client, CtosMessage msg)
+{
+    client.Send([(byte)msg]);
+}
+
+static void SendByteCtos(YGOClient client, CtosMessage msg, byte value)
+{
+    client.Send([(byte)msg, value]);
+}
+
+static void PumpServerAndClients(CoreServer server, params YGOClient[] clients)
+{
+    for (int round = 0; round < 5; round++)
+    {
+        server.Tick();
+        for (int i = 0; i < clients.Length; i++)
+            clients[i].Update();
+    }
+}
+
 internal static class TestLog
 {
     public static ListLoggerProvider Provider { get; } = new();
@@ -3635,3 +4168,71 @@ internal sealed class FakeLuaFunction : ILuaFunction
 internal sealed record FakeRawLuaClosure(Func<object?[], object?> Callback);
 
 internal sealed record FakeLuaCardArray(IReadOnlyList<WindBot.Game.ClientCard> Cards);
+
+internal sealed class ServerTestDelegateDeckValidator(Func<DeckValidationContext, int> validator) : IDeckValidator
+{
+    public int Validate(DeckValidationContext context) => validator(context);
+}
+
+internal sealed class ServerTestRecordingAddon : AddonBase
+{
+    private readonly Action _onDispose;
+    private readonly Action<DuelStartContext> _onBeforeDuelStart;
+
+    public ServerTestRecordingAddon(Game game, Action onInit, Action onDispose, Action<DuelStartContext> onBeforeDuelStart)
+        : base(game)
+    {
+        _onDispose = onDispose;
+        _onBeforeDuelStart = onBeforeDuelStart;
+        Game.OnBeforeDuelStart += HandleBeforeDuelStart;
+        onInit();
+    }
+
+    private void HandleBeforeDuelStart(object sender, DuelStartContext e) => _onBeforeDuelStart(e);
+
+    public override void Dispose()
+    {
+        Game.OnBeforeDuelStart -= HandleBeforeDuelStart;
+        _onDispose();
+    }
+}
+
+internal sealed class ServerTestFakeDuelFactory : IDuelFactory
+{
+    public ServerTestFakeDuelSession? LastSession { get; private set; }
+    public IDuelSession Create(uint seed) => LastSession = new ServerTestFakeDuelSession();
+    public IDuelSession Create(ReadOnlySpan<uint> seedSequence) => LastSession = new ServerTestFakeDuelSession();
+    public IDuelSession CreateLegacy(uint seed) => LastSession = new ServerTestFakeDuelSession();
+}
+
+internal sealed class ServerTestFakeDuelSession : IDuelSession
+{
+    public List<string> PreloadedScripts { get; } = new();
+    public List<(int CardId, int Owner, CardLocation Location)> AddedCards { get; } = new();
+    public bool Started { get; private set; }
+
+    public void SetAnalyzer(DuelMessageAnalyzer analyzer) { }
+    public void SetErrorHandler(Action<string> errorHandler) { }
+    public void InitPlayers(int startLp, int startHand, int drawCount) { }
+    public void AddCard(int cardId, int owner, CardLocation location) => AddedCards.Add((cardId, owner, location));
+    public void AddTagCard(int cardId, int owner, CardLocation location) => AddedCards.Add((cardId, owner, location));
+    public void Start(int options) => Started = true;
+    public int Process() => 0;
+    public void SetResponse(int response) { }
+    public void SetResponse(ReadOnlySpan<byte> response) { }
+    public int QueryFieldCount(int player, CardLocation location) => AddedCards.Count(c => c.Owner == player && c.Location == location);
+    public int QueryFieldCard(int player, CardLocation location, Span<byte> destination, int flag = 16777215, bool useCache = false) => 0;
+    public int QueryCard(int player, int location, int sequence, Span<byte> destination, int flag = 16777215, bool useCache = false) => 0;
+    public int QueryFieldInfo(Span<byte> destination) => 1;
+    public int PreloadScript(string scriptName) { PreloadedScripts.Add(scriptName); return 1; }
+    public void End() { }
+    public void Dispose() { }
+}
+
+internal sealed class ServerTestFakeOcgRuntime : IOcgRuntime
+{
+    public OcgRuntimeOptions? LastOptions { get; private set; }
+    public IDuelFactory DuelFactory { get; } = new ServerTestFakeDuelFactory();
+    public void Initialize(OcgRuntimeOptions options) => LastOptions = options;
+    public void Dispose() { }
+}

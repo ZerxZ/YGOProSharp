@@ -56,10 +56,18 @@ namespace YGOProSharp.Core
 
         public int Check(Banlist? ban, bool ocg, bool tcg)
         {
-            return Check(ban, ocg, tcg, DeckRules.Default);
+            return Check(ban, ocg, tcg, allowCustom: true, DeckRules.Default);
         }
 
         public int Check(Banlist? ban, bool ocg, bool tcg, DeckRules rules)
+        {
+            return Check(ban, ocg, tcg, allowCustom: true, rules);
+        }
+
+        /// <summary>
+        /// 校验卡组张数、区域合法性（OCG / TCG / DIY Custom）和禁限表数量限制。
+        /// </summary>
+        public int Check(Banlist? ban, bool ocg, bool tcg, bool allowCustom, DeckRules rules)
         {
             ArgumentNullException.ThrowIfNull(rules);
 
@@ -71,13 +79,13 @@ namespace YGOProSharp.Core
 
             Dictionary<int, int> cards = new(Main.Count + Extra.Count + Side.Count);
 
-            int invalidCard = CheckStack(Main, cards, ocg, tcg);
+            int invalidCard = CheckStack(Main, cards, ocg, tcg, allowCustom);
             if (invalidCard != 0)
                 return invalidCard;
-            invalidCard = CheckStack(Extra, cards, ocg, tcg);
+            invalidCard = CheckStack(Extra, cards, ocg, tcg, allowCustom);
             if (invalidCard != 0)
                 return invalidCard;
-            invalidCard = CheckStack(Side, cards, ocg, tcg);
+            invalidCard = CheckStack(Side, cards, ocg, tcg, allowCustom);
             if (invalidCard != 0)
                 return invalidCard;
 
@@ -120,7 +128,7 @@ namespace YGOProSharp.Core
             return true;
         }
 
-        private int CheckStack(IList<int> stack, Dictionary<int, int> cards, bool ocg, bool tcg)
+        private int CheckStack(IList<int> stack, Dictionary<int, int> cards, bool ocg, bool tcg, bool allowCustom)
         {
             for (int i = 0; i < stack.Count; i++)
             {
@@ -130,6 +138,9 @@ namespace YGOProSharp.Core
 
                 AddToCards(cards, card);
                 if (!ocg && card.Ot == 1 || !tcg && card.Ot == 2)
+                    return id;
+                // YGOPro/EDOPro 约定 ot & 0x4 表示 DIY/Custom 卡片。
+                if (!allowCustom && (card.Ot & 0x4) != 0)
                     return id;
             }
 

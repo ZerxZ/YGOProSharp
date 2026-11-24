@@ -16,17 +16,32 @@ public sealed class SqliteCardDatabaseManager : ICardDatabaseManager
     public ICardRepository LoadCards(string databaseFullPath)
     {
         EnsureDatabaseExists(databaseFullPath);
+        return LoadCardsCore(new[] { databaseFullPath });
+    }
 
+    public ICardRepository LoadCards(IEnumerable<string> databaseFullPaths)
+    {
+        ArgumentNullException.ThrowIfNull(databaseFullPaths);
+        return LoadCardsCore(databaseFullPaths.Where(File.Exists));
+    }
+
+    private static ICardRepository LoadCardsCore(IEnumerable<string> databaseFullPaths)
+    {
         List<Card> cards = new();
-        using SqliteConnection connection = OpenConnection(databaseFullPath);
-        using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = CardQuery;
+        foreach (string databaseFullPath in databaseFullPaths)
+        {
+            using SqliteConnection connection = OpenConnection(databaseFullPath);
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = CardQuery;
 
-        using SqliteDataReader reader = command.ExecuteReader();
-        while (reader.Read())
-            cards.Add(ReadCard(reader));
+            using SqliteDataReader reader = command.ExecuteReader();
+            while (reader.Read())
+                cards.Add(ReadCard(reader));
+        }
 
-        return new InMemoryCardRepository(cards);
+        return cards.Count == 0
+            ? EmptyCardRepository.Instance
+            : new InMemoryCardRepository(cards);
     }
 
     public INamedCardRepository LoadNamedCards(string databaseFullPath)

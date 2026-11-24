@@ -13,18 +13,35 @@ namespace YGOProSharp.Server
     /// </summary>
     public class Player
     {
-        public Game Game { get; private set; }
+        public Game Game { get; private set; } = null!;
         public string Name { get; private set; } = null!;
         public bool IsAuthentified { get; private set; }
         public int Type { get; set; }
         public Deck Deck { get; private set; } = null!;
         public PlayerState State { get; set; }
+        public string JoinPassword { get; private set; } = string.Empty;
+        private readonly CoreServer? _server;
         private YGOClient _client;
         private readonly ILogger<Player> _logger;
 
         public Player(Game game, YGOClient client)
+            : this(game, client, server: null)
+        {
+        }
+
+        internal Player(Game game, YGOClient client, CoreServer? server)
         {
             Game = game;
+            _server = server;
+            Type = (int)PlayerType.Undefined;
+            State = PlayerState.None;
+            _client = client;
+            _logger = AppLog.CreateLogger<Player>();
+        }
+
+        internal Player(CoreServer server, YGOClient client)
+        {
+            _server = server;
             Type = (int)PlayerType.Undefined;
             State = PlayerState.None;
             _client = client;
@@ -44,7 +61,7 @@ namespace YGOProSharp.Server
         public void OnDisconnected()
         {
             _logger.LogInformation("Player {PlayerName} disconnected. Authenticated={Authenticated}, Type={PlayerType}.", Name, IsAuthentified, Type);
-            if (IsAuthentified)
+            if (IsAuthentified && Game is not null)
                 Game.RemovePlayer(this);
         }
 
@@ -154,13 +171,36 @@ namespace YGOProSharp.Server
 
         private void OnCreateGame(ref PacketReader packet)
         {
-            Game.SetRules(ref packet);
-            packet.ReadUnicode(20);//hostname
-            packet.ReadUnicode(30); //password
+            if (Type != (int)PlayerType.Undefined)
+                return;
+
+            HostInfo hostInfo = HostInfo.ReadFrom(ref packet);
+            string hostName = packet.Remaining >= 40
+                ? packet.ReadUnicode(20)
+                : packet.ReadUnicodeAutoLength(20);
+            string password = packet.Remaining >= 60
+                ? packet.ReadUnicode(30)
+                : packet.ReadUnicodeAutoLength(30);
+            JoinPassword = password;
+
+            if (_server is not null)
+            {
+                Game? target = _server.ResolveGameForCreate(this, hostInfo, hostName, password);
+                if (target is null)
+                {
+                    Disconnect();
+                    return;
+                }
+                Game = target;
+            }
+            else
+            {
+                Game.SetRules(hostInfo);
+            }
 
             Game.AddPlayer(this);
             IsAuthentified = true;
-            _logger.LogInformation("Player {PlayerName} created game and authenticated.", Name);
+            _logger.LogInformation("Player {PlayerName} created game in room '{RoomName}' and authenticated.", Name, Game.RoomName);
         }
 
         private void OnJoinGame(ref PacketReader packet)
@@ -175,9 +215,25 @@ namespace YGOProSharp.Server
             packet.ReadInt32();//gameid
             packet.ReadInt16();
 
+            string password = packet.Remaining >= 2
+                ? packet.ReadUnicodeAutoLength(30)
+                : string.Empty;
+            JoinPassword = password;
+
+            if (_server is not null)
+            {
+                Game? target = _server.ResolveGameForJoin(this, password);
+                if (target is null)
+                {
+                    Disconnect();
+                    return;
+                }
+                Game = target;
+            }
+
             Game.AddPlayer(this);
             IsAuthentified = true;
-            _logger.LogInformation("Player {PlayerName} joined game. ClientVersion={ClientVersion}.", Name, version);
+            _logger.LogInformation("Player {PlayerName} joined room '{RoomName}'. ClientVersion={ClientVersion}.", Name, Game.RoomName, version);
         }
 
         private void OnChat(ref PacketReader packet)
