@@ -9,6 +9,10 @@ public sealed record ServerOptions
     public string DatabaseFile { get; init; } = "cards.cdb";
     public string BanlistFile { get; init; } = "lflist.conf";
     public int Port { get; init; } = CoreServer.DefaultPort;
+    /// <summary>
+    /// 是否开启 TCP 监听端口。设为 <c>false</c> 时仅以进程内嵌入式模式启动，供 C# 代码通过内存通道直连。
+    /// </summary>
+    public bool EnableNetworkListener { get; init; } = true;
     public uint ClientVersion { get; init; } = YGOProSharpServer.DefaultClientVersion;
     public bool StandardStreamProtocol { get; init; }
     public GameOptions Game { get; init; } = new();

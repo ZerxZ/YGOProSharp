@@ -46,13 +46,20 @@ remain with their respective authors.
 
 4. IceYGO/windbot
    Source: https://github.com/IceYGO/windbot
-   Role: original WindBot client Bot project and AI behavior reference
-   License: see upstream repository
+   Role: original WindBot client Bot project, AI executors, and behavior reference
+   License: MIT License
+   Copyright (c) 2015-2017 IceYGO
 
 5. MDPro3 WindBot version
    Source: https://code.moenext.com/sherry_chaos/MDPro3
    Role: source version used for the current YGOProSharp.WindBot adaptation
    License: see upstream repository
+
+6. NLua / KeraLua
+   Source: https://github.com/NLua/NLua
+   Role: optional Lua 5.4 runtime binding used by YGOProSharp.Cli to execute WindBot Lua decks
+   License: MIT License
+   Copyright (c) NLua contributors
 
 YGOProSharp is an experimental AI-assisted adaptation and refactoring project.
 It does not imply endorsement by the upstream projects and does not guarantee

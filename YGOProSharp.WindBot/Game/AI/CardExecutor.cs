@@ -1,4 +1,5 @@
 using System;
+using YGOProSharp.Core.Cards;
 
 namespace WindBot.Game.AI
 {
@@ -10,7 +11,8 @@ namespace WindBot.Game.AI
 
         public CardExecutor(ExecutorType type, int cardId, Func<bool> func)
         {
-            CardId = cardId;
+            NamedCard card = CardDatabase.Get(cardId);
+            CardId = card != null && NamedCard.IsAltartAlias(card.Id, card.Alias) ? card.Alias : cardId;
             Type = type;
             Func = func;
         }

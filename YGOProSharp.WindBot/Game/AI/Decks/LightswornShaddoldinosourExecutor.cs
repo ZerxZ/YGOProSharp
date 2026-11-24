@@ -1,5 +1,6 @@
 using YGOProSharp.Abstractions.Ocg.Enums;
 using System.Collections.Generic;
+using System.Linq;
 using WindBot;
 using WindBot.Game;
 using WindBot.Game.AI;
@@ -110,7 +111,7 @@ namespace WindBot.Game.AI.Decks
             AddExecutor(ExecutorType.Activate, CardId.CoralDragon, CoralDragoneff);
             AddExecutor(ExecutorType.Activate, CardId.RedWyvern, RedWyverneff);
             AddExecutor(ExecutorType.Activate, CardId.CrystalWingSynchroDragon, CrystalWingSynchroDragoneff);
-            AddExecutor(ExecutorType.Activate, CardId.BlackRoseMoonlightDragon, BlackRoseMoonlightDragoneff);
+            AddExecutor(ExecutorType.Activate, CardId.BlackRoseMoonlightDragon);
             AddExecutor(ExecutorType.Activate, CardId.Sdulldeat, Sdulldeateff);
             AddExecutor(ExecutorType.Activate, CardId.Michael, Michaeleff);
             AddExecutor(ExecutorType.Activate, CardId.ScarlightRedDragon, ScarlightRedDragoneff);
@@ -251,6 +252,30 @@ namespace WindBot.Game.AI.Decks
             return atk;
         }
 
+        public override IList<ClientCard> OnSelectCard(
+            IList<ClientCard> cards, int min, int max, int hint, bool cancelable)
+        {
+            ClientCard currentChainCard = Duel.GetCurrentChainCard();
+            if (currentChainCard != null &&
+                currentChainCard.Controller == 0 &&
+                currentChainCard.IsCode(
+                    CardId.TG_WonderMagician,
+                    CardId.BlackRoseMoonlightDragon) &&
+                (currentChainCard.IsCode(CardId.TG_WonderMagician)
+                    ? hint == HintMsg.Destroy
+                    : hint == HintMsg.ReturnToHand))
+            {
+                ClientCard target = currentChainCard.IsCode(CardId.TG_WonderMagician)
+                    ? Util.GetProblematicEnemySpell()
+                    : Util.GetBestEnemyMonster();
+                if (target != null && cards.Contains(target))
+                    return Util.CheckSelectCount(
+                        new List<ClientCard> { target }, cards, min, max);
+            }
+
+            return base.OnSelectCard(cards, min, max, hint, cancelable);
+        }
+
         public override void OnNewPhase()
         {
             Enemy_atk = 0;
@@ -263,6 +288,7 @@ namespace WindBot.Game.AI.Decks
             //if (GetTotalATK(list) / 2 >= Bot.LifePoints) return false;
             Enemy_atk = GetTotalATK(list);
             //SLogger.DebugWriteLine("++++++++++++++++++" + Enemy_atk + "++++++++++++");
+            base.OnNewPhase();
         }
         public override void OnNewTurn()
         {
@@ -542,7 +568,7 @@ namespace WindBot.Game.AI.Decks
 
         private bool SouleatingOviraptoreff()
         {
-            if (!OvertexCoatlseff_used && Bot.GetRemainingCount(CardId.OvertexCoatls, 3) > 0)
+            if (!OvertexCoatlseff_used && Bot.HasInDeck(CardId.OvertexCoatls))
             {
                 AI.SelectCard(CardId.OvertexCoatls);
                 AI.SelectOption(0);
@@ -709,14 +735,22 @@ namespace WindBot.Game.AI.Decks
                     CardId.ElShaddollGrysra,
                     CardId.ElShaddollWinda
                     );
-                AI.SelectNextCard(
+                List<int> materials = new List<int>
+                {
                     CardId.ShaddollSquamata,
                     CardId.ShaddollBeast,
                     CardId.ShaddollHedgehog,
                     CardId.ShaddollDragon,
                     CardId.ShaddollFalco,
                     CardId.FairyTailSnow
-                    );
+                };
+                // Keep spent effects as material fallbacks, but prefer available graveyard effects.
+                AI.SelectNextCard(materials.OrderBy(id =>
+                    id == CardId.ShaddollSquamata && ShaddollSquamata_used
+                    || id == CardId.ShaddollBeast && ShaddollBeast_used
+                    || id == CardId.ShaddollHedgehog && ShaddollHedgehog_used
+                    || id == CardId.ShaddollDragon && (ShaddollDragon_used || Enemy.GetSpellCount() == 0)
+                    || id == CardId.ShaddollFalco && ShaddollFalco_used).ToArray());
                 AI.SelectPosition(CardPosition.FaceUpAttack);
                 return true;
             }
@@ -833,7 +867,6 @@ namespace WindBot.Game.AI.Decks
 
         private bool ShaddollSquamataeff()
         {
-            ShaddollSquamata_used = true;
             if (Card.Location != CardLocation.MonsterZone)
             {
                 if(Util.ChainContainsCard(CardId.ElShaddollConstruct))
@@ -860,6 +893,7 @@ namespace WindBot.Game.AI.Decks
                 ClientCard target = Util.GetBestEnemyMonster();
                 AI.SelectCard(target);
             }
+            ShaddollSquamata_used = true;
             return true;
         }
         
@@ -927,11 +961,11 @@ namespace WindBot.Game.AI.Decks
 
         private bool ShaddollDragoneff()
         {
-            ShaddollDragon_used = true;
             if (Card.Location == CardLocation.MonsterZone)
             {
                 ClientCard target = Util.GetBestEnemyCard();
                 AI.SelectCard(target);
+                ShaddollDragon_used = true;
                 return true;
             }
             else
@@ -939,6 +973,7 @@ namespace WindBot.Game.AI.Decks
                 if (Enemy.GetSpellCount() == 0) return false;
                 ClientCard target = Util.GetBestEnemySpell();
                 AI.SelectCard(target);
+                ShaddollDragon_used = true;
                 return true;
             }
         }
@@ -958,7 +993,7 @@ namespace WindBot.Game.AI.Decks
 
         private bool FoolishBurialEffect()
         {
-            if (Bot.GetRemainingCount(CardId.DoubleEvolutionPill, 3) > 0)
+            if (Bot.HasInDeck(CardId.DoubleEvolutionPill))
             {
                 if (!OvertexCoatlseff_used)
                 {
@@ -972,7 +1007,10 @@ namespace WindBot.Game.AI.Decks
             }
             else
             {
-                AI.SelectCard(CardId.ShaddollSquamata, CardId.FairyTailSnow);
+                if (!ShaddollSquamata_used && Bot.HasInDeck(CardId.ShaddollSquamata))
+                    AI.SelectCard(CardId.ShaddollSquamata);
+                else
+                    AI.SelectCard(CardId.FairyTailSnow, CardId.ShaddollSquamata);
             }
             return true;
         }      
@@ -1191,20 +1229,6 @@ namespace WindBot.Game.AI.Decks
             return false;
         }
       
-        private bool BlackRoseMoonlightDragoneff()
-        {
-            IList<ClientCard> targets = new List<ClientCard>();
-            ClientCard target1 = Util.GetBestEnemyMonster();
-            if (target1 != null)
-            {
-                targets.Add(target1);
-                AI.SelectCard(targets);
-                return true;
-            }
-            return false;
-
-        }
-
         private bool RedWyvernsp()
         {
             return false;

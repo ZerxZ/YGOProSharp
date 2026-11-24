@@ -1,9 +1,13 @@
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 
 namespace YGOProSharp.Core
 {
     public class Banlist
     {
+        // O(1) 数量索引，避免卡组校验时对 4 个 List 做线性 Contains 扫描。
+        private readonly Dictionary<int, int> _quantities = new();
+
         public IList<int> BannedIds { get; private set; }
         public IList<int> LimitedIds { get; private set; }
         public IList<int> SemiLimitedIds { get; private set; }
@@ -23,16 +27,12 @@ namespace YGOProSharp.Core
             Hash = 0x7dfcee6a;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int GetQuantity(int cardId)
         {
-            if (BannedIds.Contains(cardId))
-                return 0;
-            if (LimitedIds.Contains(cardId))
-                return 1;
-            if (SemiLimitedIds.Contains(cardId))
-                return 2;
-            if (UnlimitedIds.Contains(cardId))
-                return 3;
+            if (_quantities.TryGetValue(cardId, out int quantity))
+                return quantity;
+
             return WhitelistOnly ? 0 : 3;
         }
 
@@ -63,6 +63,10 @@ namespace YGOProSharp.Core
                     UnlimitedIds.Add(cardId);
                     break;
             }
+            // 与原 GetQuantity 优先级一致（Banned < Limited < SemiLimited < Unlimited）。
+            if (!_quantities.TryGetValue(cardId, out int existing) || quantity < existing)
+                _quantities[cardId] = quantity;
+
             uint code = (uint)cardId;
             Hash = Hash ^ ((code << 18) | (code >> 14)) ^ ((code << (27 + quantity)) | (code >> (5 - quantity)));
         }

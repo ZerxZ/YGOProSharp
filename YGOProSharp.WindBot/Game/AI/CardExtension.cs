@@ -35,11 +35,31 @@ namespace WindBot.Game.AI
         }
 
         /// <summary>
+        /// Can this monster attack while it is in face-up Defense Position?
+        /// </summary>
+        public static bool IsMonsterAttackWhileInDefPos(this ClientCard card)
+        {
+            return card.IsFaceup() && card.IsDefense() && !card.IsDisabled()
+                && Enum.IsDefined(typeof(DefenseAttackMonster), card.Id);
+        }
+
+        /// <summary>
+        /// Get the power this monster uses to attack in its current position.
+        /// </summary>
+        public static int GetAttackPower(this ClientCard card)
+        {
+            if (card.IsMonsterAttackWhileInDefPos()
+                && !Enum.IsDefined(typeof(DefenseAttackWithAttackValueMonster), card.Id))
+                return card.Defense;
+            return card.Attack;
+        }
+
+        /// <summary>
         /// Is this card shouldn't be tried to be selected as target?
         /// </summary>
         public static bool IsShouldNotBeTarget(this ClientCard card)
         {
-            return !card.IsDisabled() && !card.HasType(CardType.Normal)
+            return card.IsFaceup() && !card.IsDisabled() && !card.HasType(CardType.Normal)
                 && (Enum.IsDefined(typeof(ShouldNotBeTarget), card.Id) || card.Overlays.Any(code => code == 91025875));
         }
 
@@ -48,7 +68,7 @@ namespace WindBot.Game.AI
         /// </summary>
         public static bool IsShouldNotBeMonsterTarget(this ClientCard card)
         {
-            return !card.IsDisabled() && Enum.IsDefined(typeof(ShouldNotBeMonsterTarget), card.Id)
+            return card.IsFaceup() && !card.IsDisabled() && Enum.IsDefined(typeof(ShouldNotBeMonsterTarget), card.Id)
                 || card.EquipCards.Any(c => c.IsCode(89812483) && !c.IsDisabled());
         }
 
@@ -57,7 +77,7 @@ namespace WindBot.Game.AI
         /// </summary>
         public static bool IsShouldNotBeSpellTrapTarget(this ClientCard card)
         {
-            return !card.IsDisabled() && Enum.IsDefined(typeof(ShouldNotBeSpellTrapTarget), card.Id)
+            return card.IsFaceup() && !card.IsDisabled() && Enum.IsDefined(typeof(ShouldNotBeSpellTrapTarget), card.Id)
                 || card.EquipCards.Any(c => c.IsCode(89812483) && !c.IsDisabled());
         }
 
@@ -98,6 +118,11 @@ namespace WindBot.Game.AI
         public static bool IsMonsterNotBeXyzMaterial(this ClientCard card)
         {
             return Enum.IsDefined(typeof(NotBeXyzMaterialMonster), card.Id);
+        }
+
+        public static bool IsMonsterNotBeSummonTribute(this ClientCard card)
+        {
+            return Enum.IsDefined(typeof(NotBeSummonTributeMonster), card.Id);
         }
     }
 }

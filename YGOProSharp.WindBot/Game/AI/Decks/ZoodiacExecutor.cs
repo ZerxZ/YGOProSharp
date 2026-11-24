@@ -592,4 +592,3 @@ namespace WindBot.Game.AI.Decks
         }
     }
 }
-

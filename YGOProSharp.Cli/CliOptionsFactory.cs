@@ -1,6 +1,9 @@
 using WindBot;
+using WindBot.Game.AI.Lua;
+using YGOProSharp.Abstractions.Scripting;
 using YGOProSharp.Core;
 using YGOProSharp.Core.Cards;
+using YGOProSharp.Protocol;
 using YGOProSharp.Server;
 
 namespace YGOProSharp.Cli;
@@ -62,6 +65,15 @@ public static class CliOptionsFactory
         info.Hand = configuration.GetInt("Hand", info.Hand);
         info.Debug = configuration.GetBool("Debug", info.Debug);
         info.Chat = configuration.GetBool("Chat", info.Chat);
+        info.UseWebSocket = configuration.GetBool("UseWebSocket", info.UseWebSocket);
+        info.WebSocketUseWss = configuration.GetBool("WebSocketUseWss", info.WebSocketUseWss);
+        info.WebSocketPath = configuration.GetString("WebSocketPath", info.WebSocketPath);
+        string? wsFraming = configuration.GetString("WebSocketFramingMode");
+        if (!string.IsNullOrWhiteSpace(wsFraming) &&
+            Enum.TryParse(wsFraming, ignoreCase: true, out WebSocketFramingMode parsedFraming))
+        {
+            info.WebSocketFramingMode = parsedFraming;
+        }
         return info;
     }
 
@@ -69,12 +81,53 @@ public static class CliOptionsFactory
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
+        bool enableLuaDecks = configuration.GetBool("EnableLuaDecks", true);
+        ILuaRuntime? luaRuntime = enableLuaDecks ? NLuaRuntime.Instance : null;
+        ILuaScriptSourceProvider? luaScriptProvider = enableLuaDecks
+            ? CreateLuaDeckScriptProvider(configuration)
+            : null;
+
         return new WindBotRuntimeOptions
         {
             CardRepository = cardRepository,
             TickDelayMilliseconds = configuration.GetInt("TickDelayMilliseconds", 30),
-            DefaultBot = CreateWindBotInfo(configuration)
+            DefaultBot = CreateWindBotInfo(configuration),
+            UsePreErrataEffects = configuration.GetBool("UsePreErrataEffects", false),
+            ServerMode = configuration.GetBool("ServerMode", false),
+            LuaRuntime = luaRuntime,
+            LuaScriptProvider = luaScriptProvider,
+            PreferLuaDecks = configuration.GetBool("PreferLuaDecks", false),
+            ThrowOnLuaScriptError = configuration.GetBool("ThrowOnLuaScriptError", false)
         };
+    }
+
+    private static FileSystemLuaDeckScriptProvider CreateLuaDeckScriptProvider(CliConfiguration configuration)
+    {
+        List<string> directories = new();
+        AddSplitPaths(directories, configuration.GetString("LuaDeckDir"));
+        AddSplitPaths(directories, configuration.GetString("LuaDeckDirs"));
+
+        if (directories.Count == 0)
+            return new FileSystemLuaDeckScriptProvider();
+
+        // 自定义目录优先，再回退默认目录
+        directories.Add("LuaDecks");
+        directories.Add(Path.Combine(AppContext.BaseDirectory, "LuaDecks"));
+        return new FileSystemLuaDeckScriptProvider(directories.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+    }
+
+    private static void AddSplitPaths(List<string> target, string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return;
+
+        string[] parts = raw.Split([';', ','], StringSplitOptions.RemoveEmptyEntries);
+        foreach (string part in parts)
+        {
+            string trimmed = part.Trim();
+            if (!string.IsNullOrWhiteSpace(trimmed))
+                target.Add(trimmed);
+        }
     }
 
     public static WindBotServerModeOptions CreateWindBotServerModeOptions(CliConfiguration configuration, WindBotRuntimeOptions runtimeOptions)
@@ -137,5 +190,12 @@ public static class CliOptionsFactory
 
         yield return Path.GetFullPath(Path.Combine("..", databasePath));
         yield return Path.GetFullPath(Path.Combine("..", "cdb", databasePath));
+
+        string baseDir = AppContext.BaseDirectory;
+        yield return Path.GetFullPath(Path.Combine(baseDir, databasePath));
+        yield return Path.GetFullPath(Path.Combine(baseDir, "Data", databasePath));
+        yield return Path.GetFullPath(Path.Combine(baseDir, "cdb", databasePath));
+        if (!string.IsNullOrWhiteSpace(locale))
+            yield return Path.GetFullPath(Path.Combine(baseDir, "Data", "locales", locale, databasePath));
     }
 }

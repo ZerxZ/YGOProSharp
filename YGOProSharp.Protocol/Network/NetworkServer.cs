@@ -9,6 +9,7 @@ public class NetworkServer : IDisposable
 {
     private readonly TcpListener _listener;
     private readonly List<NetworkClient> _acceptedClients = new();
+    private readonly List<NetworkClient> _dispatchClients = new();
 
     private CancellationTokenSource? _acceptCancellation;
     private Task? _acceptTask;
@@ -50,15 +51,25 @@ public class NetworkServer : IDisposable
 
     public void Update()
     {
-        List<NetworkClient> clients = new();
+        // 每 tick 快速路径：无新连接时零分配直接返回。
         lock (_acceptedClients)
         {
-            clients.AddRange(_acceptedClients);
+            if (_acceptedClients.Count == 0)
+                return;
+
+            _dispatchClients.AddRange(_acceptedClients);
             _acceptedClients.Clear();
         }
 
-        foreach (NetworkClient client in clients)
-            ClientConnected?.Invoke(client);
+        try
+        {
+            foreach (NetworkClient client in _dispatchClients)
+                ClientConnected?.Invoke(client);
+        }
+        finally
+        {
+            _dispatchClients.Clear();
+        }
     }
 
     public void Dispose()

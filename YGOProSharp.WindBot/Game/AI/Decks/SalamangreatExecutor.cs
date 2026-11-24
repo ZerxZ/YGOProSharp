@@ -161,7 +161,7 @@ namespace WindBot.Game.AI.Decks
             AddExecutor(ExecutorType.Activate, CardId.SolemnJudgment, SolemnJudgment_activate);
             AddExecutor(ExecutorType.Activate, CardId.Sanctuary, Sanctuary_activate);
 
-            AddExecutor(ExecutorType.Activate, CardId.Charmer);
+            AddExecutor(ExecutorType.Activate, CardId.Charmer, Charmer_activate);
             AddExecutor(ExecutorType.Activate, CardId.SunlightWolf, Wolf_activate);
             AddExecutor(ExecutorType.Activate, CardId.LadyDebug, Fadydebug_activate);
             AddExecutor(ExecutorType.Activate, CardId.Foxy, Foxy_activate);
@@ -228,28 +228,23 @@ namespace WindBot.Game.AI.Decks
                 || x.Id == CardId.MirageStallio)
                 && x.Owner == 0).Count() == 1))
             {
-                List<ClientCard> material_list = new List<ClientCard>();
-                List<ClientCard> bot_monster = Bot.GetMonsters();
+                List<ClientCard> bot_monster = Bot.GetFaceupMonsters();
                 bot_monster.Sort(CardContainer.CompareCardAttack);
-                //bot_monster.Reverse();
-                int link_count = 0;
-                foreach (ClientCard card in bot_monster)
-                {
-                    if (card.IsFacedown()) continue;
-                    if (!material_list.Contains(card) && card.LinkCount < 2)
-                    {
-                        material_list.Add(card);
-                        link_count += (card.HasType(CardType.Link)) ? card.LinkCount : 1;
-                        if (link_count >= 4) break;
-                    }
-                }
-                if (link_count >= 3)
-                {
-                    AI.SelectCard(CardId.Veilynx);
-                    return true;
-                }
+                List<ClientCard> materials = Util.GetLinkMaterials(bot_monster, 2, 2, 2,
+                    card => !card.HasType(CardType.Link) || card.LinkCount < 2)
+                    .FirstOrDefault(list => list.Any(card => card.HasAttribute(CardAttribute.Fire)));
+                if (materials == null) return false;
+                AI.SelectMaterials(materials);
+                return true;
             }
             return false;
+        }
+
+        private bool Charmer_activate()
+        {
+            if (Card.Location == CardLocation.MonsterZone)
+                AI.SelectCard(CardId.Veilynx);
+            return true;
         }
 
         private bool HeatLeo_summon()
@@ -266,27 +261,14 @@ namespace WindBot.Game.AI.Decks
 
             if (Enemy.GetSpells().Where(x => x.IsFloodgate()).Count() > 0)
             {
-                List<ClientCard> material_list = new List<ClientCard>();
-                List<ClientCard> bot_monster = Bot.GetMonsters();
+                List<ClientCard> bot_monster = Bot.GetFaceupMonsters();
                 bot_monster.Sort(CardContainer.CompareCardAttack);
-                //bot_monster.Reverse();
-                int link_count = 0;
-
-                foreach (ClientCard card in bot_monster)
-                {
-                    if (card.IsFacedown()) continue;
-                    if (!material_list.Contains(card) && card.LinkCount < 2)
-                    {
-                        material_list.Add(card);
-                        link_count += (card.HasType(CardType.Link)) ? card.LinkCount : 1;
-                        if (link_count >= 3) break;
-                    }
-                }
-                if (link_count >= 3)
-                {
-                    AI.SelectMaterials(material_list);
-                    return true;
-                }
+                List<ClientCard> materials = Util.GetLinkMaterials(bot_monster, 3, 2, 3,
+                    card => card.HasAttribute(CardAttribute.Fire) && card.HasType(CardType.Effect)
+                        && (!card.HasType(CardType.Link) || card.LinkCount < 2)).FirstOrDefault();
+                if (materials == null) return false;
+                AI.SelectMaterials(materials);
+                return true;
             }
             return false;
         }
@@ -626,7 +608,7 @@ namespace WindBot.Game.AI.Decks
 
         private bool FalcoToGY(bool FromDeck)
         {
-            if (FromDeck && Bot.Deck.ContainsCardWithId(CardId.Falco))
+            if (FromDeck && Bot.HasInDeck(CardId.Falco))
             {
                 if (Bot.HasInGraveyard(salamangreat_spellTrap))
                 {
@@ -727,10 +709,13 @@ namespace WindBot.Game.AI.Decks
 
         private bool Rage_activate()
         {
-            if (ActivateDescription == Util.GetStringId(CardId.SalamangreatRage, 1))
+            bool canUseSingleTargetEffect = Bot.Hand.Any(card => card.IsMonster() && card.HasSetcode(0x119))
+                || Bot.GetMonsters().Any(card => card.IsFaceup() && card.HasSetcode(0x119));
+            if (wasWolfSummonedUsingItself && Bot.HasInMonstersZone(CardId.SunlightWolf)
+                && Enemy.GetFieldCount() > 1)
             {
-                AI.SelectCard(salamangreat_links);
-                AI.SelectOption(1);
+                AI.SelectCard(CardId.SunlightWolf);
+                AI.SelectOption(canUseSingleTargetEffect ? 1 : 0);
                 IList<ClientCard> targets = new List<ClientCard>();
 
                 ClientCard target1 = Util.GetBestEnemyMonster(canBeTarget: true);
@@ -759,21 +744,22 @@ namespace WindBot.Game.AI.Decks
                 AI.SelectNextCard(targets);
                 return true;
             }
-            else
-            {
-                if (Util.GetProblematicEnemyCard(canBeTarget: true) != null)
-                {
-                    if (Util.GetBestBotMonster(true) != null)
-                    {
-                        AI.SelectCard(Util.GetProblematicEnemyCard(Util.GetBestBotMonster(true).Attack, canBeTarget: true));
-                    }
-                    else
-                    {
-                        AI.SelectCard(Util.GetProblematicEnemyCard(canBeTarget: true));
-                    }
 
-                    return true;
+            ClientCard problemTarget = Util.GetProblematicEnemyCard(canBeTarget: true);
+            if (canUseSingleTargetEffect && problemTarget != null)
+            {
+                ClientCard bestBotMonster = Util.GetBestBotMonster(true);
+                if (bestBotMonster != null)
+                {
+                    ClientCard strongerTarget = Util.GetProblematicEnemyCard(bestBotMonster.Attack, canBeTarget: true);
+                    if (strongerTarget != null)
+                        problemTarget = strongerTarget;
                 }
+
+                AI.SelectOption(0);
+                AI.SelectCard(CardId.Falco, CardId.Spinny, CardId.JackJaguar, CardId.Foxy, CardId.Fowl, CardId.Gazelle);
+                AI.SelectNextCard(problemTarget);
+                return true;
             }
             return false;
         }
@@ -946,23 +932,11 @@ namespace WindBot.Game.AI.Decks
         }
         public int SelectSTPlace(ClientCard card = null, bool avoid_Impermanence = false)
         {
-            List<int> list = new List<int>();
-            list.Add(0);
-            list.Add(1);
-            list.Add(2);
-            list.Add(3);
-            list.Add(4);
-            int n = list.Count;
-            while (n-- > 1)
-            {
-                int index = WindBotRuntime.Random.Next(n + 1);
-                int temp = list[index];
-                list[index] = list[n];
-                list[n] = temp;
-            }
+            List<int> list = new List<int> { 0, 1, 2, 3, 4 };
+            Util.ShuffleListInPlace(list);
             foreach (int seq in list)
             {
-                int zone = (int)System.Math.Pow(2, seq);
+                int zone = (int)Math.Pow(2, seq);
                 if (Bot.SpellZone[seq] == null)
                 {
                     if (card != null && card.Location == CardLocation.Hand && avoid_Impermanence && Impermanence_list.Contains(seq)) continue;
@@ -1101,30 +1075,13 @@ namespace WindBot.Game.AI.Decks
             if (Duel.Turn == 1) return false;
             if (wasStallioActivated) return false;
 
-            List<ClientCard> material_list = new List<ClientCard>();
-            List<ClientCard> bot_monster = Bot.GetMonsters();
+            List<ClientCard> bot_monster = Bot.GetFaceupMonsters();
             bot_monster.Sort(CardContainer.CompareCardAttack);
-            //bot_monster.Reverse();
-            int link_count = 0;
-            foreach (ClientCard card in bot_monster)
-            {
-                if (card.IsFacedown()) continue;
-                if (!material_list.Contains(card) && card.LinkCount < 3)
-                {
-                    material_list.Add(card);
-                    link_count += (card.HasType(CardType.Link)) ? card.LinkCount : 1;
-                }
-            }
-            if (link_count >= 4)
-            {
-                if (link_count > 4 && material_list.Where(x => x.Id == CardId.MirageStallio).Count() > 0)
-                {
-                    material_list.Remove(material_list.First(x => x.Id == CardId.MirageStallio));
-                }
-                AI.SelectMaterials(material_list);
-                return true;
-            }
-            return false;
+            List<ClientCard> materials = Util.GetLinkMaterials(bot_monster, 4, 3, 4,
+                card => card.HasType(CardType.Effect) && (!card.HasType(CardType.Link) || card.LinkCount < 3)).FirstOrDefault();
+            if (materials == null) return false;
+            AI.SelectMaterials(materials);
+            return true;
         }
 
         public bool Borrelsword_eff()
@@ -1148,7 +1105,9 @@ namespace WindBot.Game.AI.Decks
                 //bot_list.Reverse();
                 foreach (ClientCard card in bot_list)
                 {
-                    if (card.HasPosition(CardPosition.Attack) && !card.HasType(CardType.Link))
+                    if (card.HasPosition(CardPosition.Attack) &&
+                        !card.HasType(CardType.Link) &&
+                        card.Attacked)
                     {
                         AI.SelectCard(card);
                         return true;
@@ -1209,17 +1168,8 @@ namespace WindBot.Game.AI.Decks
 
         public int SelectSetPlace(List<int> avoid_list = null, bool avoid = true)
         {
-            List<int> list = new List<int>();
-            list.Add(5);
-            list.Add(6);
-            int n = list.Count;
-            while (n-- > 1)
-            {
-                int index = WindBotRuntime.Random.Next(n + 1);
-                int temp = list[index];
-                list[index] = list[n];
-                list[n] = temp;
-            }
+            List<int> list = new List<int> { 5, 6 };
+            Util.ShuffleListInPlace(list);
             foreach (int seq in list)
             {
                 int zone = (int)System.Math.Pow(2, seq);
@@ -1248,14 +1198,14 @@ namespace WindBot.Game.AI.Decks
         {
             foreach (ClientCard defender in defenders)
             {
-                attacker.RealPower = attacker.Attack;
+                attacker.RealPower = attacker.GetAttackPower();
                 defender.RealPower = defender.GetDefensePower();
                 if (attacker.IsCode(CardId.Borrelsword) && !attacker.IsDisabled())
                     return AI.Attack(attacker, defender);
                 if (!OnPreBattleBetween(attacker, defender))
                     continue;
 
-                if (attacker.RealPower > defender.RealPower || (attacker.RealPower > defender.RealPower && attacker.IsLastAttacker && defender.IsAttack()))
+                if (attacker.RealPower > defender.RealPower || (attacker.RealPower >= defender.RealPower && attacker.IsLastAttacker && defender.IsAttack()))
                     return AI.Attack(attacker, defender);
             }
 
@@ -1266,4 +1216,3 @@ namespace WindBot.Game.AI.Decks
         }
     }
 }
-

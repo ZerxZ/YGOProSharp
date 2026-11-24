@@ -13,68 +13,67 @@ namespace WindBot.Game.AI.Decks
     {
         public class CardId
         {
-            public const int Benkei = 19510093;//ÛÍÇì
-            public const int Wagon = 34496660;//´ó°Ë
-            public const int Soulpiercer = 90361010;//ÑÒÈÚ
-            public const int Wakaushi = 82112494;//Å£Èô
-            public const int  Scales = 78391364;//Ìì³Ó
-            public const int Booster = 56727340;//µØîø
-            public const int Motorbike = 83334932;//Ä¦ÍĞ
-            public const int Soulhorns = 14624296;//Ë«½Ç
-            public const int Soulpeacemaker = 95500396;//ÖÙ²Ã
+            public const int Benkei = 19510093;//å¼åº†
+            public const int Wagon = 34496660;//å¤§å…«
+            public const int Soulpiercer = 90361010;//å²©è
+            public const int Wakaushi = 82112494;//ç‰›è‹¥
+            public const int  Scales = 78391364;//å¤©ç§¤
+            public const int Booster = 56727340;//åœ°é“ 
+            public const int Motorbike = 83334932;//æ‘©æ‰˜
+            public const int Soulhorns = 14624296;//åŒè§’
+            public const int Soulpeacemaker = 95500396;//ä»²è£
 
-            public const int Regulus = 10604644;//ĞùÔ¯Ê®ËÄ
+            public const int Regulus = 10604644;//è½©è¾•åå››
 
-            public const int MaxxG = 23434538;//ÔöÖ³µÄG
-            public const int JoyousSpring = 14558127;//»ÒÁ÷Àö
-            public const int PsyFrameDriver = 49036338;//PSY¹Ç¼ÜÇı¶¯Õß
-            public const int PsyFramegearGamma = 38814750;//PSY¹Ç¼Ü×°±¸¡¤¦Ã
-            public const int EffectVeiler = 97268402;//Ğ§¹ûÕÚÃÉÕß
-            public const int HauntedMansion = 73642296;//Îİ·óÍ¯
-            public const int SnowRabbit = 59438930;//ÓÄ¹íÍÃ
-            public const int LockBird = 94145021;//Ğ¡³óÓëËøÄñ
+            public const int MaxxG = 23434538;//å¢æ®–çš„G
+            public const int JoyousSpring = 14558127;//ç°æµä¸½
+            public const int PsyFrameDriver = 49036338;//PSYéª¨æ¶é©±åŠ¨è€…
+            public const int PsyFramegearGamma = 38814750;//PSYéª¨æ¶è£…å¤‡Â·Î³
+            public const int EffectVeiler = 97268402;//æ•ˆæœé®è’™è€…
+            public const int HauntedMansion = 73642296;//å±‹æ•·ç«¥
+            public const int SnowRabbit = 59438930;//å¹½é¬¼å…”
+            public const int LockBird = 94145021;//å°ä¸‘ä¸é”é¸Ÿ
 
             //extra
-            public const int Masurawo = 64193046;//Òæ»ÄÄĞ
-            public const int Fleur = 84815190;//ÏÊ»¨Å®ÄĞ¾ô
-            public const int ASStardustDragon = 30983281;//¼ÓËÙÍ¬µ÷ĞÇ³¾Áú
-            public const int StardustDragon = 30983281;//ĞÇ³¾Áú
-            public const int SavageDragon = 27548199;//ÄüÃÍÁú
-            public const int Sarutobi = 76471944;//Ô³·É
-            public const int PSYFramelordOmega = 74586817;//PSY¹Ç¼ÜÍõ¡¤¦¸
-            public const int GearGigant = 28912357;//³İÂÖ³İ¾ŞÈË
-            public const int Unicorn = 38342335;//¶À½ÇÊŞ
-            public const int Elf = 27381364;//ÎÀĞÇÉÁÁé¡¤ÌÔÆø¾«Áé
-            public const int Genius = 22423493;//Â·¾¶Áé
-            public const int IP = 65741786;//I£ºPÎ±×°Îè»áÀ³ÄÈ
-            public const int Scarecrow = 33918636;//°¸É½×Ó
+            public const int Masurawo = 64193046;//ç›Šè’ç”·
+            public const int Fleur = 84815190;//é²œèŠ±å¥³ç”·çˆµ
+            public const int ASStardustDragon = 30983281;//åŠ é€ŸåŒè°ƒæ˜Ÿå°˜é¾™
+            public const int StardustDragon = 30983281;//æ˜Ÿå°˜é¾™
+            public const int SavageDragon = 27548199;//ç‹çŒ›é¾™
+            public const int Sarutobi = 76471944;//çŒ¿é£
+            public const int PSYFramelordOmega = 74586817;//PSYéª¨æ¶ç‹Â·Î©
+            public const int GearGigant = 28912357;//é½¿è½®é½¿å·¨äºº
+            public const int Unicorn = 38342335;//ç‹¬è§’å…½
+            public const int Elf = 27381364;//å«æ˜Ÿé—ªçµÂ·æ·˜æ°”ç²¾çµ
+            public const int Genius = 22423493;//è·¯å¾„çµ
+            public const int IP = 65741786;//Iï¼šPä¼ªè£…èˆä¼šè±å¨œ
+            public const int Scarecrow = 33918636;//æ¡ˆå±±å­
 
         }
 
         private bool normal_summon = false;
         private bool p_summoned = false;
-        private bool p_summoning = false;
-        private bool activate_Motorbike = false;//Ä¦ÍĞ
-        private bool activate_Wakaushi = false;//ÉñÍ¯
-        private bool activate_Scales = false;//Ìì³Ó
-        private bool activate_Wagon = false;//´ó°Í
-        private bool activate_Booster = false;//µØîø
-        private bool activate_Soulpeacemaker = false;//ÖÙ²Ã
-        private bool  activate_Benkei = false;//ÛÍÇì
-        private bool  need_Gear = false;//³İÂÖ³İ¾ŞÈË
-        //°¸É½×Ó
+        private bool activate_Motorbike = false;//æ‘©æ‰˜
+        private bool activate_Wakaushi = false;//ç¥ç«¥
+        private bool activate_Scales = false;//å¤©ç§¤
+        private bool activate_Wagon = false;//å¤§å·´
+        private bool activate_Booster = false;//åœ°é“ 
+        private bool activate_Soulpeacemaker = false;//ä»²è£
+        private bool  activate_Benkei = false;//å¼åº†
+        private bool  need_Gear = false;//é½¿è½®é½¿å·¨äºº
+        //æ¡ˆå±±å­
         private bool activate_Scarecrow=false;
         private bool summon_Scarecrow=false;
         private bool summon_Scarecrow2=true;
-        private bool activate_Sarutobi = false;//Ô³·É
-        private bool activate_Genius = false;//Â·¾¶Áé
-        //ÌÔÆø¾«Áé
+        private bool activate_Sarutobi = false;//çŒ¿é£
+        private bool activate_Genius = false;//è·¯å¾„çµ
+        //æ·˜æ°”ç²¾çµ
         private bool activate_Elf = false;
         private bool summon_Elf = false;
-        //ÊÖ¿Ó
-        private bool activate_MaxxG = false;//ÔöÖ³µÄG
+        //æ‰‹å‘
+        private bool activate_MaxxG = false;//å¢æ®–çš„G
         private bool activate_PSY = false;//PSY
-        private bool activate_LockBird = false;//Ğ¡³óÓëËøÄñ
+        private bool activate_LockBird = false;//å°ä¸‘ä¸é”é¸Ÿ
         private bool to_deck = false;
 
         public SuperheavySamuraiExecutor(GameAI ai, Duel duel)
@@ -116,7 +115,6 @@ namespace WindBot.Game.AI.Decks
             AddExecutor(ExecutorType.Activate, CardId.Soulpiercer,SoulpiercerFunction);
 
             AddExecutor(ExecutorType.Summon, CardId.Wagon,NormalSummonFunction);
-            AddExecutor(ExecutorType.Activate, CardId.Wagon,WagonFunction);
             AddExecutor(ExecutorType.Activate, CardId.Wagon,WagonFunction);
 
             AddExecutor(ExecutorType.Summon, CardId.Booster,BoosterNormalSummonFunction);
@@ -192,7 +190,6 @@ namespace WindBot.Game.AI.Decks
         {
             normal_summon = false;
             p_summoned = false;
-            p_summoning = false;
             activate_Motorbike = false;
             activate_Wakaushi = false;
             activate_Scales = false;
@@ -228,7 +225,7 @@ namespace WindBot.Game.AI.Decks
         }
         public override CardPosition OnSelectPosition(int cardId, IList<CardPosition> positions)
         {
-            NamedCard cardData = CardDatabase.Get(cardId);
+            YGOProSharp.Core.Cards.NamedCard cardData = CardDatabase.Get(cardId);
             if (cardData != null)
             {
                 if (cardId == CardId.Masurawo || cardId == CardId.Sarutobi)
@@ -282,20 +279,11 @@ namespace WindBot.Game.AI.Decks
             }
             return base.OnSelectPlace(cardId, player, location, available);
         }
-        public override IList<ClientCard> OnSelectCard(IList<ClientCard> cards, int min, int max, int hint, bool cancelable)
+        public override IList<ClientCard> OnSelectPendulumSummon(IList<ClientCard> cards, int min, int max)
         {
-            if (AI.HaveSelectedCards()) return null;
-            if (p_summoning || ((Card == Bot.SpellZone[0] || Card == Bot.SpellZone[4]) && hint == HintMsg.SpSummon &&
-                Card.HasType(CardType.Pendulum)))
-            {
-                List<ClientCard> result = new List<ClientCard>();
-                List<ClientCard> scards = cards.Where(card => card != null && card.HasSetcode(0x9a) && card.Level == 4).ToList();
-                if (scards.Count <2) scards = cards.Where(card => card != null && card.HasSetcode(0x9a)).ToList();
-                p_summoning = false;
-                if (scards.Count > 0) return Util.CheckSelectCount(result, scards, 1, 1);
-                else if (min == 0) return result; // empty
-            }
-            return base.OnSelectCard(cards, min, max, hint, cancelable);
+            List<ClientCard> scards = cards.Where(card => card != null && card.HasSetcode(0x9a) && card.Level == 4).ToList();
+            if (scards.Count < 2) scards = cards.Where(card => card != null && card.HasSetcode(0x9a)).ToList();
+            return Util.CheckSelectCount(scards, cards, min, max);
         }
         private List<ClientCard> GetZoneCards(CardLocation loc, ClientField player)
         {
@@ -332,7 +320,6 @@ namespace WindBot.Game.AI.Decks
             List<ClientCard> cards = GetZoneCards(CardLocation.Hand, Bot).Where(card => card != null && card.HasSetcode(0x9a) && card.Level > 1 && card.Level < 8).ToList();
             if (cards.Count > 0 && Card.Location == CardLocation.SpellZone)
             {
-                p_summoning = true;
                 p_summoned = true;
                 return true;
             }
@@ -427,7 +414,7 @@ namespace WindBot.Game.AI.Decks
         }
         private bool WagonFunction()
         {
-            if (ActivateDescription == Util.GetStringId(CardId.Wagon, 0))
+            if (ActivateDescription == -1 || ActivateDescription == Util.GetStringId(CardId.Wagon, 0))
                 return Card.IsAttack();
             if (ActivateDescription == Util.GetStringId(CardId.Wagon, 1))
             {
@@ -448,10 +435,7 @@ namespace WindBot.Game.AI.Decks
                 activate_Wagon = true;
                 return true;
             }
-            else
-            {
-                return true;
-            }
+            return false;
         }
         private bool SoulpiercerFunction()
         {
@@ -596,7 +580,7 @@ namespace WindBot.Game.AI.Decks
             bool chk = true;
             if (Bot.HasInMonstersZone(CardId.ASStardustDragon) || Bot.HasInMonstersZone(CardId.Benkei))
                 chk = false;
-            var materials_lists = Util.GetSynchroMaterials(Bot.MonsterZone,12,1,1,false,chk,null,
+            var materials_lists = Util.GetSynchroMaterials(Bot.GetFaceupMonsters(),12,1,1,false,chk,null,
                 card => { return !FinalCards(card.Id); });
             if (materials_lists.Count <= 0) return false;
             AI.SelectMaterials(materials_lists[0]);
@@ -608,7 +592,7 @@ namespace WindBot.Game.AI.Decks
             bool chk = true;
             if (Bot.HasInMonstersZone(CardId.Motorbike) && (Bot.HasInMonstersZone(CardId.ASStardustDragon) || Bot.HasInMonstersZone(CardId.Benkei)))
                 chk = false;
-            var materials_lists = Util.GetSynchroMaterials(Bot.MonsterZone,10,1,1,false,chk,null,
+            var materials_lists = Util.GetSynchroMaterials(Bot.GetFaceupMonsters(),10,1,1,false,chk,null,
                 card => { return !FinalCards(card.Id); });
             if (materials_lists.Count <= 0) return false;
             AI.SelectMaterials(materials_lists[0]);
@@ -679,7 +663,8 @@ namespace WindBot.Game.AI.Decks
             {
                 return true;
             }
-            else if (ActivateDescription == Util.GetStringId(CardId.ASStardustDragon, 0))
+            else if (ActivateDescription == -1
+                || ActivateDescription == Util.GetStringId(CardId.ASStardustDragon, 0))
             {
 
                 int targetid = -1;
@@ -944,6 +929,8 @@ namespace WindBot.Game.AI.Decks
         }
         private bool SoulpiercerEquipFunction()
         {
+            if (DefaultCheckWhetherCardIdIsNegated(Card.Id))
+                return false;
             if (Card.Location != CardLocation.Hand)
                 return false;
             int tributeId = -1;
@@ -1042,7 +1029,7 @@ namespace WindBot.Game.AI.Decks
         }
         private bool GeniusFunction()
         {
-            if (ActivateDescription == Util.GetStringId(CardId.Genius,1))
+            if (ActivateDescription == -1 || ActivateDescription == Util.GetStringId(CardId.Genius,1))
             {
                 AI.SelectCard(CardId.Regulus);
                 activate_Genius = true;
@@ -1217,4 +1204,3 @@ namespace WindBot.Game.AI.Decks
         }
     }
 }
-

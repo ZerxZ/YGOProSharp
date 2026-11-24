@@ -71,7 +71,8 @@ namespace YGOProSharp.Server
             {
                 PacketReader reader = new(packet);
                 CtosMessage msg = (CtosMessage)reader.ReadByte();
-                _logger.LogDebug("Received CTOS {CtosMessage} from {PlayerName}. Length={PacketLength}.", msg, Name, packet.Length);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                    _logger.LogDebug("Received CTOS {CtosMessage} from {PlayerName}. Length={PacketLength}.", msg, Name, packet.Length);
                 // 认证消息（authentication messages）先处理，因为玩家加入房间前大多数 CTOS command 都会被忽略。
                 switch (msg)
                 {
@@ -181,7 +182,7 @@ namespace YGOProSharp.Server
 
         private void OnChat(ref PacketReader packet)
         {
-            string msg = packet.ReadUnicode(256);
+            string msg = packet.ReadUnicodeAutoLength(256);
             _logger.LogInformation("Player {PlayerName} sent chat message.", Name);
             Game.Chat(this, msg);
         }
@@ -263,7 +264,8 @@ namespace YGOProSharp.Server
                 return;
             }
             State = PlayerState.None;
-            _logger.LogDebug("Player {PlayerName} submitted response. Length={ResponseLength}.", Name, resp.Length);
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Player {PlayerName} submitted response. Length={ResponseLength}.", Name, resp.Length);
             Game.SetResponse(resp);
         }
     }

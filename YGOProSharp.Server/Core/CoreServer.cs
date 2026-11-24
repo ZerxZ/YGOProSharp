@@ -20,13 +20,24 @@ namespace YGOProSharp.Server
         public bool IsListening { get; private set; }
         public AddonsManager? Addons { get; private set; }
         public Game? Game { get; private set; }
+        public int ClientCount
+        {
+            get
+            {
+                lock (_clientsLock)
+                    return _clients.Count;
+            }
+        }
 
         private NetworkServer? _listener;
         private readonly IDuelFactory? _duelFactory;
         private readonly ILogger<CoreServer> _logger;
         private readonly ICardRepository _cardRepository;
         private readonly ServerOptions _options;
+        private readonly object _clientsLock = new();
         private readonly List<YGOClient> _clients = new();
+        private readonly List<YGOClient> _tickClients = new();
+        private readonly List<YGOClient> _disconnectedClients = new();
 
         private bool _closePending;
 
@@ -43,11 +54,38 @@ namespace YGOProSharp.Server
 
         public void Start()
         {
+            StartCore(_options.EnableNetworkListener);
+        }
+
+        /// <summary>
+        /// 以进程内嵌入式模式启动服务端，不打开任何 TCP 监听端口；客户端可通过
+        /// <see cref="ConnectLocalClient"/> 或 <see cref="CreateLocalTransport"/> 在内存中直接连入。
+        /// </summary>
+        public void StartEmbedded()
+        {
+            StartCore(enableNetworkListener: false);
+        }
+
+        private void StartCore(bool enableNetworkListener)
+        {
             if (IsRunning)
                 return;
+
+            _closePending = false;
+            YGOProSharpServer.SetClientVersion(_options.ClientVersion);
             Addons = new AddonsManager(_options.StandardStreamProtocol);
             Game = new Game(this, _duelFactory, _cardRepository, _options.Game);
             Addons.Init(Game);
+
+            if (!enableNetworkListener)
+            {
+                IsRunning = true;
+                IsListening = false;
+                Game.Start();
+                _logger.LogInformation("Core server started in embedded mode without TCP listener.");
+                return;
+            }
+
             try
             {
                 int port = _options.Port;
@@ -77,9 +115,16 @@ namespace YGOProSharp.Server
 
         public void Stop()
         {
-            _logger.LogInformation("Stopping core server with {ClientCount} connected clients.", _clients.Count);
+            YGOClient[] clientsSnapshot;
+            lock (_clientsLock)
+            {
+                clientsSnapshot = _clients.ToArray();
+                _clients.Clear();
+            }
+
+            _logger.LogInformation("Stopping core server with {ClientCount} connected clients.", clientsSnapshot.Length);
             StopListening();
-            foreach (YGOClient client in _clients)
+            foreach (YGOClient client in clientsSnapshot)
                 client.Close();
             Game?.Stop();
             IsRunning = false;
@@ -93,49 +138,105 @@ namespace YGOProSharp.Server
             _closePending = true;
         }
 
+        /// <summary>
+        /// 创建一个直连到当前服务端的进程内内存传输通道（客户端侧），服务端侧会自动注册为已连接玩家连接。
+        /// 适合直接传入 WindBot 或自定义 C# 协议客户端，完全不经过 TCP/WebSocket 端口。
+        /// </summary>
+        public InMemoryNetworkTransport CreateLocalTransport(IPAddress? remoteAddress = null)
+        {
+            if (!IsRunning || Game is null)
+                throw new InvalidOperationException("Core server must be started before creating a local client connection.");
+
+            (InMemoryNetworkTransport clientTransport, InMemoryNetworkTransport serverTransport) =
+                InMemoryNetworkTransport.CreatePair(remoteAddress ?? IPAddress.Loopback, IPAddress.Loopback, connected: true);
+
+            AddClient(new YGOClient(serverTransport));
+            return clientTransport;
+        }
+
+        /// <summary>
+        /// 创建一个直连到当前服务端的进程内 <see cref="YGOClient"/>。
+        /// </summary>
+        public YGOClient ConnectLocalClient(IPAddress? remoteAddress = null)
+        {
+            return new YGOClient(CreateLocalTransport(remoteAddress));
+        }
+
         public void AddClient(YGOClient client)
         {
-            _logger.LogInformation("Adding client {RemoteAddress}.", client.RemoteIPAddress);
-            _clients.Add(client);
+            ArgumentNullException.ThrowIfNull(client);
+
             if (Game is null)
                 throw new InvalidOperationException("Server game has not been initialized.");
+
+            _logger.LogInformation("Adding client {RemoteAddress}.", client.RemoteIPAddress);
 
             // Player 是该连接的 CTOS protocol adapter；Game 不感知 socket 细节。
             Player player = new Player(Game, client);
 
-            client.PacketReceivedRaw += packet => player.Parse(packet.Span);
+            client.PacketReceivedRaw += packet =>
+            {
+                try
+                {
+                    player.Parse(packet.Span);
+                }
+                catch (Exception)
+                {
+                    player.Disconnect();
+                }
+            };
             client.Disconnected += packet => player.OnDisconnected();
-            _logger.LogDebug("Client {RemoteAddress} registered. ClientCount={ClientCount}.", client.RemoteIPAddress, _clients.Count);
+
+            int count;
+            lock (_clientsLock)
+            {
+                _clients.Add(client);
+                count = _clients.Count;
+            }
+
+            _logger.LogDebug("Client {RemoteAddress} registered. ClientCount={ClientCount}.", client.RemoteIPAddress, count);
         }
         
         public void Tick()
         {
-            if (_listener is null || Game is null)
+            if (!IsRunning || Game is null)
                 return;
 
-            _listener.Update();
+            _listener?.Update();
 
-            List<YGOClient> disconnectedClients = new List<YGOClient>();
-
-            foreach (YGOClient client in _clients)
+            _tickClients.Clear();
+            lock (_clientsLock)
             {
+                _tickClients.AddRange(_clients);
+            }
+
+            for (int i = 0; i < _tickClients.Count; i++)
+            {
+                YGOClient client = _tickClients[i];
                 client.Update();
                 if (!client.IsConnected)
                 {
                     _logger.LogInformation("Removing disconnected client {RemoteAddress}.", client.RemoteIPAddress);
-                    disconnectedClients.Add(client);
+                    _disconnectedClients.Add(client);
                 }
             }
 
             Game.TimeTick();
 
-            while (disconnectedClients.Count > 0)
+            int remainingClients;
+            lock (_clientsLock)
             {
-                _clients.Remove(disconnectedClients[0]);
-                disconnectedClients.RemoveAt(0);
+                if (_disconnectedClients.Count > 0)
+                {
+                    for (int i = 0; i < _disconnectedClients.Count; i++)
+                        _clients.Remove(_disconnectedClients[i]);
+                    _disconnectedClients.Clear();
+                }
+
+                remainingClients = _clients.Count;
             }
 
-            if (_closePending && _clients.Count == 0)
+            if (_closePending && remainingClients == 0)
                 Stop();
         }
 

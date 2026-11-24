@@ -44,4 +44,16 @@ public class NamedCard : Card
 
         return false;
     }
+
+    /// <summary>
+    /// 判断指定卡号与别名是否属于异画关系（规则上视作同名卡的别名差值通常 >= 20，异画卡差值 &lt; 20）。
+    /// </summary>
+    public static bool IsAltartAlias(int cardId, int alias)
+    {
+        // YGOPro 将 5405695（仪式怪兽的通常怪兽版）视作规则同名别名而非异画。
+        if (cardId == 5405695)
+            return false;
+
+        return cardId > 0 && alias > 0 && Math.Abs(cardId - alias) < 20;
+    }
 }

@@ -1,3 +1,6 @@
+using System.Collections.Frozen;
+using System.Runtime.CompilerServices;
+
 namespace YGOProSharp.Core.Cards;
 
 /// <summary>
@@ -53,7 +56,7 @@ public sealed class EmptyCardRepository : ICardRepository
 /// </summary>
 public sealed class InMemoryCardRepository : ICardRepository
 {
-    private readonly IReadOnlyDictionary<int, Card> _cards;
+    private readonly FrozenDictionary<int, Card> _cards;
 
     public InMemoryCardRepository(IEnumerable<Card> cards)
     {
@@ -61,9 +64,10 @@ public sealed class InMemoryCardRepository : ICardRepository
         foreach (Card card in cards)
             indexedCards[card.Id] = card;
 
-        _cards = indexedCards;
+        _cards = indexedCards.ToFrozenDictionary();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryGetCard(int id, out Card card)
     {
         return _cards.TryGetValue(id, out card!);
@@ -89,7 +93,7 @@ public sealed class EmptyNamedCardRepository : INamedCardRepository
 
     public IReadOnlyCollection<NamedCard> GetAllCards()
     {
-        return Array.Empty<NamedCard>();
+        return [];
     }
 }
 
@@ -98,7 +102,8 @@ public sealed class EmptyNamedCardRepository : INamedCardRepository
 /// </summary>
 public sealed class InMemoryNamedCardRepository : INamedCardRepository
 {
-    private readonly IReadOnlyDictionary<int, NamedCard> _cards;
+    private readonly FrozenDictionary<int, NamedCard> _cards;
+    private readonly NamedCard[] _allCards;
 
     public InMemoryNamedCardRepository(IEnumerable<NamedCard> cards)
     {
@@ -106,16 +111,19 @@ public sealed class InMemoryNamedCardRepository : INamedCardRepository
         foreach (NamedCard card in cards)
             indexedCards[card.Id] = card;
 
-        _cards = indexedCards;
+        _cards = indexedCards.ToFrozenDictionary();
+        _allCards = [.. indexedCards.Values];
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryGetCard(int id, out NamedCard card)
     {
         return _cards.TryGetValue(id, out card!);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public IReadOnlyCollection<NamedCard> GetAllCards()
     {
-        return _cards.Values.ToArray();
+        return _allCards;
     }
 }

@@ -15,4 +15,3 @@ namespace WindBot.Game.AI.Enums
         GoukiTheTyrantOgre = 7782069
     }
 }
-

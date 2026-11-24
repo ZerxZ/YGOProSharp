@@ -5,7 +5,7 @@ using YGOProSharp.Abstractions.Logging;
 
 namespace YGOProSharp.Protocol;
 
-public class NetworkClient : IDisposable
+public class NetworkClient : INetworkTransport
 {
     public event Action? Connected;
     public event Action<Exception?>? Disconnected;
@@ -35,6 +35,8 @@ public class NetworkClient : IDisposable
     public bool IsConnected { get; private set; }
 
     public IPAddress RemoteIPAddress => _endPoint?.Address ?? IPAddress.None;
+
+    public bool IsMessageFramed => false;
 
     public void Initialize(Socket socket)
     {
@@ -76,8 +78,10 @@ public class NetworkClient : IDisposable
         await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            _logger.LogDebug("Sending {ByteCount} bytes to {RemoteAddress}.", data.Length, RemoteIPAddress);
-            _logger.LogTrace("Send payload preview: {PayloadPreview}.", CreatePayloadPreview(data.Span));
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Sending {ByteCount} bytes to {RemoteAddress}.", data.Length, RemoteIPAddress);
+            if (_logger.IsEnabled(LogLevel.Trace))
+                _logger.LogTrace("Send payload preview: {PayloadPreview}.", CreatePayloadPreview(data.Span));
             int sent = 0;
             while (sent < data.Length)
             {
@@ -148,7 +152,8 @@ public class NetworkClient : IDisposable
         try
         {
             _receiveCancellation?.Cancel();
-            _socket?.Shutdown(SocketShutdown.Both);
+            if (_socket is { Connected: true })
+                _socket.Shutdown(SocketShutdown.Both);
         }
         catch (Exception ex)
         {
@@ -185,8 +190,10 @@ public class NetworkClient : IDisposable
                     return;
                 }
 
-                _logger.LogDebug("Received {ByteCount} bytes from {RemoteAddress}.", bytesRead, RemoteIPAddress);
-                _logger.LogTrace("Receive payload preview: {PayloadPreview}.", CreatePayloadPreview(_receiveBuffer.AsSpan(0, bytesRead)));
+                if (_logger.IsEnabled(LogLevel.Debug))
+                    _logger.LogDebug("Received {ByteCount} bytes from {RemoteAddress}.", bytesRead, RemoteIPAddress);
+                if (_logger.IsEnabled(LogLevel.Trace))
+                    _logger.LogTrace("Receive payload preview: {PayloadPreview}.", CreatePayloadPreview(_receiveBuffer.AsSpan(0, bytesRead)));
                 DataReceived?.Invoke(_receiveBuffer.AsSpan(0, bytesRead).ToArray());
             }
         }

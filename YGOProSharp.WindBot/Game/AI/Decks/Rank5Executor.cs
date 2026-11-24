@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using WindBot;
 using WindBot.Game;
 using WindBot.Game.AI;
@@ -59,6 +60,7 @@ namespace WindBot.Game.AI.Decks
             AddExecutor(ExecutorType.Activate, CardId.CyberDragonInfinity, CyberDragonInfinityEffect);
 
             // Level 5 monsters without side effects
+            AddExecutor(ExecutorType.SpSummon, CardId.SolarWindJammer, SolarWindJammerSummon);
             AddExecutor(ExecutorType.SpSummon, CardId.CyberDragon);
             AddExecutor(ExecutorType.SpSummon, CardId.ZWEagleClaw);
             AddExecutor(ExecutorType.Summon, CardId.ChronomalyGoldenJet, NormalSummon);
@@ -71,7 +73,7 @@ namespace WindBot.Game.AI.Decks
             AddExecutor(ExecutorType.SpSummon, CardId.Number61Volcasaurus, Number61VolcasaurusSummon);
             AddExecutor(ExecutorType.Activate, CardId.Number61Volcasaurus, Number61VolcasaurusEffect);
             AddExecutor(ExecutorType.SpSummon, CardId.TirasKeeperOfGenesis);
-            AddExecutor(ExecutorType.Activate, CardId.TirasKeeperOfGenesis, TirasKeeperOfGenesisEffect);
+            AddExecutor(ExecutorType.Activate, CardId.TirasKeeperOfGenesis);
             AddExecutor(ExecutorType.SpSummon, CardId.SharkFortress);
             AddExecutor(ExecutorType.Activate, CardId.SharkFortress);
 
@@ -79,7 +81,6 @@ namespace WindBot.Game.AI.Decks
 
 
             // Level 5 monsters with side effects
-            AddExecutor(ExecutorType.SpSummon, CardId.SolarWindJammer, SolarWindJammerSummon);
             AddExecutor(ExecutorType.SpSummon, CardId.QuickdrawSynchron, QuickdrawSynchronSummon);
             AddExecutor(ExecutorType.Summon, CardId.MistArchfiend, MistArchfiendSummon);
             AddExecutor(ExecutorType.Activate, CardId.InstantFusion, InstantFusionEffect);
@@ -107,6 +108,26 @@ namespace WindBot.Game.AI.Decks
         public override bool OnSelectHand()
         {
             return false;
+        }
+
+        public override IList<ClientCard> OnSelectCard(
+            IList<ClientCard> cards, int min, int max, int hint, bool cancelable)
+        {
+            ClientCard currentChainCard = Duel.GetCurrentChainCard();
+            if (currentChainCard != null &&
+                currentChainCard.Controller == 0 &&
+                currentChainCard.IsCode(CardId.TirasKeeperOfGenesis) &&
+                hint == HintMsg.Destroy)
+            {
+                ClientCard target = Util.GetProblematicEnemyCard();
+                if (target == null || !cards.Contains(target))
+                    target = Util.GetBestEnemyCard();
+                if (target != null && cards.Contains(target))
+                    return Util.CheckSelectCount(
+                        new List<ClientCard> { target }, cards, min, max);
+            }
+
+            return base.OnSelectCard(cards, min, max, hint, cancelable);
         }
 
         public override void OnNewTurn()
@@ -138,7 +159,7 @@ namespace WindBot.Game.AI.Decks
 
         private bool SolarWindJammerSummon()
         {
-            if (!NeedLV5())
+            if (!NeedLV5(Card))
                 return false;
             AI.SelectPosition(CardPosition.FaceUpDefence);
             return true;
@@ -146,7 +167,7 @@ namespace WindBot.Game.AI.Decks
 
         private bool QuickdrawSynchronSummon()
         {
-            if (!NeedLV5())
+            if (!NeedLV5(Card))
                 return false;
             AI.SelectCard(
                 CardId.QuickdrawSynchron,
@@ -163,7 +184,7 @@ namespace WindBot.Game.AI.Decks
 
         private bool MistArchfiendSummon()
         {
-            if (!NeedLV5())
+            if (!NeedLV5(Card))
                 return false;
             AI.SelectOption(1);
             NormalSummoned = true;
@@ -172,15 +193,16 @@ namespace WindBot.Game.AI.Decks
 
         private bool InstantFusionEffect()
         {
-            if (!NeedLV5())
+            if (Bot.LifePoints <= 1000) return false;
+            if (!NeedLV5(null))
                 return false;
             InstantFusionUsed = true;
             return true;
         }
 
-        private bool NeedLV5()
+        private bool NeedLV5(ClientCard currentCard)
         {
-            if (HaveOtherLV5OnField())
+            if (HaveOtherLV5OnField(currentCard))
                 return true;
             if (Util.GetBotAvailZonesFromExtraDeck() == 0)
                 return false;
@@ -189,13 +211,15 @@ namespace WindBot.Game.AI.Decks
             {
                 if (card.IsCode(CardId.SolarWindJammer) && Bot.GetMonsterCount() == 0)
                     ++lv5Count;
+                if (card.IsCode(CardId.ZWEagleClaw) && Enemy.LifePoints - Bot.LifePoints >= 2000 && !Bot.HasInMonstersZone(CardId.ZWEagleClaw))
+                    ++lv5Count;
                 if (card.IsCode(CardId.InstantFusion) && !InstantFusionUsed)
                     ++lv5Count;
-                if (card.IsCode(CardId.QuickdrawSynchron) && Bot.Hand.ContainsMonsterWithLevel(4))
+                if (card.IsCode(CardId.QuickdrawSynchron) && Bot.Hand.Count(c => c != currentCard && c.Level == 4) >= 2)
                     ++lv5Count;
-                if (card.IsCode(CardId.MistArchfiend) && !NormalSummoned)
+                if (card.IsCode(CardId.MistArchfiend, CardId.WindUpSoldier, CardId.StarDrawing, CardId.ChronomalyGoldenJet) && !NormalSummoned)
                     ++lv5Count;
-                if (card.IsCode(CardId.DoubleSummon) && DoubleSummonEffect())
+                if (card.IsCode(CardId.DoubleSummon) && UseDoubleSummon())
                     ++lv5Count;
             }
             if (lv5Count >= 2)
@@ -205,7 +229,7 @@ namespace WindBot.Game.AI.Decks
 
         private bool WindUpSoldierEffect()
         {
-            return HaveOtherLV5OnField();
+            return HaveOtherLV5OnField(Card);
         }
 
         private bool ChronomalyGoldenJetEffect()
@@ -213,23 +237,24 @@ namespace WindBot.Game.AI.Decks
             return Card.Level == 4;
         }
 
+        private bool UseDoubleSummon()
+        {
+            return NormalSummoned && !DoubleSummonUsed && Bot.HasInHand(new[]
+            {
+                CardId.WindUpSoldier,
+                CardId.StarDrawing,
+                CardId.ChronomalyGoldenJet,
+                CardId.MistArchfiend
+            });
+        }
+
         private bool DoubleSummonEffect()
         {
-            if (!NormalSummoned || DoubleSummonUsed)
+            if (!UseDoubleSummon())
                 return false;
-            if (Bot.HasInHand(new[]
-                {
-                    CardId.WindUpSoldier,
-                    CardId.StarDrawing,
-                    CardId.ChronomalyGoldenJet,
-                    CardId.MistArchfiend
-                }))
-            {
-                NormalSummoned = false;
-                DoubleSummonUsed = true;
-                return true;
-            }
-            return false;
+            NormalSummoned = false;
+            DoubleSummonUsed = true;
+            return true;
         }
 
         private bool CyberDragonNovaSummon()
@@ -301,18 +326,6 @@ namespace WindBot.Game.AI.Decks
             return false;
         }
 
-        private bool TirasKeeperOfGenesisEffect()
-        {
-            ClientCard target = Util.GetProblematicEnemyCard();
-            if (target == null)
-                target = Util.GetBestEnemyCard();
-            if (target != null)
-            {
-                AI.SelectCard(target);
-            }
-            return true;
-        }
-
         private bool GaiaDragonTheThunderChargerSummon()
         {
             if (Number61VolcasaurusUsed && Bot.HasInMonstersZone(CardId.Number61Volcasaurus))
@@ -381,7 +394,7 @@ namespace WindBot.Game.AI.Decks
             return false;
         }
 
-        private bool HaveOtherLV5OnField()
+        private bool HaveOtherLV5OnField(ClientCard card)
         {
             foreach (ClientCard monster in Bot.GetMonsters())
             {
@@ -390,11 +403,10 @@ namespace WindBot.Game.AI.Decks
                     Util.GetBotAvailZonesFromExtraDeck(monster) > 0 &&
                     (monster.Level == 5
                     || monster.IsCode(CardId.StarDrawing)
-                    || monster.IsCode(CardId.WindUpSoldier) && !monster.Equals(Card)))
+                    || monster.IsCode(CardId.WindUpSoldier) && !monster.Equals(card)))
                     return true;
             }
             return false;
         }
     }
 }
-

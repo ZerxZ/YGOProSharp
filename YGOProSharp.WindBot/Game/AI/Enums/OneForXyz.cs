@@ -26,4 +26,3 @@ namespace WindBot.Game.AI.Enums
         Argostars_FierceParthe = 21050476
     }
 }
-

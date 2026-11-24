@@ -138,7 +138,7 @@ namespace WindBot.Game.AI.Decks
             AddExecutor(ExecutorType.Activate, CardId.DimensionalBarrier, DefaultDimensionalBarrier);
             AddExecutor(ExecutorType.Activate, CardId.TorrentialTribute, DefaultTorrentialTribute);
             AddExecutor(ExecutorType.Activate, CardId.MirrorForce, DefaultUniqueTrap);
-            AddExecutor(ExecutorType.Activate, CardId.BottomlessTrapHole, DefaultUniqueTrap);
+            AddExecutor(ExecutorType.Activate, CardId.BottomlessTrapHole, DefaultBottomlessTrapHole);
 
             AddExecutor(ExecutorType.Repos, DefaultMonsterRepos);
         }
@@ -166,8 +166,6 @@ namespace WindBot.Game.AI.Decks
         {
             if (desc == 210) // Continue selecting? (Link Summoning)
                 return false;
-            if (desc == 31) // Direct Attack?
-                return true;
             return base.OnSelectYesNo(desc);
         }
 
@@ -328,6 +326,7 @@ namespace WindBot.Game.AI.Decks
         {
             if (Card.Location == CardLocation.Removed)
                 return true;
+            if (Bot.LifePoints <= 1000) return false;
             bool hastarget = Bot.HasInHand(new[] {
                     CardId.Draconnet,
                     CardId.Kleinant,
@@ -384,8 +383,7 @@ namespace WindBot.Game.AI.Decks
 
         private bool DraconnetSummon()
         {
-            return Bot.GetRemainingCount(CardId.Digitron, 1) > 0
-                || Bot.GetRemainingCount(CardId.Bitron, 1) > 0;
+            return Bot.HasInDeck(CardId.Digitron, CardId.Bitron);
         }
 
         private bool DraconnetEffect()

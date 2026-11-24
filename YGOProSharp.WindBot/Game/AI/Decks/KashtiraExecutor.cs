@@ -177,6 +177,11 @@ namespace WindBot.Game.AI.Decks
             if (flag >= 2) { flag = -1; activate_DimensionShifter = false; }
             base.OnNewTurn();
         }
+        public override void OnChainEnd()
+        {
+            select_Cards.Clear();
+            base.OnChainEnd();
+        }
         public override bool OnSelectYesNo(int desc)
         {
             if (desc == 1149312192)
@@ -211,15 +216,6 @@ namespace WindBot.Game.AI.Decks
         }
         public override int OnSelectPlace(int cardId, int player, CardLocation location, int available)
         {
-            if (cardId == 0 && player == 1)
-            {
-                int zone = 0;
-                for (int i = 4; i >= 0; --i)
-                {
-                    zone = (int)System.Math.Pow(2, i);
-                    if ((available & zone) > 0) return zone;
-                }
-            }
             if (cardId == CardId.GalaxyTomahawk)
             {
                 if ((available & Zones.z5) > 0) return Zones.z5;
@@ -227,6 +223,27 @@ namespace WindBot.Game.AI.Decks
             }
             return base.OnSelectPlace(cardId, player, location, available);
         }
+
+        public override uint OnSelectDisfield(int hint, int count, uint available)
+        {
+            ClientCard currentChainCard = Duel.GetCurrentChainCard();
+            if (currentChainCard != null && currentChainCard.Controller == 0
+                && currentChainCard.IsCode(CardId.KashtiraShangriIra) && count == 1)
+            {
+                for (int i = 4; i >= 0; --i)
+                {
+                    uint zone = 1u << (16 + i);
+                    if ((available & zone) != 0) return zone;
+                }
+                for (int i = 4; i >= 0; --i)
+                {
+                    uint zone = 1u << (24 + i);
+                    if ((available & zone) != 0) return zone;
+                }
+            }
+            return base.OnSelectDisfield(hint, count, available);
+        }
+
         public override IList<ClientCard> OnSelectCard(IList<ClientCard> cards, int min, int max, int hint, bool cancelable)
         {
             if (cards.Any(card => card != null && card.Location == CardLocation.Extra
@@ -299,9 +316,11 @@ namespace WindBot.Game.AI.Decks
             }
             if (hint == HintMsg.Remove && cards.Any(card => card != null && (card.Location == CardLocation.Hand || card.Location == CardLocation.Grave) && card.Controller == 0) && min == 1 && max == 1)
             {
-                if (select_Cards.Count > 0)
+                List<ClientCard> selectedCards = select_Cards.Where(cards.Contains).ToList();
+                select_Cards.Clear();
+                if (selectedCards.Count > 0)
                 {
-                    return Util.CheckSelectCount(select_Cards, cards, min, max);
+                    return Util.CheckSelectCount(selectedCards, cards, min, max);
                 }
                 else
                 {
@@ -326,7 +345,7 @@ namespace WindBot.Game.AI.Decks
                         e_cards_d.Add(card);
                 }
                 List<ClientCard> res = new List<ClientCard>();
-                if (e_cards_u.Count >= 0)
+                if (e_cards_u.Count > 0)
                 {
                     e_cards_u.Sort(CardContainer.CompareCardAttack);
                     e_cards_u.Reverse();
@@ -334,9 +353,9 @@ namespace WindBot.Game.AI.Decks
                 }
                 IList<int> cardsId = new List<int>() { CardId.KashtiraBigBang, CardId.KashtiraPapiyas };
                 IList<ClientCard> m_pre_cards = CardsIdToClientCards(cardsId, m_cards, false);
-                if (m_pre_cards?.Count >= 0) res.AddRange(m_pre_cards);
-                else if (m_cards.Count >= 0) res.AddRange(m_cards);
-                if (e_cards_d.Count >= 0) res.AddRange(e_cards_d);
+                if (m_pre_cards?.Count > 0) res.AddRange(m_pre_cards);
+                else if (m_cards.Count > 0) res.AddRange(m_cards);
+                if (e_cards_d.Count > 0) res.AddRange(e_cards_d);
                 if (res.Count <= 0) return null;
                 return Util.CheckSelectCount(res, cards, min, max);
             }
@@ -385,11 +404,11 @@ namespace WindBot.Game.AI.Decks
             {
                 activate_pre_PrimePlanetParaisos = false;
                 IList<int> cardsId = new List<int>();
-                if (!Bot.HasInHand(CardId.KashtiraUnicorn) && !activate_KashtiraUnicorn_1 && CheckRemainInDeck(CardId.KashtiraUnicorn) > 0) cardsId.Add(CardId.KashtiraUnicorn);
-                if (!Bot.HasInHand(CardId.KashtiraFenrir) && !activate_KashtiraFenrir_1 && CheckRemainInDeck(CardId.KashtiraFenrir) > 0) cardsId.Add(CardId.KashtiraFenrir);
-                if (!Bot.HasInHand(CardId.KashtiraScareclaw) && !activate_KashtiraScareclaw_1 && CheckRemainInDeck(CardId.KashtiraScareclaw) > 0) cardsId.Add(CardId.KashtiraScareclaw);
-                if (!Bot.HasInHand(CardId.KashtiraTearlaments) && !activate_KashtiraTearlaments_1 && CheckRemainInDeck(CardId.KashtiraTearlaments) > 0) cardsId.Add(CardId.KashtiraTearlaments);
-                if (!Bot.HasInHand(CardId.KashtiraRiseheart) && (!activate_KashtiraRiseheart_2 || !activate_KashtiraRiseheart_1) && CheckRemainInDeck(CardId.KashtiraRiseheart) > 0) cardsId.Add(CardId.KashtiraRiseheart);
+                if (!Bot.HasInHand(CardId.KashtiraUnicorn) && !activate_KashtiraUnicorn_1 && Bot.HasInDeck(CardId.KashtiraUnicorn)) cardsId.Add(CardId.KashtiraUnicorn);
+                if (!Bot.HasInHand(CardId.KashtiraFenrir) && !activate_KashtiraFenrir_1 && Bot.HasInDeck(CardId.KashtiraFenrir)) cardsId.Add(CardId.KashtiraFenrir);
+                if (!Bot.HasInHand(CardId.KashtiraScareclaw) && !activate_KashtiraScareclaw_1 && Bot.HasInDeck(CardId.KashtiraScareclaw)) cardsId.Add(CardId.KashtiraScareclaw);
+                if (!Bot.HasInHand(CardId.KashtiraTearlaments) && !activate_KashtiraTearlaments_1 && Bot.HasInDeck(CardId.KashtiraTearlaments)) cardsId.Add(CardId.KashtiraTearlaments);
+                if (!Bot.HasInHand(CardId.KashtiraRiseheart) && (!activate_KashtiraRiseheart_2 || !activate_KashtiraRiseheart_1) && Bot.HasInDeck(CardId.KashtiraRiseheart)) cardsId.Add(CardId.KashtiraRiseheart);
                 IList<ClientCard> copyCards = new List<ClientCard>(cards);
                 IList<ClientCard> res = CardsIdToClientCards(cardsId, copyCards);
                 if (res?.Count <= 0) return null;
@@ -397,54 +416,6 @@ namespace WindBot.Game.AI.Decks
 
             }
             return base.OnSelectCard(cards, min, max, hint, cancelable);
-        }
-        private int CheckRemainInDeck(int id)
-        {
-            switch (id)
-            {
-                case CardId.Nibiru:
-                    return Bot.GetRemainingCount(CardId.Nibiru, 1);
-                case CardId.KashtiraUnicorn:
-                    return Bot.GetRemainingCount(CardId.KashtiraUnicorn, 3);
-                case CardId.KashtiraFenrir:
-                    return Bot.GetRemainingCount(CardId.KashtiraFenrir, 3);
-                case CardId.KashtiraTearlaments:
-                    return Bot.GetRemainingCount(CardId.KashtiraTearlaments, 1);
-                case CardId.KashtiraScareclaw:
-                    return Bot.GetRemainingCount(CardId.KashtiraScareclaw, 2);
-                case CardId.DimensionShifter:
-                    return Bot.GetRemainingCount(CardId.DimensionShifter, 2);
-                case CardId.NemesesCorridor:
-                    return Bot.GetRemainingCount(CardId.NemesesCorridor, 1);
-                case CardId.KashtiraRiseheart:
-                    return Bot.GetRemainingCount(CardId.KashtiraRiseheart, 3);
-                case CardId.G:
-                    return Bot.GetRemainingCount(CardId.G, 2);
-                case CardId.AshBlossom:
-                    return Bot.GetRemainingCount(CardId.AshBlossom, 3);
-                case CardId.MechaPhantom:
-                    return Bot.GetRemainingCount(CardId.MechaPhantom, 1);
-                case CardId.Terraforming:
-                    return Bot.GetRemainingCount(CardId.Terraforming, 1);
-                case CardId.PotofProsperity:
-                    return Bot.GetRemainingCount(CardId.PotofProsperity, 2);
-                case CardId.KashtiraPapiyas:
-                    return Bot.GetRemainingCount(CardId.KashtiraPapiyas, 3);
-                case CardId.CalledbytheGrave:
-                    return Bot.GetRemainingCount(CardId.CalledbytheGrave, 2);
-                case CardId.CrossoutDesignator:
-                    return Bot.GetRemainingCount(CardId.CrossoutDesignator, 1);
-                case CardId.KashtiraBirth:
-                    return Bot.GetRemainingCount(CardId.KashtiraBirth, 3);
-                case CardId.PrimePlanetParaisos:
-                    return Bot.GetRemainingCount(CardId.PrimePlanetParaisos, 3);
-                case CardId.KashtiraBigBang:
-                    return Bot.GetRemainingCount(CardId.KashtiraBigBang, 1);
-                case CardId.InfiniteImpermanence:
-                    return Bot.GetRemainingCount(CardId.InfiniteImpermanence, 2);
-                default:
-                    return 0;
-            }
         }
         #region CopyImpermanence
         public bool Impermanence_activate()
@@ -547,14 +518,7 @@ namespace WindBot.Game.AI.Decks
         public int SelectSTPlace(ClientCard card = null, bool avoid_Impermanence = false)
         {
             List<int> list = new List<int> { 0, 1, 2, 3, 4 };
-            int n = list.Count;
-            while (n-- > 1)
-            {
-                int index = WindBotRuntime.Random.Next(n + 1);
-                int temp = list[index];
-                list[index] = list[n];
-                list[n] = temp;
-            }
+            Util.ShuffleListInPlace(list);
             foreach (int seq in list)
             {
                 int zone = (int)System.Math.Pow(2, seq);
@@ -623,7 +587,7 @@ namespace WindBot.Game.AI.Decks
         }
         private bool CrossoutDesignatorCheck(ClientCard LastChainCard, int id)
         {
-            if (LastChainCard.IsCode(id) && CheckRemainInDeck(id) > 0)
+            if (LastChainCard.IsCode(id) && Bot.HasInDeck(id))
             {
                 AI.SelectAnnounceID(id);
                 return true;
@@ -751,20 +715,14 @@ namespace WindBot.Game.AI.Decks
         {
             if (!Bot.HasInExtra(CardId.MekkKnightCrusadiaAvramax) && !(Bot.HasInMonstersZone(CardId.QliphortGenius,false,false,true) ||
                 Bot.HasInMonstersZone(CardId.MechaPhantomBeastAuroradon, false, false, true))) return false;
-            AI.SelectCard(CardId.MekkKnightCrusadiaAvramax);
             IList<int> cardsId = new List<int> {CardId.MechaPhantomBeastAuroradon,CardId.IP,CardId.QliphortGenius};
-            List<ClientCard> m = new List<ClientCard>();
-            IList<ClientCard> pre_m = CardsIdToClientCards(cardsId,Bot.GetMonsters());
+            IList<ClientCard> pre_m = CardsIdToClientCards(cardsId, Bot.GetFaceupMonsters());
             if (pre_m?.Count <= 0) return false;
-            int link_count = 0;
-            foreach (var card in pre_m)
-            {
-                m.Add(card);
-                link_count += (card.HasType(CardType.Link)) ? card.LinkCount : 1;
-                if (link_count >= 4) break;
-            }
-            if (link_count < 4) return false;
-            AI.SelectMaterials(m);
+            List<ClientCard> materials = Util.GetLinkMaterials(pre_m, 4, 2, 4)
+                .FirstOrDefault(list => list.Contains(Card));
+            if (materials == null) return false;
+            AI.SelectCard(CardId.MekkKnightCrusadiaAvramax);
+            AI.SelectMaterials(materials);
             return true;
 
         }
@@ -773,7 +731,7 @@ namespace WindBot.Game.AI.Decks
             if (ActivateDescription == -1) return true;
             else
             {
-                if (CheckRemainInDeck(CardId.MechaPhantom) <= 0
+                if (!Bot.HasInDeck(CardId.MechaPhantom)
                     && GetEnemyOnFields().Count <= 0 && Bot.Graveyard.Count(card => card != null && card.HasType(CardType.Trap))<=0) return false;
                 List<ClientCard> tRelease = new List<ClientCard>();
                 List<ClientCard> nRelease = new List<ClientCard>();
@@ -789,7 +747,7 @@ namespace WindBot.Game.AI.Decks
                 opt_1 = false;
                 opt_2 = false;
                 if (count >= 3 && Bot.Graveyard.Count(card => card != null && card.HasType(CardType.Trap)) >0 ) opt_2 = true;
-                if (count >= 2 && CheckRemainInDeck(CardId.MechaPhantom) > 0) opt_1 = true;
+                if (count >= 2 && Bot.HasInDeck(CardId.MechaPhantom)) opt_1 = true;
                 if (count >= 1 && GetEnemyOnFields().Count > 0) opt_0 = true;
                 if (!opt_0 && !opt_1 && !opt_2) return false;
                 return true;
@@ -806,38 +764,24 @@ namespace WindBot.Game.AI.Decks
         private bool MekkKnightCrusadiaAvramaxSummon()
         {
             IList<int> cardsId = new List<int>() {CardId.MechaPhantomBeastAuroradon,CardId.IP,CardId.QliphortGenius};
-            List<ClientCard> cards = CardsIdToClientCards(cardsId,Bot.GetMonsters()).ToList();
+            List<ClientCard> cards = CardsIdToClientCards(cardsId, Bot.GetFaceupMonsters()).ToList();
             if (cards.Count <= 0) return false;
-            List<ClientCard> m = new List<ClientCard>();
-            int link_count = 0;
-            foreach (var card in cards)
-            {
-                m.Add(card);
-                link_count += (card.HasType(CardType.Link)) ? card.LinkCount : 1;
-                if (link_count >= 4) break;
-            }
-            if (link_count < 4 || m.Count<2) return false;
-            AI.SelectMaterials(m);
+            List<ClientCard> materials = Util.GetLinkMaterials(cards, 4, 2, 4).FirstOrDefault();
+            if (materials == null) return false;
+            AI.SelectMaterials(materials);
             return true;
         }
         private bool MechaPhantomBeastAuroradonSummon()
         {
             if (!Bot.HasInMonstersZone(CardId.QliphortGenius,false,false,true) && !Bot.HasInMonstersZone(CardId.Token, false, false, true)) return false;
             List<ClientCard> m = new List<ClientCard>();
-            List<ClientCard> m1 = Bot.GetMonsters().Where(card => card != null && card.Id == CardId.QliphortGenius).ToList();
-            List<ClientCard> m2 = Bot.GetMonsters().Where(card => card != null && card.Id == CardId.Token).ToList();
+            List<ClientCard> m1 = Bot.GetFaceupMonsters().Where(card => card.Id == CardId.QliphortGenius).ToList();
+            List<ClientCard> m2 = Bot.GetFaceupMonsters().Where(card => card.Id == CardId.Token).ToList();
             if (m1.Count > 0) m.AddRange(m1);
             if (m2.Count > 0) m.AddRange(m2);
-            m1.Clear();
-            int link_count = 0;
-            foreach (var card in m)
-            {
-                m1.Add(card);
-                link_count += (card.HasType(CardType.Link)) ? card.LinkCount : 1;
-                if (link_count >= 3) break;
-            }
-            if (link_count < 3) return false;
-            AI.SelectMaterials(m1);
+            List<ClientCard> materials = Util.GetLinkMaterials(m, 3, 2, 3).FirstOrDefault();
+            if (materials == null) return false;
+            AI.SelectMaterials(materials);
             return true;
         }
         private bool KashtiraFenrirSummon()
@@ -912,7 +856,7 @@ namespace WindBot.Game.AI.Decks
         }
         private bool GalaxyTomahawkSummon()
         {
-            if (CheckRemainInDeck(CardId.MechaPhantom) <= 0) return false;
+            if (!Bot.HasInDeck(CardId.MechaPhantom)) return false;
             if (Bot.GetMonsterCount() >= 4) return false;
             if (onlyXyzSummon || activate_DimensionShifter || Bot.HasInMonstersZone(CardId.KashtiraAriseHeart,true,false,true)) return false;
             if (!Bot.HasInExtra(CardId.MekkKnightCrusadiaAvramax) && !(Bot.HasInExtra(CardId.CupidPitch) || Bot.HasInExtra(CardId.BorreloadSavageDragon))) return false;
@@ -1101,15 +1045,15 @@ namespace WindBot.Game.AI.Decks
         }
         private bool KashtiraShangriIraEffect()
         {
-            if (!Bot.HasInMonstersZone(CardId.KashtiraUnicorn, true, false, true) && Enemy.ExtraDeck.Count > 0 && CheckRemainInDeck(CardId.KashtiraUnicorn) > 0)
+            if (!Bot.HasInMonstersZone(CardId.KashtiraUnicorn, true, false, true) && Enemy.ExtraDeck.Count > 0 && Bot.HasInDeck(CardId.KashtiraUnicorn))
             {
                 AI.SelectCard(CardId.KashtiraUnicorn);
             }
-            else if (!Bot.HasInMonstersZone(CardId.KashtiraFenrir, true, false, true) && CheckRemainInDeck(CardId.KashtiraFenrir) > 0)
+            else if (!Bot.HasInMonstersZone(CardId.KashtiraFenrir, true, false, true) && Bot.HasInDeck(CardId.KashtiraFenrir))
             {
                 AI.SelectCard(CardId.KashtiraFenrir);
             }
-            else if (!Bot.HasInMonstersZone(CardId.KashtiraScareclaw, true, false, true) && CheckRemainInDeck(CardId.KashtiraScareclaw) > 0)
+            else if (!Bot.HasInMonstersZone(CardId.KashtiraScareclaw, true, false, true) && Bot.HasInDeck(CardId.KashtiraScareclaw))
             {
                 AI.SelectCard(CardId.KashtiraScareclaw);
             }
@@ -1192,13 +1136,13 @@ namespace WindBot.Game.AI.Decks
             {
                 IList<int> cardsId = new List<int>();
                 if ((!Bot.HasInHandOrInSpellZone(CardId.KashtiraBirth) || isSummoned)
-                    && !Bot.HasInHand(CardId.KashtiraRiseheart) && (!activate_KashtiraRiseheart_2 && (!activate_KashtiraRiseheart_1 || !isSummoned)) && CheckRemainInDeck(CardId.KashtiraRiseheart) > 0)
+                    && !Bot.HasInHand(CardId.KashtiraRiseheart) && (!activate_KashtiraRiseheart_2 && (!activate_KashtiraRiseheart_1 || !isSummoned)) && Bot.HasInDeck(CardId.KashtiraRiseheart))
                     cardsId.Add(CardId.KashtiraRiseheart);
-                if (Bot.HasInHandOrInSpellZone(CardId.KashtiraBirth) && !isSummoned && !Bot.HasInHand(CardId.KashtiraUnicorn) && !activate_KashtiraUnicorn_1 && CheckRemainInDeck(CardId.KashtiraUnicorn) > 0)
+                if (Bot.HasInHandOrInSpellZone(CardId.KashtiraBirth) && !isSummoned && !Bot.HasInHand(CardId.KashtiraUnicorn) && !activate_KashtiraUnicorn_1 && Bot.HasInDeck(CardId.KashtiraUnicorn))
                     cardsId.Add(CardId.KashtiraUnicorn);
-                if (!Bot.HasInHand(CardId.KashtiraTearlaments) && !activate_KashtiraTearlaments_1 && CheckRemainInDeck(CardId.KashtiraTearlaments) > 0)
+                if (!Bot.HasInHand(CardId.KashtiraTearlaments) && !activate_KashtiraTearlaments_1 && Bot.HasInDeck(CardId.KashtiraTearlaments))
                     cardsId.Add(CardId.KashtiraTearlaments);
-                if (!Bot.HasInHand(CardId.KashtiraScareclaw) && !activate_KashtiraScareclaw_1 && CheckRemainInDeck(CardId.KashtiraScareclaw) > 0)
+                if (!Bot.HasInHand(CardId.KashtiraScareclaw) && !activate_KashtiraScareclaw_1 && Bot.HasInDeck(CardId.KashtiraScareclaw))
                     cardsId.Add(CardId.KashtiraScareclaw);
                 cardsId.Add(CardId.KashtiraUnicorn);
                 cardsId.Add(CardId.KashtiraRiseheart);
@@ -1236,7 +1180,7 @@ namespace WindBot.Game.AI.Decks
             List<int> cardsId = new List<int>();
             if (!Bot.HasInHandOrInSpellZone(CardId.PrimePlanetParaisos) && !activate_PrimePlanetParaisos)
                 cardsId.Add(CardId.PrimePlanetParaisos);
-            if (!Bot.HasInHandOrInSpellZone(CardId.PrimePlanetParaisos) && !activate_PrimePlanetParaisos && CheckRemainInDeck(CardId.PrimePlanetParaisos) > 0)
+            if (!Bot.HasInHandOrInSpellZone(CardId.PrimePlanetParaisos) && !activate_PrimePlanetParaisos && Bot.HasInDeck(CardId.PrimePlanetParaisos))
                 cardsId.Add(CardId.Terraforming);
             if (!Bot.HasInHand(CardId.KashtiraUnicorn) && !activate_KashtiraUnicorn_1)
                 cardsId.Add(CardId.KashtiraUnicorn);
@@ -1270,7 +1214,7 @@ namespace WindBot.Game.AI.Decks
         {
             if (Card.Location != CardLocation.Hand)
             {
-                if (CheckRemainInDeck(CardId.KashtiraBigBang) > 0 && Bot.GetMonsters().GetMatchingCards(card => card != null && card.HasType(CardType.Xyz)
+                if (Bot.HasInDeck(CardId.KashtiraBigBang) && Bot.GetMonsters().GetMatchingCards(card => card != null && card.HasType(CardType.Xyz)
                         && card.HasSetcode(0x189) && card.IsFaceup() && card.Overlays.Count > 0).Count > 0)
                 {
                     AI.SelectCard(CardId.KashtiraBigBang);
@@ -1278,14 +1222,14 @@ namespace WindBot.Game.AI.Decks
                 else if (Bot.HasInHandOrInSpellZone(CardId.KashtiraBirth) && !active_KashtiraBirth)
                 {
                     if (!Bot.HasInGraveyardOrInBanished(CardId.KashtiraUnicorn) && !activate_KashtiraUnicorn_1
-                        && CheckRemainInDeck(CardId.KashtiraUnicorn) > 0 && !active_KashtiraPapiyas_1
-                         && !Bot.HasInHand(CardId.KashtiraPapiyas) && CheckRemainInDeck(CardId.KashtiraPapiyas) > 0)
+                        && Bot.HasInDeck(CardId.KashtiraUnicorn) && !active_KashtiraPapiyas_1
+                         && !Bot.HasInHand(CardId.KashtiraPapiyas) && Bot.HasInDeck(CardId.KashtiraPapiyas))
                         AI.SelectCard(CardId.KashtiraUnicorn);
                     else if (!Bot.HasInGraveyardOrInBanished(CardId.KashtiraFenrir) && !activate_KashtiraFenrir_1
-                        && CheckRemainInDeck(CardId.KashtiraFenrir) > 0)
+                        && Bot.HasInDeck(CardId.KashtiraFenrir))
                         AI.SelectCard(CardId.KashtiraFenrir);
                     else if (!Bot.HasInGraveyardOrInBanished(CardId.KashtiraUnicorn) && !activate_KashtiraUnicorn_1
-                        && CheckRemainInDeck(CardId.KashtiraUnicorn) > 0)
+                        && Bot.HasInDeck(CardId.KashtiraUnicorn))
                         AI.SelectCard(CardId.KashtiraFenrir);
                     else if (Bot.Graveyard.Count(card => card != null && card.HasType(CardType.Monster) && card.HasSetcode(0x189) && !card.HasType(CardType.Xyz))
                     + Bot.Banished.Count(card_2 => card_2 != null && card_2.HasType(CardType.Monster) && card_2.HasSetcode(0x189) && !card_2.HasType(CardType.Xyz)) <= 0)
@@ -1298,7 +1242,7 @@ namespace WindBot.Game.AI.Decks
                 {
                     AI.SelectCard(CardId.KashtiraFenrir, CardId.KashtiraUnicorn, CardId.KashtiraScareclaw, CardId.KashtiraTearlaments, CardId.KashtiraRiseheart);
                 }
-                else if (!active_KashtiraPapiyas_2 && CheckRemainInDeck(CardId.KashtiraPapiyas) > 0 && Bot.Banished.GetMatchingCardsCount(card => card != null && card.IsFaceup() && card.HasSetcode(0x189) && card.Id != CardId.KashtiraPapiyas) > 0)
+                else if (!active_KashtiraPapiyas_2 && Bot.HasInDeck(CardId.KashtiraPapiyas) && Bot.Banished.GetMatchingCardsCount(card => card != null && card.IsFaceup() && card.HasSetcode(0x189) && card.Id != CardId.KashtiraPapiyas) > 0)
                 {
                     AI.SelectCard(CardId.KashtiraPapiyas, CardId.KashtiraFenrir, CardId.KashtiraUnicorn, CardId.KashtiraScareclaw, CardId.KashtiraTearlaments, CardId.KashtiraRiseheart);
                 }
@@ -1343,7 +1287,7 @@ namespace WindBot.Game.AI.Decks
         {
             if (Card.Location == CardLocation.Hand || (Card.Location == CardLocation.SpellZone && Card.IsFacedown())) return false;
             List<int> cardsid = new List<int>();
-            if (!activate_KashtiraUnicorn_1 && !active_KashtiraPapiyas_1 && (Bot.HasInHand(CardId.KashtiraPapiyas) || CheckRemainInDeck(CardId.KashtiraPapiyas) > 0)) cardsid.Add(CardId.KashtiraPapiyas);
+            if (!activate_KashtiraUnicorn_1 && !active_KashtiraPapiyas_1 && (Bot.HasInHand(CardId.KashtiraPapiyas) || Bot.HasInDeck(CardId.KashtiraPapiyas))) cardsid.Add(CardId.KashtiraPapiyas);
             if (!activate_KashtiraFenrir_1) cardsid.Add(CardId.KashtiraFenrir);
             if (!activate_KashtiraUnicorn_1) cardsid.Add(CardId.KashtiraUnicorn);
             if (!activate_KashtiraRiseheart_2) cardsid.Add(CardId.KashtiraRiseheart);
@@ -1376,4 +1320,3 @@ namespace WindBot.Game.AI.Decks
     }
 
 }
-

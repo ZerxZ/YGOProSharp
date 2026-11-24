@@ -1,11 +1,14 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
 
 namespace YGOProSharp.Protocol;
 
 public sealed class PacketFramer
 {
-    private ArrayBufferWriter<byte> _receiveBuffer = new();
+    private byte[] _buffer = [];
+    private int _readOffset;
+    private int _writeOffset;
 
     public PacketFramer(int maxPacketLength = 0xFFFF, int headerSize = 2, bool isHeaderSizeIncluded = false)
     {
@@ -25,21 +28,27 @@ public sealed class PacketFramer
 
     public void Append(ReadOnlySpan<byte> data)
     {
-        _receiveBuffer.Write(data);
+        if (data.IsEmpty)
+            return;
+
+        EnsureCapacity(data.Length);
+        data.CopyTo(_buffer.AsSpan(_writeOffset));
+        _writeOffset += data.Length;
     }
 
     public bool TryReadPacket(out byte[] packet)
     {
-        ReadOnlySpan<byte> buffer = _receiveBuffer.WrittenSpan;
+        int available = _writeOffset - _readOffset;
         packet = [];
 
-        if (buffer.Length < HeaderSize)
+        if (available < HeaderSize)
             return false;
 
+        ReadOnlySpan<byte> span = _buffer.AsSpan(_readOffset, available);
         int packetLength = HeaderSize switch
         {
-            2 => BinaryPrimitives.ReadUInt16LittleEndian(buffer[..HeaderSize]),
-            4 => BinaryPrimitives.ReadInt32LittleEndian(buffer[..HeaderSize]),
+            2 => BinaryPrimitives.ReadUInt16LittleEndian(span[..HeaderSize]),
+            4 => BinaryPrimitives.ReadInt32LittleEndian(span[..HeaderSize]),
             _ => throw new InvalidOperationException("Unsupported header size.")
         };
 
@@ -50,19 +59,32 @@ public sealed class PacketFramer
             throw new InvalidDataException($"Packet length {packetLength} is outside the allowed range.");
 
         int frameLength = HeaderSize + packetLength;
-        if (buffer.Length < frameLength)
+        if (available < frameLength)
             return false;
 
-        packet = buffer.Slice(HeaderSize, packetLength).ToArray();
-        PreserveRemaining(buffer[frameLength..]);
+        packet = packetLength == 0 ? [] : GC.AllocateUninitializedArray<byte>(packetLength);
+        if (packetLength > 0)
+            span.Slice(HeaderSize, packetLength).CopyTo(packet);
+
+        _readOffset += frameLength;
+        if (_readOffset == _writeOffset)
+        {
+            _readOffset = 0;
+            _writeOffset = 0;
+        }
+
         return true;
     }
 
     public byte[] Frame(ReadOnlySpan<byte> packet)
     {
-        ArrayBufferWriter<byte> writer = new(HeaderSize + packet.Length);
-        WriteFrame(packet, writer);
-        return writer.WrittenSpan.ToArray();
+        if (packet.Length > MaxPacketLength)
+            throw new InvalidDataException($"Packet length {packet.Length} exceeds maximum {MaxPacketLength}.");
+
+        byte[] frame = GC.AllocateUninitializedArray<byte>(HeaderSize + packet.Length);
+        WriteHeader(frame, packet.Length);
+        packet.CopyTo(frame.AsSpan(HeaderSize));
+        return frame;
     }
 
     public void WriteFrame(ReadOnlySpan<byte> packet, IBufferWriter<byte> writer)
@@ -70,31 +92,49 @@ public sealed class PacketFramer
         if (packet.Length > MaxPacketLength)
             throw new InvalidDataException($"Packet length {packet.Length} exceeds maximum {MaxPacketLength}.");
 
-        int packetLength = IsHeaderSizeIncluded ? packet.Length + HeaderSize : packet.Length;
-
-        Span<byte> header = writer.GetSpan(HeaderSize);
-        if (HeaderSize == 2)
-            BinaryPrimitives.WriteUInt16LittleEndian(header[..HeaderSize], checked((ushort)packetLength));
-        else
-            BinaryPrimitives.WriteInt32LittleEndian(header[..HeaderSize], packetLength);
-
-        writer.Advance(HeaderSize);
-
-        Span<byte> payload = writer.GetSpan(packet.Length);
-        packet.CopyTo(payload);
-        writer.Advance(packet.Length);
+        int totalLength = HeaderSize + packet.Length;
+        Span<byte> target = writer.GetSpan(totalLength);
+        WriteHeader(target, packet.Length);
+        packet.CopyTo(target.Slice(HeaderSize, packet.Length));
+        writer.Advance(totalLength);
     }
 
-    private void PreserveRemaining(ReadOnlySpan<byte> remaining)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void WriteHeader(Span<byte> destination, int payloadLength)
     {
-        if (remaining.Length == 0)
+        int packetLength = IsHeaderSizeIncluded ? payloadLength + HeaderSize : payloadLength;
+        if (HeaderSize == 2)
+            BinaryPrimitives.WriteUInt16LittleEndian(destination, checked((ushort)packetLength));
+        else
+            BinaryPrimitives.WriteInt32LittleEndian(destination, packetLength);
+    }
+
+    private void EnsureCapacity(int additionalBytes)
+    {
+        int remaining = _writeOffset - _readOffset;
+
+        // 优先原地压缩复用已有缓冲区，避免粘包时反复分配新数组。
+        if (_readOffset > 0 && _buffer.Length - remaining >= additionalBytes)
         {
-            _receiveBuffer.Clear();
+            if (remaining > 0)
+                _buffer.AsSpan(_readOffset, remaining).CopyTo(_buffer);
+
+            _readOffset = 0;
+            _writeOffset = remaining;
             return;
         }
 
-        ArrayBufferWriter<byte> next = new(remaining.Length);
-        next.Write(remaining);
-        _receiveBuffer = next;
+        if (_buffer.Length - _writeOffset >= additionalBytes)
+            return;
+
+        int required = checked(remaining + additionalBytes);
+        int nextSize = _buffer.Length == 0 ? Math.Max(256, required) : Math.Max(_buffer.Length * 2, required);
+        byte[] next = GC.AllocateUninitializedArray<byte>(nextSize);
+        if (remaining > 0)
+            _buffer.AsSpan(_readOffset, remaining).CopyTo(next);
+
+        _buffer = next;
+        _readOffset = 0;
+        _writeOffset = remaining;
     }
 }

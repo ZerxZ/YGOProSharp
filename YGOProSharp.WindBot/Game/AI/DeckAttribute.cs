@@ -20,4 +20,3 @@ namespace WindBot.Game.AI
         }
     }
 }
-

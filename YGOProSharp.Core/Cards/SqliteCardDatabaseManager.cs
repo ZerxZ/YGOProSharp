@@ -74,6 +74,47 @@ public sealed class SqliteCardDatabaseManager : ICardDatabaseManager
 
     private static Card ReadCard(SqliteDataReader reader)
     {
+        RawCardFields fields = ReadCardFields(reader);
+        return new Card(
+            fields.Id,
+            fields.Ot,
+            fields.Alias,
+            fields.Setcode,
+            fields.Type,
+            fields.Level,
+            fields.LScale,
+            fields.RScale,
+            fields.Race,
+            fields.Attribute,
+            fields.Attack,
+            fields.Defense,
+            fields.LinkMarker);
+    }
+
+    private static NamedCard ReadNamedCard(SqliteDataReader reader)
+    {
+        // 使用值类型中转字段，避免加载 NamedCard 时为每张卡额外分配临时 Card 对象。
+        RawCardFields fields = ReadCardFields(reader);
+        return new NamedCard(
+            fields.Id,
+            fields.Ot,
+            fields.Alias,
+            fields.Setcode,
+            fields.Type,
+            fields.Level,
+            fields.LScale,
+            fields.RScale,
+            fields.Race,
+            fields.Attribute,
+            fields.Attack,
+            fields.Defense,
+            fields.LinkMarker,
+            reader.GetString(10),
+            reader.GetString(11));
+    }
+
+    private static RawCardFields ReadCardFields(SqliteDataReader reader)
+    {
         int id = reader.GetInt32(0);
         int ot = reader.GetInt32(1);
         int alias = reader.GetInt32(2);
@@ -85,32 +126,6 @@ public sealed class SqliteCardDatabaseManager : ICardDatabaseManager
         int attack = reader.GetInt32(8);
         int defense = reader.GetInt32(9);
 
-        return CreateCard(id, ot, alias, setcode, type, levelInfo, race, attribute, attack, defense);
-    }
-
-    private static NamedCard ReadNamedCard(SqliteDataReader reader)
-    {
-        Card card = ReadCard(reader);
-        return new NamedCard(
-            card.Id,
-            card.Ot,
-            card.Alias,
-            card.Setcode,
-            card.Type,
-            card.Level,
-            card.LScale,
-            card.RScale,
-            card.Race,
-            card.Attribute,
-            card.Attack,
-            card.Defense,
-            card.LinkMarker,
-            reader.GetString(10),
-            reader.GetString(11));
-    }
-
-    private static Card CreateCard(int id, int ot, int alias, long setcode, int type, int levelInfo, int race, int attribute, int attack, int defense)
-    {
         int level = levelInfo & 0xff;
         int lScale = (levelInfo >> 24) & 0xff;
         int rScale = (levelInfo >> 16) & 0xff;
@@ -122,8 +137,23 @@ public sealed class SqliteCardDatabaseManager : ICardDatabaseManager
             defense = 0;
         }
 
-        return new Card(id, ot, alias, setcode, type, level, lScale, rScale, race, attribute, attack, defense, linkMarker);
+        return new RawCardFields(id, ot, alias, setcode, type, level, lScale, rScale, race, attribute, attack, defense, linkMarker);
     }
+
+    private readonly record struct RawCardFields(
+        int Id,
+        int Ot,
+        int Alias,
+        long Setcode,
+        int Type,
+        int Level,
+        int LScale,
+        int RScale,
+        int Race,
+        int Attribute,
+        int Attack,
+        int Defense,
+        int LinkMarker);
 
     private static void EnsureDatabaseExists(string databaseFullPath)
     {

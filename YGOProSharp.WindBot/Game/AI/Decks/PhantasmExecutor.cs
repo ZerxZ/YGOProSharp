@@ -117,6 +117,24 @@ namespace WindBot.Game.AI.Decks
         bool summon_used = false;
         bool CardOfDemiseeff_used = false;
         bool SeaStealthAttackeff_used = false;
+
+        public override IList<ClientCard> OnSelectCard(
+            IList<ClientCard> cards, int min, int max, int hint, bool cancelable)
+        {
+            ChainInfo solvingChain = Duel.GetCurrentSolvingChainInfo();
+            if (solvingChain != null &&
+                solvingChain.ActivatePlayer == 0 &&
+                solvingChain.IsActivateCode(CardId.PacifisThePhantasmCity) &&
+                hint == HintMsg.AddToHand)
+            {
+                IList<ClientCard> targets = Util.SelectPreferredCards(
+                    CardId.PhantasmSprialBattle, cards, min, max);
+                return Util.CheckSelectCount(targets, cards, min, max);
+            }
+
+            return base.OnSelectCard(cards, min, max, hint, cancelable);
+        }
+
         public override void OnNewTurn()
         {            
             summon_used = false;
@@ -239,6 +257,7 @@ namespace WindBot.Game.AI.Decks
 
         private bool SkillDraineff()
         {
+            if (Bot.LifePoints <= 1000) return false;
             if (Duel.LastChainPlayer == 1 && Util.GetLastChainCard().Location == CardLocation.MonsterZone)
                 return UniqueFaceupSpell();
             return false;
@@ -376,7 +395,6 @@ namespace WindBot.Game.AI.Decks
                     }
                 }
                 AI.SelectPlace(Zones.z1 | Zones.z3);
-                AI.SelectCard(CardId.PhantasmSprialBattle);
                 return true;
             }
         }
@@ -732,4 +750,3 @@ namespace WindBot.Game.AI.Decks
         
     }
 }
-

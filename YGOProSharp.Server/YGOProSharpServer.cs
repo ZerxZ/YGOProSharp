@@ -14,10 +14,30 @@ public static class YGOProSharpServer
 
     public static uint ClientVersion { get; private set; } = DefaultClientVersion;
 
+    internal static void SetClientVersion(uint clientVersion)
+    {
+        ClientVersion = clientVersion;
+    }
+
+    /// <summary>
+    /// 根据配置加载卡库、禁限表并初始化 native runtime，返回可直接托管或手动 Tick 的 <see cref="YGOProSharpServerHost"/>。
+    /// </summary>
+    public static YGOProSharpServerHost CreateHost(ServerOptions options, IOcgRuntime runtime)
+    {
+        CoreServer server = InitializeCoreServer(options, runtime);
+        return new YGOProSharpServerHost(server);
+    }
+
     /// <summary>
     /// 启动服务循环（server loop），但不接管 logger 配置或 native runtime 构造。
     /// </summary>
     public static async Task RunAsync(ServerOptions options, IOcgRuntime runtime, CancellationToken cancellationToken = default)
+    {
+        using YGOProSharpServerHost host = CreateHost(options, runtime);
+        await host.RunLoopAsync(tickDelayMilliseconds: 1, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static CoreServer InitializeCoreServer(ServerOptions options, IOcgRuntime runtime)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(runtime);
@@ -32,12 +52,13 @@ public static class YGOProSharpServer
         ClientVersion = options.ClientVersion;
         ICardDatabaseManager cardDatabaseManager = new SqliteCardDatabaseManager();
         logger.LogInformation(
-            "Starting server with RootPath={RootPath}, ScriptDirectory={ScriptDirectory}, DatabaseFile={DatabaseFile}, ClientVersion={ClientVersion}, Port={Port}.",
+            "Starting server with RootPath={RootPath}, ScriptDirectory={ScriptDirectory}, DatabaseFile={DatabaseFile}, ClientVersion={ClientVersion}, Port={Port}, EnableNetworkListener={EnableNetworkListener}.",
             rootPath,
             scriptDirectory,
             databaseFile,
             ClientVersion,
-            port);
+            port,
+            options.EnableNetworkListener);
 
         ICardRepository cardRepository;
         try
@@ -51,7 +72,14 @@ public static class YGOProSharpServer
             throw;
         }
 
-        BanlistManager.Init(options.BanlistFile);
+        string banlistPath = Path.IsPathRooted(options.BanlistFile)
+            ? options.BanlistFile
+            : Path.Combine(Path.GetFullPath(rootPath), options.BanlistFile);
+        if (!File.Exists(banlistPath) && File.Exists(options.BanlistFile))
+            banlistPath = options.BanlistFile;
+
+        BanlistManager.Init(banlistPath);
+        logger.LogInformation("Loaded banlist from {BanlistPath}.", banlistPath);
         try
         {
             runtime.Initialize(new OcgRuntimeOptions(
@@ -68,34 +96,6 @@ public static class YGOProSharpServer
             throw;
         }
 
-        CoreServer server = new(runtime.DuelFactory, cardRepository, options);
-        server.Start();
-        if (server.IsRunning)
-            logger.LogInformation("Server loop started.");
-        else
-            logger.LogWarning("Server loop was not started because the core server is not running.");
-
-        try
-        {
-            while (server.IsRunning && !cancellationToken.IsCancellationRequested)
-            {
-                server.Tick();
-                await Task.Delay(1, cancellationToken).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            logger.LogInformation("Server loop cancellation requested.");
-        }
-        finally
-        {
-            if (server.IsRunning)
-            {
-                logger.LogInformation("Stopping server.");
-                server.Stop();
-            }
-
-            logger.LogInformation("Server stopped.");
-        }
+        return new CoreServer(runtime.DuelFactory, cardRepository, options);
     }
 }

@@ -206,7 +206,7 @@ namespace WindBot.Game.AI.Decks
 
         public override CardPosition OnSelectPosition(int cardId, IList<CardPosition> positions)
         {
-            NamedCard cardData = CardDatabase.Get(cardId);
+            YGOProSharp.Core.Cards.NamedCard cardData = CardDatabase.Get(cardId);
             if (cardData != null)
             {
                 if (cardData.Attack < 0)
@@ -231,7 +231,7 @@ namespace WindBot.Game.AI.Decks
 
         private bool ImFeelingLazy()
         {
-            if (Executors.Any(exec => (exec.Type == ExecutorType.SummonOrSet || exec.Type == ExecutorType.Summon || exec.Type == ExecutorType.MonsterSet) && exec.CardId == Card.Id))
+            if (Executors.Any(exec => (exec.Type == ExecutorType.SummonOrSet || exec.Type == ExecutorType.Summon || exec.Type == ExecutorType.MonsterSet) && Card.IsOriginalCode(exec.CardId)))
                 return false;
             return DefaultMonsterSummon();
         }

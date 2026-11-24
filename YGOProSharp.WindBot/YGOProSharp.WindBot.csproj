@@ -3,10 +3,10 @@
   <PropertyGroup>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
-    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
     <AssemblyName>YGOProSharp.WindBot</AssemblyName>
     <RootNamespace>WindBot</RootNamespace>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
 
   <ItemGroup>

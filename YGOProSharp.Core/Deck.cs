@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using YGOProSharp.Abstractions.Ocg.Enums;
 using YGOProSharp.Core.Cards;
 
@@ -68,26 +69,22 @@ namespace YGOProSharp.Core
                 Side.Count > rules.SideDeckMaxSize)
                 return 1;
 
-            IDictionary<int, int> cards = new Dictionary<int, int>();
+            Dictionary<int, int> cards = new(Main.Count + Extra.Count + Side.Count);
 
-            IList<int>[] stacks = { Main, Extra, Side };
-            foreach (IList<int> stack in stacks)
-            {
-                foreach (int id in stack)
-                {
-                    if (!_cardRepository.TryGetCard(id, out Card card))
-                        continue;
-
-                    AddToCards(cards, card);
-                    if (!ocg && card.Ot == 1 || !tcg && card.Ot == 2)
-                        return id;
-                }
-            }
+            int invalidCard = CheckStack(Main, cards, ocg, tcg);
+            if (invalidCard != 0)
+                return invalidCard;
+            invalidCard = CheckStack(Extra, cards, ocg, tcg);
+            if (invalidCard != 0)
+                return invalidCard;
+            invalidCard = CheckStack(Side, cards, ocg, tcg);
+            if (invalidCard != 0)
+                return invalidCard;
 
             if (ban == null)
                 return 0;
 
-            foreach (var pair in cards)
+            foreach (KeyValuePair<int, int> pair in cards)
             {
                 int max = ban.GetQuantity(pair.Key);
                 if (pair.Value > max)
@@ -99,52 +96,56 @@ namespace YGOProSharp.Core
 
         public bool Check(Deck deck)
         {
-            if (deck.Main.Count != Main.Count || deck.Extra.Count != Extra.Count)
+            if (deck.Main.Count != Main.Count || deck.Extra.Count != Extra.Count || deck.Side.Count != Side.Count)
                 return false;
 
-            IDictionary<int, int> cards = new Dictionary<int, int>();
-            IDictionary<int, int> ncards = new Dictionary<int, int>();
-            IList<int>[] stacks = { Main, Extra, Side };
-            foreach (IList<int> stack in stacks)
+            Dictionary<int, int> cards = new(Main.Count + Extra.Count + Side.Count);
+            CountStack(Main, cards);
+            CountStack(Extra, cards);
+            CountStack(Side, cards);
+
+            Dictionary<int, int> ncards = new(deck.Main.Count + deck.Extra.Count + deck.Side.Count);
+            CountStack(deck.Main, ncards);
+            CountStack(deck.Extra, ncards);
+            CountStack(deck.Side, ncards);
+
+            if (cards.Count != ncards.Count)
+                return false;
+
+            foreach (KeyValuePair<int, int> pair in cards)
             {
-                foreach (int id in stack)
-                {
-                    if (!cards.ContainsKey(id))
-                        cards.Add(id, 1);
-                    else
-                        cards[id]++;
-                }
-            }
-            stacks = new[] { deck.Main, deck.Extra, deck.Side };
-            foreach (var stack in stacks)
-            {
-                foreach (int id in stack)
-                {
-                    if (!ncards.ContainsKey(id))
-                        ncards.Add(id, 1);
-                    else
-                        ncards[id]++;
-                }
-            }
-            foreach (var pair in cards)
-            {
-                if (!ncards.ContainsKey(pair.Key))
-                    return false;
-                if (ncards[pair.Key] != pair.Value)
+                if (!ncards.TryGetValue(pair.Key, out int count) || count != pair.Value)
                     return false;
             }
             return true;
         }
 
-        private static void AddToCards(IDictionary<int, int> cards, Card card)
+        private int CheckStack(IList<int> stack, Dictionary<int, int> cards, bool ocg, bool tcg)
         {
-            int id = card.Id;
-            if (card.Alias != 0)
-                id = card.Alias;
-            if (cards.ContainsKey(id))
-                cards[id]++;
-            else
-                cards.Add(id, 1);
+            for (int i = 0; i < stack.Count; i++)
+            {
+                int id = stack[i];
+                if (!_cardRepository.TryGetCard(id, out Card card))
+                    continue;
+
+                AddToCards(cards, card);
+                if (!ocg && card.Ot == 1 || !tcg && card.Ot == 2)
+                    return id;
+            }
+
+            return 0;
+        }
+
+        private static void CountStack(IList<int> stack, Dictionary<int, int> counts)
+        {
+            for (int i = 0; i < stack.Count; i++)
+                CollectionsMarshal.GetValueRefOrAddDefault(counts, stack[i], out _)++;
+        }
+
+        private static void AddToCards(Dictionary<int, int> cards, Card card)
+        {
+            int id = card.Alias != 0 ? card.Alias : card.Id;
+            CollectionsMarshal.GetValueRefOrAddDefault(cards, id, out _)++;
         }
     }
 }

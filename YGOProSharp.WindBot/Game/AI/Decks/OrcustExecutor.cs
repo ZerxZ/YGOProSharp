@@ -225,7 +225,7 @@ namespace WindBot.Game.AI.Decks
 
         public override CardPosition OnSelectPosition(int cardId, IList<CardPosition> positions)
         {
-            NamedCard cardData = CardDatabase.Get(cardId);
+            YGOProSharp.Core.Cards.NamedCard cardData = CardDatabase.Get(cardId);
             if (cardData != null)
             {
                 if (cardData.Attack <= 1000)
@@ -320,10 +320,13 @@ namespace WindBot.Game.AI.Decks
                 if (attacker.IsCode(CardId.TrickstarCandina) && Bot.HasInHand(CardId.TrickstarCarobein))
                     attacker.RealPower = attacker.RealPower + 1800;
 
-                if (attacker.IsCode(CardId.BorrelswordDragon) && !attacker.IsDisabled() && !BorrelswordDragonUsed)
+                if (attacker.IsCode(CardId.BorrelswordDragon) && !attacker.IsDisabled() &&
+                    !BorrelswordDragonUsed && defender.IsFaceup())
                 {
-                    attacker.RealPower = attacker.RealPower + defender.GetDefensePower() / 2;
-                    defender.RealPower = defender.RealPower - defender.GetDefensePower() / 2;
+                    int halfAttack = (defender.Attack + 1) / 2;
+                    attacker.RealPower += halfAttack;
+                    if (defender.IsAttack())
+                        defender.RealPower = halfAttack;
                 }
             }
             return base.OnPreBattleBetween(attacker, defender);
@@ -343,12 +346,15 @@ namespace WindBot.Game.AI.Decks
 
         private bool FoolishBurialEffect()
         {
-            AI.SelectCard(new[] {
+            int[] targets = new[] {
                 CardId.DestrudoTheLostDragonsFrisson,
                 CardId.JetSynchron,
                 CardId.OrcustHarpHorror,
                 CardId.OrcustCymbalSkeleton
-            });
+            };
+            AI.SelectCard(targets.OrderBy(id =>
+                id == CardId.OrcustHarpHorror && HarpHorrorUsed
+                || id == CardId.OrcustCymbalSkeleton && CymbalSkeletonUsed).ToArray());
             return true;
         }
 
@@ -499,7 +505,7 @@ namespace WindBot.Game.AI.Decks
         {
             if (!Bot.HasInExtra(CardId.BorreloadSavageDragon))
                 return false;
-            if (!Bot.HasInHand(CardId.JetSynchron) && Bot.GetRemainingCount(CardId.JetSynchron, 1) == 0)
+            if (!Bot.HasInHand(CardId.JetSynchron) && !Bot.HasInDeck(CardId.JetSynchron))
                 return false;
 
             int[] matids = new[] {
@@ -582,7 +588,7 @@ namespace WindBot.Game.AI.Decks
         {
             if (ActivateDescription == -1 || (ActivateDescription == Util.GetStringId(CardId.ShootingRiserDragon, 0)))
             {
-                if (Bot.MonsterZone.IsExistingMatchingCard(card => card.Level == 3 && card.IsFaceup() && !card.IsTuner()) && Bot.GetRemainingCount(CardId.MaxxC, 3) > 0)
+                if (Bot.MonsterZone.IsExistingMatchingCard(card => card.Level == 3 && card.IsFaceup() && !card.IsTuner()) && Bot.HasInDeck(CardId.MaxxC))
                 {
                     AI.SelectCard(CardId.MaxxC);
                 }
@@ -682,7 +688,7 @@ namespace WindBot.Game.AI.Decks
         {
             if (Bot.GetHandCount() == 0)
                 return false;
-            if (Bot.GetRemainingCount(CardId.OrcustKnightmare, 2) == 0)
+            if (!Bot.HasInDeck(CardId.OrcustKnightmare))
                 return false;
             AI.SelectPlace(Zones.ExtraMonsterZones);
             return true;
@@ -710,19 +716,19 @@ namespace WindBot.Game.AI.Decks
         private bool OrcustKnightmareEffect()
         {
             if (DefaultCheckWhetherCardIsNegated(Card)) return false;
-            if (!Bot.HasInGraveyard(CardId.OrcustHarpHorror))
+            if (!HarpHorrorUsed && !Bot.HasInGraveyard(CardId.OrcustHarpHorror) && Bot.HasInDeck(CardId.OrcustHarpHorror))
             {
                 AI.SelectCard(Util.GetBestBotMonster());
                 AI.SelectNextCard(CardId.OrcustHarpHorror);
                 return true;
             }
-            else if (!Bot.HasInGraveyard(CardId.WorldLegacyWorldWand) && Bot.GetRemainingCount(CardId.WorldLegacyWorldWand, 1) > 0)
+            else if (!Bot.HasInGraveyard(CardId.WorldLegacyWorldWand) && Bot.HasInDeck(CardId.WorldLegacyWorldWand))
             {
                 AI.SelectCard(CardId.GalateaTheOrcustAutomaton);
                 AI.SelectNextCard(CardId.WorldLegacyWorldWand);
                 return true;
             }
-            else if (!Bot.HasInGraveyard(CardId.OrcustCymbalSkeleton) && Bot.GetRemainingCount(CardId.OrcustCymbalSkeleton, 1) > 0 && Bot.HasInGraveyard(CardId.SheorcustDingirsu) && !SheorcustDingirsuSummoned)
+            else if (!CymbalSkeletonUsed && !Bot.HasInGraveyard(CardId.OrcustCymbalSkeleton) && Bot.HasInDeck(CardId.OrcustCymbalSkeleton) && Bot.HasInGraveyard(CardId.SheorcustDingirsu) && !SheorcustDingirsuSummoned)
             {
                 AI.SelectCard(CardId.GalateaTheOrcustAutomaton);
                 AI.SelectNextCard(CardId.OrcustCymbalSkeleton);
@@ -748,9 +754,9 @@ namespace WindBot.Game.AI.Decks
 
         private bool RustyBardicheSummon()
         {
-            //if (Bot.GetRemainingCount(CardId.ThePhantomKnightsofAncientCloak, 1) == 0 && Bot.GetRemainingCount(CardId.ThePhantomKnightsofSilentBoots, 1) == 0)
+            //if (!Bot.HasInDeck(CardId.ThePhantomKnightsofAncientCloak) && !Bot.HasInDeck(CardId.ThePhantomKnightsofSilentBoots))
             //    return false;
-            //if (Bot.GetRemainingCount(CardId.ThePhantomKnightsofShadeBrigandine, 1) == 0 && Bot.GetRemainingCount(CardId.PhantomKnightsFogBlade, 2) == 0)
+            //if (!Bot.HasInDeck(CardId.ThePhantomKnightsofShadeBrigandine) && !Bot.HasInDeck(CardId.PhantomKnightsFogBlade))
             //    return false;
             IList<ClientCard> mats = Bot.MonsterZone.GetMatchingCards(card => card.IsCode(CardId.GalateaTheOrcustAutomaton));
             ClientCard mat2 = Bot.MonsterZone.GetMatchingCards(card => card.IsCode(CardId.OrcustCymbalSkeleton)).FirstOrDefault();
@@ -984,24 +990,9 @@ namespace WindBot.Game.AI.Decks
             mats.Sort(CardContainer.CompareCardAttack);
             mats.Reverse();
 
-            int link = 0;
-            bool doubleused = false;
-            IList<ClientCard> selected = new List<ClientCard>();
-            foreach (ClientCard card in mats)
-            {
-                selected.Add(card);
-                if (!doubleused && card.LinkCount == 2)
-                {
-                    doubleused = true;
-                    link += 2;
-                }
-                else
-                    link++;
-                if (link >= 4)
-                    break;
-            }
-
-            if (link >= 4 && Util.GetBotAvailZonesFromExtraDeck(selected) > 0)
+            List<ClientCard> selected = Util.GetLinkMaterials(mats, 4, 3, 4)
+                .FirstOrDefault(materials => Util.GetBotAvailZonesFromExtraDeck(materials) > 0);
+            if (selected != null)
             {
                 AI.SelectMaterials(selected);
                 return true;
@@ -1150,7 +1141,7 @@ namespace WindBot.Game.AI.Decks
                     AI.SelectCard(target);
                     return true;
                 }
-                if(!Bot.HasInHand(CardId.OrcustHarpHorror) && Bot.GetRemainingCount(CardId.OrcustHarpHorror, 2) > 1)
+                if(!Bot.HasInHand(CardId.OrcustHarpHorror) && Bot.GetCardCountInDeck(CardId.OrcustHarpHorror) > 1)
                 {
                     AI.SelectCard(CardId.OrcustHarpHorror);
                     return true;
@@ -1181,4 +1172,3 @@ namespace WindBot.Game.AI.Decks
         }
     }
 }
-

@@ -4,6 +4,7 @@ using System.Collections.Specialized;
 using System.IO;
 using System.Net;
 using System.Text.Json;
+using YGOProSharp.Protocol;
 
 namespace WindBot
 {
@@ -53,41 +54,46 @@ namespace WindBot
                 {
 #endif
                     HttpListenerContext context = await mainServer.GetContextAsync().ConfigureAwait(false);
-                    string queryText = context.Request.Url == null
-                        ? string.Empty
-                        : context.Request.Url.Query.TrimStart('?');
-                    WindBotInfo info = CreateInfoFromQuery(QueryStringParser.ParseQueryString(queryText));
-                    if (info == null)
-                    {
-                        context.Response.StatusCode = 400;
-                        context.Response.Close();
-                        continue;
-                    }
-
-#if !DEBUG
                     try
                     {
-#endif
-                        _ = Task.Run(async () =>
+                        string queryText = context.Request.Url == null
+                            ? string.Empty
+                            : context.Request.Url.Query.TrimStart('?');
+                        WindBotInfo info = CreateInfoFromQuery(QueryStringParser.ParseQueryString(queryText));
+                        if (info == null)
                         {
-                            try
-                            {
-                                await _startBot(info, cancellationToken).ConfigureAwait(false);
-                            }
-                            catch (Exception ex)
-                            {
-                                Logger.WriteErrorLine("Start Thread Error: " + ex);
-                            }
-                        }, cancellationToken);
+                            context.Response.StatusCode = 400;
+                            continue;
+                        }
+
 #if !DEBUG
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.WriteErrorLine("Start Thread Error: " + ex);
-                    }
+                        try
+                        {
 #endif
-                    context.Response.StatusCode = 200;
-                    context.Response.Close();
+                            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    await _startBot(info, cancellationToken).ConfigureAwait(false);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Logger.WriteErrorLine("Start Thread Error: " + ex);
+                                }
+                            }, cancellationToken);
+#if !DEBUG
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.WriteErrorLine("Start Thread Error: " + ex);
+                        }
+#endif
+                        context.Response.StatusCode = 200;
+                    }
+                    finally
+                    {
+                        context.Response.Close();
+                    }
 #if !DEBUG
                 }
                 catch (Exception ex)
@@ -102,6 +108,9 @@ namespace WindBot
 
         public static WindBotInfo CreateInfoFromQuery(NameValueCollection query)
         {
+            if (query == null)
+                return null;
+
             WindBotInfo info = new WindBotInfo
             {
                 Name = query["name"],
@@ -109,9 +118,54 @@ namespace WindBot
                 Host = query["host"]
             };
 
-            string port = query["port"];
-            if (port != null)
-                info.Port = int.Parse(port);
+            bool isExplicitWsUri = !string.IsNullOrWhiteSpace(info.Host) &&
+                (info.Host.StartsWith("ws://", StringComparison.OrdinalIgnoreCase) ||
+                 info.Host.StartsWith("wss://", StringComparison.OrdinalIgnoreCase));
+
+            string rawPort = query["port"];
+            if (rawPort != null)
+            {
+                if (!int.TryParse(rawPort, out int parsedPort) || parsedPort <= 0 || parsedPort > 65535)
+                    return null;
+                info.Port = parsedPort;
+            }
+            else if (isExplicitWsUri && Uri.TryCreate(info.Host, UriKind.Absolute, out Uri parsedWsUri))
+            {
+                info.Port = parsedWsUri.Port;
+                info.UseWebSocket = true;
+            }
+            else
+            {
+                return null;
+            }
+
+            string rawWs = query["ws"] ?? query["usewebsocket"];
+            if (rawWs != null)
+            {
+                if (!bool.TryParse(rawWs, out bool parsedWs))
+                    return null;
+                info.UseWebSocket = parsedWs;
+            }
+
+            string rawWss = query["wss"] ?? query["websocketusewss"];
+            if (rawWss != null)
+            {
+                if (!bool.TryParse(rawWss, out bool parsedWss))
+                    return null;
+                info.WebSocketUseWss = parsedWss;
+            }
+
+            string wsPath = query["wspath"] ?? query["websocketpath"];
+            if (wsPath != null)
+                info.WebSocketPath = wsPath;
+
+            string rawWsFraming = query["wsframing"] ?? query["websocketframingmode"];
+            if (rawWsFraming != null)
+            {
+                if (!Enum.TryParse(rawWsFraming, ignoreCase: true, out WebSocketFramingMode parsedFraming))
+                    return null;
+                info.WebSocketFramingMode = parsedFraming;
+            }
 
             string deckFile = query["deckfile"];
             if (deckFile != null)
@@ -121,27 +175,43 @@ namespace WindBot
             if (dialog != null)
                 info.Dialog = dialog;
 
-            string version = query["version"];
-            if (version != null)
-                info.Version = short.Parse(version);
+            string rawVersion = query["version"];
+            if (rawVersion != null)
+            {
+                if (!short.TryParse(rawVersion, out short parsedVersion))
+                    return null;
+                info.Version = parsedVersion;
+            }
 
             string password = query["password"];
             if (password != null)
                 info.HostInfo = password;
 
-            string hand = query["hand"];
-            if (hand != null)
-                info.Hand = int.Parse(hand);
+            string rawHand = query["hand"];
+            if (rawHand != null)
+            {
+                if (!int.TryParse(rawHand, out int parsedHand))
+                    return null;
+                info.Hand = parsedHand;
+            }
 
-            string debug = query["debug"];
-            if (debug != null)
-                info.Debug = bool.Parse(debug);
+            string rawDebug = query["debug"];
+            if (rawDebug != null)
+            {
+                if (!bool.TryParse(rawDebug, out bool parsedDebug))
+                    return null;
+                info.Debug = parsedDebug;
+            }
 
-            string chat = query["chat"];
-            if (chat != null)
-                info.Chat = bool.Parse(chat);
+            string rawChat = query["chat"];
+            if (rawChat != null)
+            {
+                if (!bool.TryParse(rawChat, out bool parsedChat))
+                    return null;
+                info.Chat = parsedChat;
+            }
 
-            if (info.Name == null || info.Host == null || port == null)
+            if (string.IsNullOrWhiteSpace(info.Name) || string.IsNullOrWhiteSpace(info.Host))
                 return null;
 
             return info;

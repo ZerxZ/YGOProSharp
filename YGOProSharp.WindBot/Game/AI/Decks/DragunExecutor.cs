@@ -71,7 +71,6 @@ namespace WindBot.Game.AI.Decks
             AddExecutor(ExecutorType.Summon, CardId.TourGuideFromTheUnderworld, TourGuideFromTheUnderworldSummon);
             AddExecutor(ExecutorType.Activate, CardId.TourGuideFromTheUnderworld, TourGuideFromTheUnderworldEffect);
             AddExecutor(ExecutorType.Summon, CardId.Sangan, SanganSummon);
-            AddExecutor(ExecutorType.Activate, CardId.Sangan, SanganEffect);
 
             AddExecutor(ExecutorType.Summon, CardId.MechaPhantomBeastOLion);
             AddExecutor(ExecutorType.Activate, CardId.MechaPhantomBeastOLion, MechaPhantomBeastOLionEffect);
@@ -128,7 +127,7 @@ namespace WindBot.Game.AI.Decks
 
         public override CardPosition OnSelectPosition(int cardId, IList<CardPosition> positions)
         {
-            NamedCard cardData = CardDatabase.Get(cardId);
+            YGOProSharp.Core.Cards.NamedCard cardData = CardDatabase.Get(cardId);
             if (cardData != null)
             {
                 if (cardData.Attack <= 1000)
@@ -144,6 +143,41 @@ namespace WindBot.Game.AI.Decks
                 return available & ~Bot.GetLinkedZones();
             }
             return 0;
+        }
+
+        public override IList<ClientCard> OnSelectCard(
+            IList<ClientCard> cards, int min, int max, int hint, bool cancelable)
+        {
+            ChainInfo solvingChain = Duel.GetCurrentSolvingChainInfo();
+            if (solvingChain != null &&
+                solvingChain.ActivatePlayer == 0 &&
+                solvingChain.IsActivateCode(CardId.Sangan) &&
+                hint == HintMsg.AddToHand)
+            {
+                List<int> priority = new List<int>();
+                if (Bot.HasInMonstersZone(CardId.SalamangreatAlmiraj) &&
+                    !Bot.HasInHand(CardId.CrusadiaArboria))
+                    priority.Add(CardId.CrusadiaArboria);
+                if (!Bot.HasInHand(CardId.MaxxC))
+                    priority.Add(CardId.MaxxC);
+                if (!Bot.HasInHand(CardId.AshBlossomJoyousSpring))
+                    priority.Add(CardId.AshBlossomJoyousSpring);
+                if (!Bot.HasInHand(CardId.MagiciansSouls))
+                    priority.Add(CardId.MagiciansSouls);
+                if (!Bot.HasInHand(CardId.CrusadiaArboria))
+                    priority.Add(CardId.CrusadiaArboria);
+                priority.AddRange(new[]
+                {
+                    CardId.AshBlossomJoyousSpring,
+                    CardId.MaxxC,
+                    CardId.CrusadiaArboria
+                });
+                IList<ClientCard> targets = Util.SelectPreferredCards(
+                    priority.Distinct().ToList(), cards, min, max);
+                return Util.CheckSelectCount(targets, cards, min, max);
+            }
+
+            return base.OnSelectCard(cards, min, max, hint, cancelable);
         }
 
         private bool DragunofRedEyesCounter()
@@ -177,7 +211,7 @@ namespace WindBot.Game.AI.Decks
         {
             if (Bot.HasInHand(CardId.RedEyesFusion))
                 return false;
-            if (Bot.GetRemainingCount(CardId.RedEyesWyvern, 1) == 0 && Bot.GetRemainingCount(CardId.RedEyesBDragon, 2) == 1 && !Bot.HasInHand(CardId.RedEyesBDragon))
+            if (!Bot.HasInDeck(CardId.RedEyesWyvern) && Bot.GetCardCountInDeck(CardId.RedEyesBDragon) == 1 && !Bot.HasInHand(CardId.RedEyesBDragon))
                 return false;
             AI.SelectCard(CardId.RedEyesWyvern);
             return true;
@@ -189,7 +223,7 @@ namespace WindBot.Game.AI.Decks
             { // you don't want to use DragunofRedEyes which is treated as RedEyesBDragon as fusion material
                 if (Util.GetBotAvailZonesFromExtraDeck() == 0)
                     return false;
-                if (Bot.GetRemainingCount(CardId.RedEyesBDragon, 2) == 0 && !Bot.HasInHand(CardId.RedEyesBDragon))
+                if (!Bot.HasInDeck(CardId.RedEyesBDragon) && !Bot.HasInHand(CardId.RedEyesBDragon))
                     return false;
             }
             AI.SelectMaterials(CardLocation.Deck);
@@ -200,7 +234,7 @@ namespace WindBot.Game.AI.Decks
         private bool TourGuideFromTheUnderworldSummon()
         {
             if (DefaultCheckWhetherCardIsNegated(Card)) return false;
-            if (Bot.GetRemainingCount(CardId.TourGuideFromTheUnderworld, 2) == 0 && Bot.GetRemainingCount(CardId.Sangan, 2) == 0)
+            if (!Bot.HasInDeck(CardId.TourGuideFromTheUnderworld) && !Bot.HasInDeck(CardId.Sangan))
                 return false;
             return true;
         }
@@ -213,27 +247,6 @@ namespace WindBot.Game.AI.Decks
 
         private bool SanganSummon()
         {
-            return true;
-        }
-
-        private bool SanganEffect()
-        {
-            if (Bot.HasInMonstersZone(CardId.SalamangreatAlmiraj) && !Bot.HasInHand(CardId.CrusadiaArboria))
-                AI.SelectCard(CardId.CrusadiaArboria);
-            else if (!Bot.HasInHand(CardId.MaxxC))
-                AI.SelectCard(CardId.MaxxC);
-            else if (!Bot.HasInHand(CardId.AshBlossomJoyousSpring))
-                AI.SelectCard(CardId.AshBlossomJoyousSpring);
-            else if (!Bot.HasInHand(CardId.MagiciansSouls))
-                AI.SelectCard(CardId.MagiciansSouls);
-            else if (!Bot.HasInHand(CardId.CrusadiaArboria))
-                AI.SelectCard(CardId.CrusadiaArboria);
-            else
-                AI.SelectCard(new[] {
-                    CardId.AshBlossomJoyousSpring,
-                    CardId.MaxxC,
-                    CardId.CrusadiaArboria
-                });
             return true;
         }
 
@@ -286,6 +299,7 @@ namespace WindBot.Game.AI.Decks
 
         private bool InstantFusionEffect()
         {
+            if (Bot.LifePoints <= 1000) return false;
             if (!NeedMonster())
                 return false;
 
@@ -339,6 +353,7 @@ namespace WindBot.Game.AI.Decks
         {
             if (Bot.HasInMonstersZone(CardId.PredaplantVerteAnaconda, true))
                 return false;
+            if (Bot.LifePoints <= 2000) return false;
 
             int[] materials = new[] {
                 CardId.ImdukTheWorldChaliceDragon,
@@ -381,6 +396,7 @@ namespace WindBot.Game.AI.Decks
             if (DefaultCheckWhetherCardIsNegated(Card)) return false;
             if (ActivateDescription == Util.GetStringId(CardId.PredaplantVerteAnaconda, 0))
                 return false;
+            if (Bot.LifePoints <= 2000) return false;
             AI.SelectCard(CardId.RedEyesFusion);
             AI.SelectMaterials(CardLocation.Deck);
             return true;
@@ -513,4 +529,3 @@ namespace WindBot.Game.AI.Decks
         }
     }
 }
-

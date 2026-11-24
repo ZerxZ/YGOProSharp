@@ -3,12 +3,12 @@
     <PropertyGroup>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
-        <TargetFrameworks>net10.0;net8.0;net9.0</TargetFrameworks>
         <PackageLicenseFile>LICENSE</PackageLicenseFile>
+        <TargetFramework>net10.0</TargetFramework>
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.8" />
+      <PackageReference Include="Microsoft.Data.Sqlite" Version="11.0.0" />
       <ProjectReference Include="..\YGOProSharp.Abstractions\YGOProSharp.Abstractions.csproj" />
     </ItemGroup>
 

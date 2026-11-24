@@ -211,8 +211,6 @@ namespace WindBot.Game.AI.Decks
             }
             */
         }
-        int attackerzone = -1;
-        int defenderzone = -1;
         bool Secret_used = false;
         bool plan_A = false;
         bool plan_C = false;
@@ -300,6 +298,7 @@ namespace WindBot.Game.AI.Decks
                 Rod_summon = true;
                 GlassBell_summon = true;
             }
+            base.OnNewPhase();
         }
         public override void OnNewTurn()
         {
@@ -337,7 +336,7 @@ namespace WindBot.Game.AI.Decks
             if (maxxc_used) return false;
             if (WindwitchGlassBelleff_used) return false;
             //AI.SelectPlace(Zones.z2, 1);
-            if (Bot.GetRemainingCount(CardId.WindwitchGlassBell, 2) >= 1)
+            if (Bot.HasInDeck(CardId.WindwitchGlassBell))
                 AI.SelectCard(CardId.WindwitchGlassBell);
             else if (Bot.HasInHand(CardId.WindwitchGlassBell))
                 AI.SelectCard(CardId.WindwitchSnowBell);
@@ -1002,7 +1001,7 @@ namespace WindBot.Game.AI.Decks
                 return true;
             }
 
-            if ((Bot.GetRemainingCount(CardId.DarkMagician, 3) > 1 || Bot.HasInGraveyard(CardId.DarkMagician)) &&
+            if ((Bot.GetCardCountInDeck(CardId.DarkMagician) >= 2 || Bot.HasInGraveyard(CardId.DarkMagician)) &&
                 Bot.HasInSpellZone(CardId.MagicianNavigation) &&
                 (Bot.HasInMonstersZone(CardId.DarkMagician) || Bot.HasInMonstersZone(CardId.ApprenticeLllusionMagician)) &&
                 Duel.Player == 1 && !Bot.HasInHand(CardId.DarkMagician))
@@ -1152,7 +1151,7 @@ namespace WindBot.Game.AI.Decks
             //AI.SelectPlace(Zones.z2, 1);
             if (Bot.HasInHand(CardId.DarkMagician) && !Bot.HasInSpellZone(CardId.MagicianNavigation))
             {
-                if (Bot.GetRemainingCount(CardId.DarkMagician, 3) > 0)
+                if (Bot.HasInDeck(CardId.DarkMagician))
                 {
                     AI.SelectCard(CardId.DarkMagician);
                     AI.SelectPosition(CardPosition.FaceUpAttack);
@@ -1283,7 +1282,7 @@ namespace WindBot.Game.AI.Decks
                 //AI.SelectPlace(Zones.z2, 2);
                 AI.SelectCard(spell);
                 if (Bot.HasInHandOrInSpellZone(CardId.EternalSoul) && Bot.HasInHandOrInSpellZone(CardId.DarkMagicalCircle))
-                    if (Bot.GetRemainingCount(CardId.DarkMagician, 3) >= 2 && !Bot.HasInHandOrInSpellZoneOrInGraveyard(CardId.LllusionMagic))
+                    if (Bot.GetCardCountInDeck(CardId.DarkMagician) >= 2 && !Bot.HasInHandOrInSpellZoneOrInGraveyard(CardId.LllusionMagic))
                     {
                         AI.SelectNextCard(CardId.LllusionMagic);
                         return true;
@@ -1305,7 +1304,7 @@ namespace WindBot.Game.AI.Decks
                 if (Bot.HasInHandOrInSpellZone(CardId.MagicianNavigation) &&
                     !Bot.HasInHand(CardId.DarkMagician) &&
                     !Bot.HasInHandOrInSpellZone(CardId.EternalSoul) &&
-                    Bot.GetRemainingCount(CardId.LllusionMagic, 1) > 0)
+                    Bot.HasInDeck(CardId.LllusionMagic))
                 {
                     AI.SelectNextCard(CardId.LllusionMagic);
                     return true;
@@ -1342,7 +1341,7 @@ namespace WindBot.Game.AI.Decks
             if (Card.Location == CardLocation.MonsterZone)
             {
                 if (Bot.HasInHandOrInSpellZone(CardId.EternalSoul) && Bot.HasInHandOrInSpellZone(CardId.DarkMagicalCircle))
-                    if (Bot.GetRemainingCount(CardId.DarkMagician, 3) >= 2 && Bot.GetRemainingCount(CardId.LllusionMagic, 1) > 0)
+                    if (Bot.GetCardCountInDeck(CardId.DarkMagician) >= 2 && Bot.HasInDeck(CardId.LllusionMagic))
                     {
                         AI.SelectCard(CardId.LllusionMagic);
                         return true;
@@ -1350,7 +1349,7 @@ namespace WindBot.Game.AI.Decks
 
                 if (Bot.HasInHand(CardId.ApprenticeLllusionMagician) &&
                   !Bot.HasInHandOrInSpellZone(CardId.MagicianNavigation) &&
-                  Bot.GetRemainingCount(CardId.MagicianNavigation, 3) > 0)
+                  Bot.HasInDeck(CardId.MagicianNavigation))
                 {
                     AI.SelectCard(CardId.MagicianNavigation);
                     return true;
@@ -1358,7 +1357,7 @@ namespace WindBot.Game.AI.Decks
 
                 if (Bot.HasInHandOrInSpellZone(CardId.EternalSoul) &&
                     !Bot.HasInHandOrInMonstersZoneOrInGraveyard(CardId.DarkMagician) &&
-                    Bot.GetRemainingCount(CardId.LllusionMagic, 1) > 0)
+                    Bot.HasInDeck(CardId.LllusionMagic))
                 {
                     AI.SelectCard(CardId.LllusionMagic);
                     return true;
@@ -1367,7 +1366,7 @@ namespace WindBot.Game.AI.Decks
                 if (Bot.HasInHandOrInSpellZone(CardId.MagicianNavigation) &&
                     !Bot.HasInHand(CardId.DarkMagician) &&
                     !Bot.HasInHandOrInSpellZone(CardId.EternalSoul) &&
-                    Bot.GetRemainingCount(CardId.LllusionMagic, 1) > 0)
+                    Bot.HasInDeck(CardId.LllusionMagic))
                 {
                     AI.SelectCard(CardId.LllusionMagic);
                     return true;
@@ -1375,14 +1374,14 @@ namespace WindBot.Game.AI.Decks
                 if (!Bot.HasInHandOrInSpellZone(CardId.EternalSoul) &&
                     Bot.HasInHandOrInSpellZone(CardId.DarkMagicalCircle) &&
                     Bot.HasInHandOrInSpellZone(CardId.MagicianNavigation) &&
-                    Bot.GetRemainingCount(CardId.EternalSoul, 3) > 0)
+                    Bot.HasInDeck(CardId.EternalSoul))
                 {
                     AI.SelectCard(CardId.EternalSoul);
                     return true;
                 }
                 if ((Bot.HasInHandOrInSpellZone(CardId.EternalSoul) || Bot.HasInHandOrInSpellZone(CardId.MagicianNavigation)) &&
                     !Bot.HasInHandOrInSpellZone(CardId.DarkMagicalCircle) &&
-                    Bot.GetRemainingCount(CardId.DarkMagicalCircle, 3) > 0)
+                    Bot.HasInDeck(CardId.DarkMagicalCircle))
                 {
                     AI.SelectCard(CardId.DarkMagicalCircle);
                     return true;
@@ -1392,7 +1391,7 @@ namespace WindBot.Game.AI.Decks
                 {
                     if (Bot.HasInHand(CardId.DarkMagician) &&
                         !Bot.HasInGraveyard(CardId.MagicianNavigation) &&
-                        Bot.GetRemainingCount(CardId.MagicianNavigation, 3) > 0
+                        Bot.HasInDeck(CardId.MagicianNavigation)
                         )
                         AI.SelectCard(CardId.MagicianNavigation);
                     else if (!Bot.HasInHandOrInSpellZone(CardId.DarkMagicalCircle))

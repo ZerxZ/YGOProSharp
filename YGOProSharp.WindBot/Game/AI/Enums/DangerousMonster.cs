@@ -32,4 +32,3 @@ namespace WindBot.Game.AI.Enums
         ArchfiendMatador = 7622360
     }
 }
-

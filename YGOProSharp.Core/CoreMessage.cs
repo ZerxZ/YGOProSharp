@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
 using YGOProSharp.Abstractions.Ocg.Enums;
 
 namespace YGOProSharp.Core;
@@ -18,6 +19,7 @@ public sealed class CoreMessage
 
     public CoreMessageReader Reader { get; }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ReadOnlySpan<byte> CreateBufferSpan()
     {
         return _raw.Span[..Reader.Position];
@@ -40,30 +42,45 @@ public sealed class CoreMessageReader
 
     public int Position { get; private set; }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public byte ReadByte()
     {
         EnsureAvailable(sizeof(byte));
         return _buffer.Span[Position++];
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public short ReadInt16()
     {
         ReadOnlySpan<byte> span = ReadSpan(sizeof(short));
         return BinaryPrimitives.ReadInt16LittleEndian(span);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public int ReadInt32()
     {
         ReadOnlySpan<byte> span = ReadSpan(sizeof(int));
         return BinaryPrimitives.ReadInt32LittleEndian(span);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public uint ReadUInt32()
     {
         ReadOnlySpan<byte> span = ReadSpan(sizeof(uint));
         return BinaryPrimitives.ReadUInt32LittleEndian(span);
     }
 
+    /// <summary>
+    /// 零分配跳过指定字节数（zero-allocation skip），用于只需推进游标的原生消息读取。
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Skip(int count)
+    {
+        EnsureAvailable(count);
+        Position += count;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ReadOnlySpan<byte> ReadSpan(int count)
     {
         EnsureAvailable(count);
@@ -77,6 +94,7 @@ public sealed class CoreMessageReader
         return ReadSpan(count).ToArray();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void EnsureAvailable(int count)
     {
         if (count < 0)

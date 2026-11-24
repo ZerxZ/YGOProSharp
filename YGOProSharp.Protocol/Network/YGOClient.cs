@@ -1,4 +1,7 @@
+using System.Buffers.Binary;
 using System.IO;
+using System.Net;
+using System.Net.WebSockets;
 using Microsoft.Extensions.Logging;
 using YGOProSharp.Abstractions.Ocg.Enums;
 using YGOProSharp.Abstractions.Logging;
@@ -20,6 +23,34 @@ namespace YGOProSharp.Protocol
         {
         }
 
+        public YGOClient(INetworkTransport transport)
+            : base(transport)
+        {
+        }
+
+        /// <summary>
+        /// 创建使用 WebSocket（<c>ws://</c> / <c>wss://</c>）传输的 <see cref="YGOClient"/>。
+        /// </summary>
+        public static YGOClient CreateWebSocket(
+            WebSocketFramingMode framingMode = WebSocketFramingMode.LengthPrefixed,
+            Action<ClientWebSocketOptions>? configureOptions = null)
+        {
+            return new YGOClient(new WebSocketNetworkClient(framingMode, configureOptions));
+        }
+
+        /// <summary>
+        /// 创建一对通过进程内内存管道直连的 <see cref="YGOClient"/>（无需打开 TCP / WebSocket 端口）。
+        /// </summary>
+        public static (YGOClient Client, YGOClient Server) CreateInMemoryPair(
+            IPAddress? clientAddress = null,
+            IPAddress? serverAddress = null,
+            bool connected = true)
+        {
+            (InMemoryNetworkTransport clientTransport, InMemoryNetworkTransport serverTransport) =
+                InMemoryNetworkTransport.CreatePair(clientAddress, serverAddress, connected);
+            return (new YGOClient(clientTransport), new YGOClient(serverTransport));
+        }
+
         public void Send(BinaryWriter writer)
         {
             MemoryStream stream = (MemoryStream)writer.BaseStream;
@@ -33,28 +64,26 @@ namespace YGOProSharp.Protocol
 
         public void Send(CtosMessage message)
         {
-            using (BinaryWriter writer = new BinaryWriter(new MemoryStream()))
-            {
-                writer.Write((byte)message);
+            // 栈上编码单字节 CTOS 包，消除 MemoryStream + BinaryWriter 堆分配。
+            Span<byte> packet = [(byte)message];
+            if (_logger.IsEnabled(LogLevel.Debug))
                 _logger.LogDebug("Sending CTOS {CtosMessage}.", message);
-                Send(writer);
-            }
+            Send(packet);
         }
 
         public void Send(CtosMessage message, int value)
         {
-            using (BinaryWriter writer = new BinaryWriter(new MemoryStream()))
-            {
-                writer.Write((byte)message);
-                writer.Write(value);
+            Span<byte> packet = stackalloc byte[1 + sizeof(int)];
+            packet[0] = (byte)message;
+            BinaryPrimitives.WriteInt32LittleEndian(packet[1..], value);
+            if (_logger.IsEnabled(LogLevel.Debug))
                 _logger.LogDebug("Sending CTOS {CtosMessage} with value {Value}.", message, value);
-                Send(writer);
-            }
+            Send(packet);
         }
 
         private void LogOutgoingPacket(ReadOnlySpan<byte> packet)
         {
-            if (packet.IsEmpty)
+            if (packet.IsEmpty || !_logger.IsEnabled(LogLevel.Debug))
                 return;
 
             StocMessage message = (StocMessage)packet[0];

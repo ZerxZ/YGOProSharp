@@ -22,8 +22,10 @@ namespace YGOProSharp.Server
 
         public int Analyse(GameMessage msg, ref SequenceReader<byte> reader, ReadOnlyMemory<byte> raw)
         {
-            _logger.LogDebug("{GameMessage}", msg);
-            _logger.LogTrace("Received OCG message {GameMessage} with {PayloadLength} bytes.", msg, raw.Length);
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("{GameMessage}", msg);
+            if (_logger.IsEnabled(LogLevel.Trace))
+                _logger.LogTrace("Received OCG message {GameMessage} with {PayloadLength} bytes.", msg, raw.Length);
             // CoreMessage 负责 protocol-specific read；handler 消费 body 后再推进 SequenceReader。
             CoreMessage cmsg = new CoreMessage(msg, raw);
             int result = AnalyseCore(msg, cmsg);
@@ -278,11 +280,10 @@ namespace YGOProSharp.Server
         {
             int type = msg.Reader.ReadByte();
             int player = msg.Reader.ReadByte();
-            msg.Reader.ReadInt32();
+            msg.Reader.Skip(sizeof(int));
 
-            byte[] buffer = msg.CreateBuffer();
-            BinaryWriter packet = GamePacketFactory.Create(msg.Message);
-            packet.Write(buffer);
+            using BinaryWriter packet = GamePacketFactory.Create(msg.Message);
+            packet.Write(msg.CreateBufferSpan());
 
             switch (type)
             {
@@ -320,9 +321,9 @@ namespace YGOProSharp.Server
         {
             int player = msg.Reader.ReadByte();
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 11);
+            msg.Reader.Skip(count * 11);
             count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 8 + 2);
+            msg.Reader.Skip(count * 8 + 2);
             Game.RefreshAll();
             Game.WaitForResponse(player);
             SendToPlayer(msg, player);
@@ -331,18 +332,18 @@ namespace YGOProSharp.Server
         private void OnSelectIdleCmd(CoreMessage msg)
         {
             int player = msg.Reader.ReadByte();
-			int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 7);
+            int count = msg.Reader.ReadByte();
+            msg.Reader.Skip(count * 7);
             count = msg.Reader.ReadByte();
-			msg.Reader.ReadBytes(count * 7);
+            msg.Reader.Skip(count * 7);
             count = msg.Reader.ReadByte();
-			msg.Reader.ReadBytes(count * 7);
+            msg.Reader.Skip(count * 7);
             count = msg.Reader.ReadByte();
-			msg.Reader.ReadBytes(count * 7);
+            msg.Reader.Skip(count * 7);
             count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 7);
+            msg.Reader.Skip(count * 7);
             count = msg.Reader.ReadByte();
-			msg.Reader.ReadBytes(count * 11 + 3);
+            msg.Reader.Skip(count * 11 + 3);
 
             Game.RefreshAll();
             Game.WaitForResponse(player);
@@ -352,7 +353,7 @@ namespace YGOProSharp.Server
         private void OnSelectEffectYn(CoreMessage msg)
         {
             int player = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(13);
+            msg.Reader.Skip(12);
             Game.WaitForResponse(player);
             SendToPlayer(msg, player);
         }
@@ -360,7 +361,7 @@ namespace YGOProSharp.Server
         private void OnSelectYesNo(CoreMessage msg)
         {
             int player = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(4);
+            msg.Reader.Skip(4);
             Game.WaitForResponse(player);
             SendToPlayer(msg, player);
         }
@@ -369,18 +370,18 @@ namespace YGOProSharp.Server
         {
             int player = msg.Reader.ReadByte();
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 4);
+            msg.Reader.Skip(count * 4);
             Game.WaitForResponse(player);
             SendToPlayer(msg, player);
         }
 
         private void OnSelectCard(CoreMessage msg)
         {
-            BinaryWriter packet = GamePacketFactory.Create(msg.Message);
+            using BinaryWriter packet = GamePacketFactory.Create(msg.Message);
 
             int player = msg.Reader.ReadByte();
             packet.Write((byte)player);
-            packet.Write(msg.Reader.ReadBytes(3));
+            packet.Write(msg.Reader.ReadSpan(3));
 
             int count = msg.Reader.ReadByte();
             packet.Write((byte)count);
@@ -405,11 +406,11 @@ namespace YGOProSharp.Server
 
         private void OnSelectUnselect(CoreMessage msg)
         {
-            BinaryWriter packet = GamePacketFactory.Create(msg.Message);
+            using BinaryWriter packet = GamePacketFactory.Create(msg.Message);
 
             int player = msg.Reader.ReadByte();
             packet.Write((byte)player);
-            packet.Write(msg.Reader.ReadBytes(4));
+            packet.Write(msg.Reader.ReadSpan(4));
 
             int count = msg.Reader.ReadByte();
             packet.Write((byte)count);
@@ -453,7 +454,8 @@ namespace YGOProSharp.Server
         {
             int player = msg.Reader.ReadByte();
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(10 + count * 13);
+            // spe_count (1) + hint1 (4) + hint2 (4) = 9 字节；每条连锁项为 14 字节。
+            msg.Reader.Skip(9 + count * 14);
 
             if (count > 0)
             {
@@ -469,7 +471,7 @@ namespace YGOProSharp.Server
         private void OnSelectPlace(CoreMessage msg)
         {
             int player = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(5);
+            msg.Reader.Skip(5);
             Game.WaitForResponse(player);
             SendToPlayer(msg, player);
         }
@@ -477,22 +479,22 @@ namespace YGOProSharp.Server
         private void OnSelectCounter(CoreMessage msg)
         {
             int player = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(4);
+            msg.Reader.Skip(4);
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 9);
+            msg.Reader.Skip(count * 9);
             Game.WaitForResponse(player);
             SendToPlayer(msg, player);
         }
 
         private void OnSelectSum(CoreMessage msg)
         {
-            msg.Reader.ReadByte();
+            msg.Reader.Skip(1);
             int player = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(6);
+            msg.Reader.Skip(6);
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 11);
+            msg.Reader.Skip(count * 11);
             count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 11);
+            msg.Reader.Skip(count * 11);
             Game.WaitForResponse(player);
             SendToPlayer(msg, player);
         }
@@ -501,37 +503,38 @@ namespace YGOProSharp.Server
         {
             int player = msg.Reader.ReadByte();
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 7);
+            msg.Reader.Skip(count * 7);
             Game.WaitForResponse(player);
             SendToPlayer(msg, player);
         }
 
         private void OnConfirmDecktop(CoreMessage msg)
         {
-            msg.Reader.ReadByte();
+            msg.Reader.Skip(1);
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 7);
+            msg.Reader.Skip(count * 7);
             SendToAll(msg);
         }
 
         private void OnConfirmExtratop(CoreMessage msg)
         {
-            msg.Reader.ReadByte();
+            msg.Reader.Skip(1);
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 7);
+            msg.Reader.Skip(count * 7);
             SendToAll(msg);
         }
 
         private void OnConfirmCards(CoreMessage msg)
         {
             int player = msg.Reader.ReadByte();
+            msg.Reader.Skip(1); // skip_panel
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 7);
+            msg.Reader.Skip(count * 7);
 
-            byte[] buffer = msg.CreateBuffer();
-            BinaryWriter packet = GamePacketFactory.Create(msg.Message);
+            ReadOnlySpan<byte> buffer = msg.CreateBufferSpan();
+            using BinaryWriter packet = GamePacketFactory.Create(msg.Message);
             packet.Write(buffer);
-            if ((CardLocation)buffer[7] == CardLocation.Hand)
+            if (count > 0 && (CardLocation)buffer[8] == CardLocation.Hand)
                 Game.SendToAll(packet);
             else
                 Game.CurPlayers[player].Send(packet);
@@ -539,13 +542,13 @@ namespace YGOProSharp.Server
 
         private void OnShuffleHand(CoreMessage msg)
         {
-            BinaryWriter packet = GamePacketFactory.Create(msg.Message);
+            using BinaryWriter packet = GamePacketFactory.Create(msg.Message);
             int player = msg.Reader.ReadByte();
             int count = msg.Reader.ReadByte();
             packet.Write((byte)player);
             packet.Write((byte)count);
 
-            msg.Reader.ReadBytes(count * 4);
+            msg.Reader.Skip(count * 4);
             for (int i = 0; i < count; i++)
                 packet.Write(0);
 
@@ -556,13 +559,13 @@ namespace YGOProSharp.Server
 
         private void OnShuffleExtra(CoreMessage msg)
         {
-            BinaryWriter packet = GamePacketFactory.Create(msg.Message);
+            using BinaryWriter packet = GamePacketFactory.Create(msg.Message);
             int player = msg.Reader.ReadByte();
             int count = msg.Reader.ReadByte();
             packet.Write((byte)player);
             packet.Write((byte)count);
 
-            msg.Reader.ReadBytes(count * 4);
+            msg.Reader.Skip(count * 4);
             for (int i = 0; i < count; i++)
                 packet.Write(0);
 
@@ -582,7 +585,7 @@ namespace YGOProSharp.Server
         {
             int location = msg.Reader.ReadByte();
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 8);
+            msg.Reader.Skip(count * 8);
             SendToAll(msg);
             if (location == (int)CardLocation.MonsterZone)
             {
@@ -609,14 +612,14 @@ namespace YGOProSharp.Server
 
         private void OnNewPhase(CoreMessage msg)
         {
-            msg.Reader.ReadInt16();
+            msg.Reader.Skip(sizeof(short));
             SendToAll(msg);
             Game.RefreshAll();
         }
 
         private void OnMove(CoreMessage msg)
         {
-            byte[] raw = msg.Reader.ReadBytes(16);
+            ReadOnlySpan<byte> raw = msg.Reader.ReadSpan(16);
             int pc = raw[4];
             int pl = raw[5];
             int cc = raw[8];
@@ -625,7 +628,7 @@ namespace YGOProSharp.Server
             int cp = raw[11];
 
             SendToPlayer(msg, cc);
-            BinaryWriter packet = GamePacketFactory.Create(msg.Message);
+            using BinaryWriter packet = GamePacketFactory.Create(msg.Message);
             packet.Write(raw);
             if (!Convert.ToBoolean((cl & ((int)CardLocation.Grave + (int)CardLocation.Overlay))) && Convert.ToBoolean((cl & ((int)CardLocation.Deck + (int)CardLocation.Hand)))
                 || Convert.ToBoolean((cp & (int)CardPosition.FaceDown)))
@@ -641,7 +644,7 @@ namespace YGOProSharp.Server
 
         private void OnPosChange(CoreMessage msg)
         {
-            byte[] raw = msg.Reader.ReadBytes(9);
+            ReadOnlySpan<byte> raw = msg.Reader.ReadSpan(9);
             SendToAll(msg);
 
             int cc = raw[4];
@@ -655,9 +658,9 @@ namespace YGOProSharp.Server
 
         private void OnSet(CoreMessage msg)
         {
-            msg.Reader.ReadBytes(4);
-            byte[] raw = msg.Reader.ReadBytes(4);
-            BinaryWriter packet = GamePacketFactory.Create(GameMessage.Set);
+            msg.Reader.Skip(4);
+            ReadOnlySpan<byte> raw = msg.Reader.ReadSpan(4);
+            using BinaryWriter packet = GamePacketFactory.Create(GameMessage.Set);
             packet.Write(0);
             packet.Write(raw);
             Game.SendToAll(packet);
@@ -665,36 +668,36 @@ namespace YGOProSharp.Server
 
         private void OnFlipSummoning(CoreMessage msg)
         {
-            byte[] raw = msg.Reader.ReadBytes(8);
+            ReadOnlySpan<byte> raw = msg.Reader.ReadSpan(8);
             Game.RefreshSingle(raw[4], raw[5], raw[6]);
             SendToAll(msg);
         }
 
         private void OnCardSelected(CoreMessage msg)
         {
-            msg.Reader.ReadByte();
+            msg.Reader.Skip(1);
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 4);
+            msg.Reader.Skip(count * 4);
         }
 
         private void OnRandomSelected(CoreMessage msg)
         {
-            msg.Reader.ReadByte();
+            msg.Reader.Skip(1);
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 4);
+            msg.Reader.Skip(count * 4);
             SendToAll(msg);
         }
 
         private void OnBecomeTarget(CoreMessage msg)
         {
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 4);
+            msg.Reader.Skip(count * 4);
             SendToAll(msg);
         }
 
         private void OnDraw(CoreMessage msg)
         {
-            BinaryWriter packet = GamePacketFactory.Create(msg.Message);
+            using BinaryWriter packet = GamePacketFactory.Create(msg.Message);
             int player = msg.Reader.ReadByte();
             int count = msg.Reader.ReadByte();
             packet.Write((byte)player);
@@ -741,15 +744,15 @@ namespace YGOProSharp.Server
         private void OnMissedEffect(CoreMessage msg)
         {
             int player = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(7);
+            msg.Reader.Skip(7);
             SendToPlayer(msg, player);
         }
 
         private void OnTossCoin(CoreMessage msg)
         {
-            msg.Reader.ReadByte();
+            msg.Reader.Skip(1);
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count);
+            msg.Reader.Skip(count);
             SendToAll(msg);
         }
 
@@ -763,7 +766,7 @@ namespace YGOProSharp.Server
         private void OnAnnounceRace(CoreMessage msg)
         {
             int player = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(5);
+            msg.Reader.Skip(5);
             Game.WaitForResponse(player);
             SendToPlayer(msg, player);
         }
@@ -771,7 +774,7 @@ namespace YGOProSharp.Server
         private void OnAnnounceAttrib(CoreMessage msg)
         {
             int player = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(5);
+            msg.Reader.Skip(5);
             Game.WaitForResponse(player);
             SendToPlayer(msg, player);
         }
@@ -779,7 +782,8 @@ namespace YGOProSharp.Server
         private void OnAnnounceCard(CoreMessage msg)
         {
             int player = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(4);
+            int count = msg.Reader.ReadByte();
+            msg.Reader.Skip(count * 4);
             Game.WaitForResponse(player);
             SendToPlayer(msg, player);
         }
@@ -788,7 +792,7 @@ namespace YGOProSharp.Server
         {
             int player = msg.Reader.ReadByte();
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 4);
+            msg.Reader.Skip(count * 4);
             Game.WaitForResponse(player);
             SendToPlayer(msg, player);
         }
@@ -797,14 +801,14 @@ namespace YGOProSharp.Server
         {
             int player = msg.Reader.ReadByte();
             int count = msg.Reader.ReadByte();
-            msg.Reader.ReadBytes(count * 4);
+            msg.Reader.Skip(count * 4);
             Game.WaitForResponse(player);
             SendToPlayer(msg, player);
         }
 
         private void OnMatchKill(CoreMessage msg)
         {
-            msg.Reader.ReadInt32();
+            msg.Reader.Skip(sizeof(int));
             if (Game.IsMatch)
             {
                 Game.MatchKill();
@@ -814,7 +818,7 @@ namespace YGOProSharp.Server
 
         private void OnTagSwap(CoreMessage msg)
         {
-            BinaryWriter packet = GamePacketFactory.Create(GameMessage.TagSwap);
+            using BinaryWriter packet = GamePacketFactory.Create(GameMessage.TagSwap);
 
             int player = msg.Reader.ReadByte();
             packet.Write((byte)player);
@@ -826,7 +830,7 @@ namespace YGOProSharp.Server
             int hcount = msg.Reader.ReadByte();
             packet.Write((byte)hcount);
 
-            packet.Write(msg.Reader.ReadBytes(4)); // topcode
+            packet.Write(msg.Reader.ReadSpan(4)); // topcode
 
             for (int i = 0; i < hcount + ecount; i++)
             {
@@ -856,9 +860,8 @@ namespace YGOProSharp.Server
 
         private void SendToAll(CoreMessage msg)
         {
-            byte[] buffer = msg.CreateBuffer();
-            BinaryWriter packet = GamePacketFactory.Create(msg.Message);
-            packet.Write(buffer);
+            using BinaryWriter packet = GamePacketFactory.Create(msg.Message);
+            packet.Write(msg.CreateBufferSpan());
             Game.SendToAll(packet);
         }
 
@@ -866,10 +869,11 @@ namespace YGOProSharp.Server
         {
             if (length == 0)
             {
-                Game.SendToAll(GamePacketFactory.Create(msg.Message));
+                using BinaryWriter packet = GamePacketFactory.Create(msg.Message);
+                Game.SendToAll(packet);
                 return;
             }
-            msg.Reader.ReadBytes(length);
+            msg.Reader.Skip(length);
             SendToAll(msg);
         }
 
@@ -877,9 +881,8 @@ namespace YGOProSharp.Server
         {
             if (player != 0 && player != 1)
                 return;
-            byte[] buffer = msg.CreateBuffer();
-            BinaryWriter packet = GamePacketFactory.Create(msg.Message);
-            packet.Write(buffer);
+            using BinaryWriter packet = GamePacketFactory.Create(msg.Message);
+            packet.Write(msg.CreateBufferSpan());
             Game.CurPlayers[player].Send(packet);
         }
 
@@ -887,9 +890,8 @@ namespace YGOProSharp.Server
         {
             if (player != 0 && player != 1)
                 return;
-            byte[] buffer = msg.CreateBuffer();
-            BinaryWriter packet = GamePacketFactory.Create(msg.Message);
-            packet.Write(buffer);
+            using BinaryWriter packet = GamePacketFactory.Create(msg.Message);
+            packet.Write(msg.CreateBufferSpan());
             Game.SendToTeam(packet, player);
         }
 

@@ -64,25 +64,48 @@ namespace WindBot.Game.AI
         {
             _game = game;
             DataContractJsonSerializer serializer = new DataContractJsonSerializer(typeof(DialogsData));
-            string dialogfilename = game.Dialog;
-            using (FileStream fs = WindBotRuntime.ReadFile("Dialogs", dialogfilename, "json"))
+            string dialogfilename = string.IsNullOrWhiteSpace(game.Dialog) ? "default" : game.Dialog;
+            try
             {
-                DialogsData data = (DialogsData)serializer.ReadObject(fs);
-                _welcome = data.welcome;
-                _deckerror = data.deckerror;
-                _duelstart = data.duelstart;
-                _newturn = data.newturn;
-                _endturn = data.endturn;
-                _directattack = data.directattack;
-                _attack = data.attack;
-                _ondirectattack = data.ondirectattack;
-                _facedownmonstername = data.facedownmonstername;
-                _activate = data.activate;
-                _summon = data.summon;
-                _setmonster = data.setmonster;
-                _chaining = data.chaining;
-                _surrender = data.surrender;
-                _custom = data.custom;
+                using (FileStream fs = WindBotRuntime.ReadFile("Dialogs", dialogfilename, "json"))
+                {
+                    DialogsData data = (DialogsData)serializer.ReadObject(fs);
+                    _welcome = data?.welcome ?? Array.Empty<string>();
+                    _deckerror = data?.deckerror ?? Array.Empty<string>();
+                    _duelstart = data?.duelstart ?? Array.Empty<string>();
+                    _newturn = data?.newturn ?? Array.Empty<string>();
+                    _endturn = data?.endturn ?? Array.Empty<string>();
+                    _directattack = data?.directattack ?? Array.Empty<string>();
+                    _attack = data?.attack ?? Array.Empty<string>();
+                    _ondirectattack = data?.ondirectattack ?? Array.Empty<string>();
+                    _facedownmonstername = string.IsNullOrEmpty(data?.facedownmonstername) ? "monster" : data.facedownmonstername;
+                    _activate = data?.activate ?? Array.Empty<string>();
+                    _summon = data?.summon ?? Array.Empty<string>();
+                    _setmonster = data?.setmonster ?? Array.Empty<string>();
+                    _chaining = data?.chaining ?? Array.Empty<string>();
+                    _surrender = data?.surrender ?? Array.Empty<string>();
+                    _custom = data?.custom ?? Array.Empty<string>();
+                }
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                // 未提供 Dialogs 资源时退化为空对话集，避免阻塞无对话文件场景下的连接与对局。
+                Logger.DebugWriteLine($"Dialog file '{dialogfilename}.json' not found, using empty dialogs.");
+                _welcome = Array.Empty<string>();
+                _deckerror = Array.Empty<string>();
+                _duelstart = Array.Empty<string>();
+                _newturn = Array.Empty<string>();
+                _endturn = Array.Empty<string>();
+                _directattack = Array.Empty<string>();
+                _attack = Array.Empty<string>();
+                _ondirectattack = Array.Empty<string>();
+                _facedownmonstername = "monster";
+                _activate = Array.Empty<string>();
+                _summon = Array.Empty<string>();
+                _setmonster = Array.Empty<string>();
+                _chaining = Array.Empty<string>();
+                _surrender = Array.Empty<string>();
+                _custom = Array.Empty<string>();
             }
         }
 
@@ -184,6 +207,8 @@ namespace WindBot.Game.AI
 
         private void InternalSendMessageForced(IList<string> array, params object[] opts)
         {
+            if (array == null || array.Count == 0)
+                return;
             string message = string.Format(array[WindBotRuntime.Random.Next(array.Count)], opts);
             if (message != "")
                 _game.Chat(message);
@@ -191,7 +216,7 @@ namespace WindBot.Game.AI
 
         public void SendCustomChat(int index, params object[] opts)
         {
-            if (!_game._chat || _custom == null)
+            if (!_game._chat || _custom == null || index < 0 || index >= _custom.Length)
                 return;
             string message = string.Format(_custom[index], opts);
             if (message != "")

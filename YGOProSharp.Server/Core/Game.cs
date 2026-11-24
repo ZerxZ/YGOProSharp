@@ -1035,10 +1035,12 @@ namespace YGOProSharp.Server
         {
             _lastresponse = player;
             CurPlayers[player].State = PlayerState.Response;
-            _logger.LogDebug("Waiting for response from player slot {Player}.", player);
-            SendToAllBut(GamePacketFactory.Create(GameMessage.Waiting), player);
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Waiting for response from player slot {Player}.", player);
+            using (BinaryWriter waiting = GamePacketFactory.Create(GameMessage.Waiting))
+                SendToAllBut(waiting, player);
             TimeStart();
-            BinaryWriter packet = GamePacketFactory.Create(StocMessage.TimeLimit);
+            using BinaryWriter packet = GamePacketFactory.Create(StocMessage.TimeLimit);
             packet.Write((byte)player);
             packet.Write((byte)0); // C++ padding
             packet.Write((short)_timelimit[player]);
@@ -1050,12 +1052,13 @@ namespace YGOProSharp.Server
             if (!Replay.Disabled)
             {
                 Replay.Writer.Write((byte)4);
-                Replay.Writer.Write(BitConverter.GetBytes(resp));
+                Replay.Writer.Write(resp);
                 Replay.Check();
             }
 
             TimeStop();
-            _logger.LogDebug("Setting integer response for player slot {Player}.", _lastresponse);
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Setting integer response for player slot {Player}.", _lastresponse);
             _duel.SetResponse(resp);
         }
 
@@ -1069,7 +1072,8 @@ namespace YGOProSharp.Server
             }
 
             TimeStop();
-            _logger.LogDebug("Setting binary response for player slot {Player}. Length={ResponseLength}.", _lastresponse, resp.Length);
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Setting binary response for player slot {Player}. Length={ResponseLength}.", _lastresponse, resp.Length);
             _duel.SetResponse(resp);
             Process();
         }

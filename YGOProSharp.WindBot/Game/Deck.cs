@@ -51,11 +51,12 @@ namespace WindBot.Game
 
         public static Deck Load(string name, INamedCardRepository cardRepository)
         {
-            StreamReader reader = null;
+            if (string.IsNullOrWhiteSpace(name))
+                return null;
+
             try
             {
-                reader = new StreamReader(WindBotRuntime.ReadFile("Decks", name, "ydk"));
-
+                using StreamReader reader = new StreamReader(WindBotRuntime.ReadFile("Decks", name, "ydk"));
                 Deck deck = new Deck(cardRepository);
                 bool side = false;
 
@@ -74,14 +75,11 @@ namespace WindBot.Game
                         continue;
                     }
 
-                    int id;
-                    if (!int.TryParse(line, out id))
+                    if (!int.TryParse(line, out int id))
                         continue;
 
                     deck.AddNewCard(id, side);
                 }
-
-                reader.Close();
 
                 if (deck.Cards.Count > 60)
                     return null;
@@ -94,7 +92,6 @@ namespace WindBot.Game
             }
             catch (Exception)
             {
-                reader?.Close();
                 return null;
             }
         }

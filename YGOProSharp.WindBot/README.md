@@ -33,7 +33,8 @@ dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- windbo
 
 常用参数：
 
-- `Host` / `Port`：要连接的 YGOProSharp 服务端地址和端口。
+- `Host` / `Port`：要连接的 YGOProSharp 服务端地址和端口；`Host` 以 `ws://` 或 `wss://` 开头时自动使用 WebSocket。
+- `UseWebSocket` / `WebSocketUseWss` / `WebSocketPath` / `WebSocketFramingMode`：WebSocket 传输选项，支持 `LengthPrefixed`（默认，2 字节长度头）与 `MessagePerPacket`（单帧即单包）。
 - `HostInfo`：房间密码或主机信息。
 - `Name`：Bot 昵称。
 - `Deck` / `DeckFile`：Bot 使用的卡组。
@@ -43,34 +44,52 @@ dotnet run --project YGOProSharp.Cli/YGOProSharp.Cli.csproj -c Release -- windbo
 - `Locale`：额外尝试 `Data/locales/<Locale>/<DbPath>`。
 - `LogLevel`：`Trace`、`Debug`、`Information`、`Warning`、`Error`、`Critical`，默认 `Information`。
 
-## 库式调用
+## 库式调用（C# 直接调用）
+
+### 1. 多 Bot 会话托管（替代 HTTP ServerMode）
 
 ```csharp
 SqliteCardDatabaseManager databaseManager = new();
 INamedCardRepository cards = databaseManager.LoadNamedCards(["cards.cdb"]);
 
-WindBotRuntimeOptions runtimeOptions = new()
+await using WindBotService service = new(new WindBotRuntimeOptions
 {
     CardRepository = cards,
     TickDelayMilliseconds = 30
-};
+});
 
-WindBotInfo info = new()
+// 支持直接走 TCP / WebSocket，或传入 InMemoryNetworkTransport（如 serverHost.CreateLocalTransport()）
+using WindBotSession session = service.StartBot(new WindBotInfo
 {
     Name = "WindBot",
     Host = "127.0.0.1",
     Port = 7911,
     Deck = "AI_Yubel"
-};
+});
 
-WindBotService service = new(runtimeOptions);
-await service.RunBotAsync(info, cancellationToken);
+session.Chat("你好！");
+await session.StopAsync();
+```
+
+### 2. 纯包级直调（零网络、零后台线程）
+
+```csharp
+using WindBotDirectClient direct = service.CreateDirectClient(new WindBotInfo
+{
+    Name = "DirectBot",
+    Deck = "AI_Yubel"
+});
+
+direct.CtosPacketProduced += packet => { /* 转发或消费 CTOS 包 */ };
+direct.Start(pumpInitialHandshake: true);
+direct.FeedStocPacket(StocMessage.SelectHand);
+IReadOnlyList<byte[]> replies = direct.DrainCtosPackets();
 ```
 
 ## 边界
 
 - 允许引用：`YGOProSharp.Abstractions`、`YGOProSharp.Core`、`YGOProSharp.Protocol`。
-- 不允许引用：`YGOProSharp.Server`、`YGOProSharp.NativeApi`。
+- 不允许引用：`YGOProSharp.Server`、`YGOProSharp.NativeApi` 或任何具体 Lua 引擎库（Lua 卡组执行器仅依赖 `YGOProSharp.Abstractions.Scripting` 泛用契约，详见 [docs/windbot-lua.md](../docs/windbot-lua.md)）。
 - SQLite 读取由 `SqliteCardDatabaseManager` 完成，WindBot 只通过 `INamedCardRepository` 查询卡片。
 - 日志通过 `AppLog` 输出，不直接调用 `Console.WriteLine`。
 
