@@ -428,5 +428,25 @@ namespace WindBot.Game.AI
 
             return InstantiateLuaDeck(ai, duel, allLua[fallbackIndex - allManaged.Count], luaRuntime, luaScriptProvider, throwOnLuaScriptError);
         }
+
+        /// <summary>
+        /// 返回所有已注册的托管与 Lua 卡组名称（按字母顺序排序）。
+        /// </summary>
+        public static IReadOnlyList<string> GetRegisteredDeckNames()
+        {
+            EnsureInitialized();
+            HashSet<string> names = new(StringComparer.OrdinalIgnoreCase);
+            lock (_syncRoot)
+            {
+                foreach (string name in _decks.Keys)
+                    names.Add(name);
+                foreach (string name in _luaDecks.Keys)
+                    names.Add(name);
+            }
+
+            List<string> sorted = new(names);
+            sorted.Sort(StringComparer.OrdinalIgnoreCase);
+            return sorted;
+        }
     }
 }

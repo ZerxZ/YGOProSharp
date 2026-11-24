@@ -110,6 +110,7 @@ Run("RoomPasswordParser parses built-in and custom DIY tokens", RoomPasswordPars
 await RunAsync("Server extensions support addons, custom deck validator, chat commands, and duel preload", ServerExtensionsSupportAddonsDeckValidatorChatCommandsAndDuelPreloadAsync);
 await RunAsync("CoreServer multi-room routes concurrent rooms and cleans up closed rooms", CoreServerMultiRoomRoutesConcurrentRoomsAndCleansUpAsync);
 Run("Server auto-discovers expansions/diy assets and CLI maps DIY & multi-room options", ServerAutoDiscoversExpansionsAndCliMapsOptions);
+await RunAsync("ChatCommandAddon supports host live rule edits, dice/coin, kick, and permission checks", ChatCommandAddonSupportsLiveRuleEditsAndPermissionsAsync);
 
 static void AppLogParsesLogLevels()
 {
@@ -3760,6 +3761,113 @@ static async Task CoreServerMultiRoomRoutesConcurrentRoomsAndCleansUpAsync()
 
     server.Stop();
     AssertEqual(0, server.RoomCount);
+    await Task.CompletedTask;
+}
+
+static async Task ChatCommandAddonSupportsLiveRuleEditsAndPermissionsAsync()
+{
+    BanlistManager.Init([]);
+    Banlist b1 = new("TestLF1");
+    b1.Add(1001, 1);
+    BanlistManager.AddBanlist(b1);
+
+    CoreServer server = new(options: new ServerOptions
+    {
+        EnableNetworkListener = false,
+        EnableChatCommands = true
+    });
+    server.StartEmbedded();
+
+    YGOClient hostClient = server.ConnectLocalClient();
+    YGOClient guestClient = server.ConnectLocalClient();
+
+    List<string> hostChats = new();
+    List<string> guestChats = new();
+    int hostJoinGamePackets = 0;
+
+    hostClient.PacketReceivedRaw += pkt =>
+    {
+        PacketReader r = new(pkt.Span);
+        if (r.Remaining == 0) return;
+        StocMessage msg = (StocMessage)r.ReadByte();
+        if (msg == StocMessage.Chat)
+        {
+            r.ReadInt16();
+            hostChats.Add(r.ReadUnicodeAutoLength(256));
+        }
+        else if (msg == StocMessage.JoinGame)
+        {
+            hostJoinGamePackets++;
+        }
+    };
+    guestClient.PacketReceivedRaw += pkt =>
+    {
+        PacketReader r = new(pkt.Span);
+        if (r.Remaining == 0) return;
+        if ((StocMessage)r.ReadByte() == StocMessage.Chat)
+        {
+            r.ReadInt16();
+            guestChats.Add(r.ReadUnicodeAutoLength(256));
+        }
+    };
+
+    SendPlayerJoin(hostClient, "Host", "");
+    SendPlayerJoin(guestClient, "Guest", "");
+    PumpServerAndClients(server, hostClient, guestClient);
+    int initialJoinCount = hostJoinGamePackets;
+
+    // 非房主尝试修改规则应被拒绝
+    SendChat(guestClient, "/lp 4000");
+    PumpServerAndClients(server, hostClient, guestClient);
+    AssertEqual(Game.DEFAULT_LIFEPOINTS, server.Game!.StartLp);
+    AssertTrue(guestChats.Any(m => m.Contains("仅房主")));
+
+    // 房主实时修改各项规则与 DIY 脚本，并同步 StocMessage.JoinGame 到客户端
+    SendChat(hostClient, "/lp 12000");
+    SendChat(hostClient, "/mr 4");
+    SendChat(hostClient, "/region diy");
+    SendChat(hostClient, "/nocheck on");
+    SendChat(hostClient, "/noshuffle on");
+    SendChat(hostClient, "/hand 6");
+    SendChat(hostClient, "/draw 2");
+    SendChat(hostClient, "/timer 180");
+    SendChat(hostClient, "/banlist none");
+    SendChat(hostClient, "/script add ./script/custom_boss.lua");
+    SendChat(hostClient, "/roll 20");
+    SendChat(hostClient, "/coin");
+    SendChat(hostClient, "/help lp");
+    PumpServerAndClients(server, hostClient, guestClient);
+
+    AssertEqual(12000, server.Game.StartLp);
+    AssertEqual(4, server.Game.MasterRule);
+    AssertEqual(3, server.Game.Region);
+    AssertTrue(server.Game.NoCheckDeck);
+    AssertTrue(server.Game.NoShuffleDeck);
+    AssertEqual(6, server.Game.StartHand);
+    AssertEqual(2, server.Game.DrawCount);
+    AssertEqual(180, server.Game.Timer);
+    AssertTrue(server.Game.Banlist is null);
+    AssertTrue(server.Game.ExtraScripts.Contains("./script/custom_boss.lua"));
+    AssertTrue(hostJoinGamePackets > initialJoinCount);
+    AssertTrue(guestChats.Any(m => m.Contains("[Roll]") && m.Contains("1~20")));
+    AssertTrue(guestChats.Any(m => m.Contains("[Coin]")));
+    AssertTrue(hostChats.Any(m => m.Contains("[Help]") && m.Contains("/lp")));
+
+    // 房主一键 /preset 套用规则 + 切回禁限表 + 踢人
+    SendChat(hostClient, "/preset M,OT,LP8000,MR5");
+    SendChat(hostClient, "/banlist TestLF1");
+    SendChat(hostClient, "/kick Guest");
+    PumpServerAndClients(server, hostClient, guestClient);
+
+    AssertEqual(1, server.Game.Mode);
+    AssertEqual(2, server.Game.Region);
+    AssertEqual(8000, server.Game.StartLp);
+    AssertEqual(5, server.Game.MasterRule);
+    AssertTrue(server.Game.Banlist is not null);
+    AssertEqual("TestLF1", server.Game.Banlist!.Name);
+    AssertEqual(1, server.Game.CreateSnapshot().DuelistCount);
+
+    server.Stop();
     await Task.CompletedTask;
 }
 

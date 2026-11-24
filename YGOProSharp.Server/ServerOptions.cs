@@ -102,7 +102,7 @@ public sealed record GameOptions
 {
     public int Mode { get; init; }
     public int Region { get; init; }
-    public int MasterRule { get; init; } = 3;
+    public int MasterRule { get; init; } = 5;
     public int Banlist { get; init; }
     public int StartLp { get; init; } = Game.DEFAULT_LIFEPOINTS;
     public int StartHand { get; init; } = Game.DEFAULT_START_HAND;

@@ -24,6 +24,7 @@ namespace YGOProSharp.Server
         public AddonsManager? Addons { get; private set; }
         public Game? Game { get; private set; }
         public bool IsMultiRoom => _options.EnableMultiRoom;
+        public RoomPasswordParser PasswordParser => _passwordParser;
         public int ClientCount
         {
             get

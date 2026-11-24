@@ -29,6 +29,10 @@
 - **`Game.OnBeforeDuelStart`**：在卡组已写入且 `IDuelSession.Start` 之前触发，暴露 `DuelStartContext`（可调用 `Session.PreloadScript`、`Session.AddCard` 或修改 `DuelOptions`）。
 - **`GameOptions.DeckValidator`（`IDeckValidator`）**：可替换默认卡组校验逻辑（如单卡限制、主题限定、DIY 专场）。
 - **`Game.OnBeforePlayerChat` & `ChatCommandAddon`**：拦截 `/command` 消息避免刷屏广播，并可通过 `ServerOptions.ChatCommands` 注册自定义房间命令。
+  - 查询类：`/help [命令名|分类]`、`/rules`、`/room`、`/rooms`、`/banlists [页码]`
+  - 玩家与娱乐：`/ready`、`/unready`、`/duelist`、`/observer`、`/surrender`（`/ff`、`/gg`）、`/roll [上限]`、`/coin`
+  - 房主实时改规则（自动同步客户端左侧面板）：`/lp`、`/mr`、`/region`、`/banlist`、`/nocheck`、`/noshuffle`、`/hand`、`/draw`、`/timer`、`/mode`、`/preset`、`/script`、`/kick`、`/start`
+  - CLI 宿主额外注入：`/ai [卡组名] [对话名]`、`/decks [关键字]`
 - **`ServerOptions.AddonFactories`**：为每个房间挂载自定义 `AddonBase`（房间关闭时自动 `Dispose()`）。
 
 ### 3. 多房间模式与房号语法

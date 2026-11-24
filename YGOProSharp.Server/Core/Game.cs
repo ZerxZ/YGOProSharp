@@ -198,6 +198,188 @@ namespace YGOProSharp.Server
                 playerNames);
         }
 
+        public bool IsHost(Player player)
+        {
+            return HostPlayer is not null && HostPlayer.Equals(player);
+        }
+
+        public void SetBanlist(Banlist? banlist)
+        {
+            Banlist = banlist!;
+        }
+
+        public bool AddExtraScript(string scriptName)
+        {
+            if (string.IsNullOrWhiteSpace(scriptName))
+                return false;
+
+            string trimmed = scriptName.Trim();
+            if (_extraScripts.Contains(trimmed, StringComparer.OrdinalIgnoreCase))
+                return false;
+
+            _extraScripts.Add(trimmed);
+            return true;
+        }
+
+        public bool RemoveExtraScript(string scriptName)
+        {
+            if (string.IsNullOrWhiteSpace(scriptName))
+                return false;
+
+            int removed = _extraScripts.RemoveAll(s => string.Equals(s, scriptName.Trim(), StringComparison.OrdinalIgnoreCase));
+            return removed > 0;
+        }
+
+        public void ClearExtraScripts()
+        {
+            _extraScripts.Clear();
+        }
+
+        /// <summary>
+        /// 在大厅中安全切换 Single / Match / Tag 模式，保留当前已在房间内的玩家。
+        /// </summary>
+        public bool TrySetModeInLobby(int mode)
+        {
+            if (State != GameState.Lobby || mode < 0 || mode > 2)
+                return false;
+
+            bool targetTag = mode == 2;
+            if (targetTag != IsTag)
+            {
+                if (targetTag)
+                {
+                    Player[] expandedPlayers = new Player[4];
+                    bool[] expandedReady = new bool[4];
+                    for (int i = 0; i < Players.Length; i++)
+                    {
+                        expandedPlayers[i] = Players[i];
+                        expandedReady[i] = IsReady[i];
+                    }
+                    Players = expandedPlayers;
+                    IsReady = expandedReady;
+                }
+                else
+                {
+                    if (Players.Length > 2 && (Players[2] is not null || Players[3] is not null))
+                        return false;
+
+                    Player[] shrunkPlayers = new Player[2];
+                    bool[] shrunkReady = new bool[2];
+                    for (int i = 0; i < 2 && i < Players.Length; i++)
+                    {
+                        shrunkPlayers[i] = Players[i];
+                        shrunkReady[i] = IsReady[i];
+                    }
+                    Players = shrunkPlayers;
+                    IsReady = shrunkReady;
+                }
+            }
+
+            Mode = mode;
+            IsMatch = mode == 1;
+            IsTag = targetTag;
+            int maxMatchDuels = Math.Max(3, MatchWins * 2 - 1);
+            if (MatchResults.Length < maxMatchDuels)
+            {
+                MatchResults = new int[maxMatchDuels];
+                MatchReasons = new int[maxMatchDuels];
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// 将当前大厅规则实时同步给房间内所有玩家与观战者，并重置已准备状态以按新规则重新校验卡组。
+        /// </summary>
+        public void SyncLobbyRulesToClients()
+        {
+            if (State != GameState.Lobby)
+                return;
+
+            for (int i = 0; i < Players.Length; i++)
+            {
+                if (Players[i] is not null && IsReady[i])
+                {
+                    IsReady[i] = false;
+                    BinaryWriter change = GamePacketFactory.Create(StocMessage.HsPlayerChange);
+                    change.Write((byte)((i << 4) + (int)PlayerChange.NotReady));
+                    SendToAll(change);
+                }
+            }
+
+            for (int i = 0; i < Players.Length; i++)
+            {
+                if (Players[i] is not null)
+                    SendJoinGame(Players[i]);
+            }
+
+            for (int i = 0; i < Observers.Count; i++)
+                SendJoinGame(Observers[i]);
+        }
+
+        /// <summary>
+        /// 在大厅中（允许已有玩家时）应用房号规则覆写，并立即同步到所有客户端。
+        /// </summary>
+        public bool ApplyLobbyRuleOverrides(RoomRuleOverrides overrides)
+        {
+            ArgumentNullException.ThrowIfNull(overrides);
+            if (State != GameState.Lobby)
+                return false;
+
+            if (overrides.Mode.HasValue && !TrySetModeInLobby(overrides.Mode.Value))
+                return false;
+
+            if (overrides.Region.HasValue)
+                Region = overrides.Region.Value;
+            if (overrides.MasterRule.HasValue)
+                MasterRule = overrides.MasterRule.Value;
+            if (overrides.MatchWins.HasValue)
+            {
+                MatchWins = Math.Max(1, overrides.MatchWins.Value);
+                int maxMatchDuels = Math.Max(3, MatchWins * 2 - 1);
+                if (MatchResults.Length < maxMatchDuels)
+                {
+                    MatchResults = new int[maxMatchDuels];
+                    MatchReasons = new int[maxMatchDuels];
+                }
+            }
+            if (overrides.StartLp.HasValue)
+            {
+                StartLp = overrides.StartLp.Value;
+                LifePoints[0] = StartLp;
+                LifePoints[1] = StartLp;
+            }
+            else if (overrides.Mode == 2 && StartLp == DEFAULT_LIFEPOINTS)
+            {
+                StartLp = DEFAULT_LIFEPOINTS * 2;
+                LifePoints[0] = StartLp;
+                LifePoints[1] = StartLp;
+            }
+            if (overrides.StartHand.HasValue)
+                StartHand = overrides.StartHand.Value;
+            if (overrides.DrawCount.HasValue)
+                DrawCount = overrides.DrawCount.Value;
+            if (overrides.GameTimer.HasValue)
+                Timer = overrides.GameTimer.Value;
+            if (overrides.EnablePriority.HasValue)
+                EnablePriority = overrides.EnablePriority.Value;
+            if (overrides.NoCheckDeck.HasValue)
+                NoCheckDeck = overrides.NoCheckDeck.Value;
+            if (overrides.NoShuffleDeck.HasValue)
+                NoShuffleDeck = overrides.NoShuffleDeck.Value;
+            if (overrides.NoBanlist == true)
+                Banlist = null!;
+            else if (overrides.BanlistIndex.HasValue && overrides.BanlistIndex.Value >= 0 && overrides.BanlistIndex.Value < BanlistManager.Banlists.Count)
+                Banlist = BanlistManager.Banlists[overrides.BanlistIndex.Value];
+
+            foreach (string script in overrides.ExtraScripts)
+                AddExtraScript(script);
+            foreach (KeyValuePair<string, string> pair in overrides.CustomTags)
+                _customTags[pair.Key] = pair.Value;
+
+            SyncLobbyRulesToClients();
+            return true;
+        }
+
         /// <summary>
         /// 在大厅且尚未有玩家加入时应用由房间密码解析出的规则覆写。
         /// </summary>

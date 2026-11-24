@@ -1,10 +1,13 @@
 using Microsoft.Extensions.Logging;
 using WindBot;
+using WindBot.Game.AI;
 using YGOProSharp.Abstractions.Logging;
 using YGOProSharp.Cli;
 using YGOProSharp.Core.Cards;
 using YGOProSharp.NativeApi;
+using YGOProSharp.Protocol.Enums;
 using YGOProSharp.Server;
+using YGOProSharp.Server.Addons;
 
 using CancellationTokenSource shutdown = new();
 using ILoggerFactory bootstrapLoggerFactory = CreateLoggerFactory(LogLevel.Information);
@@ -63,54 +66,175 @@ finally
 static async Task<int> RunServerAsync(CliConfiguration configuration, CancellationToken cancellationToken)
 {
     ILogger logger = AppLog.CreateLogger("YGOProSharp.Cli.Server");
-    ServerOptions options = CliOptionsFactory.CreateServerOptions(configuration);
+    ServerOptions baseOptions = CliOptionsFactory.CreateServerOptions(configuration);
 
     if (configuration.Has("Rule") && !configuration.Has("Region"))
         logger.LogWarning("'Rule' is deprecated, please use 'Region' instead.");
 
+    YGOProSharpServerHost? activeHost = null;
+    WindBotService? sharedBotService = null;
+    object botGate = new();
+    int spawnedBotCounter = 0;
+
+    WindBotService? GetOrCreateBotService()
+    {
+        lock (botGate)
+        {
+            if (sharedBotService is not null)
+                return sharedBotService;
+
+            List<string> botDbPaths = new();
+            foreach (string serverDbPath in YGOProSharpServer.ResolveDatabasePaths(baseOptions))
+            {
+                if (File.Exists(serverDbPath) && !botDbPaths.Contains(serverDbPath, StringComparer.OrdinalIgnoreCase))
+                    botDbPaths.Add(serverDbPath);
+            }
+            foreach (string cliDbPath in CliOptionsFactory.ResolveWindBotDatabasePaths(configuration))
+            {
+                if (File.Exists(cliDbPath) && !botDbPaths.Contains(cliDbPath, StringComparer.OrdinalIgnoreCase))
+                    botDbPaths.Add(cliDbPath);
+            }
+
+            if (botDbPaths.Count == 0)
+                return null;
+
+            SqliteCardDatabaseManager databaseManager = new();
+            INamedCardRepository botCardRepository = databaseManager.LoadNamedCards(botDbPaths);
+            WindBotRuntimeOptions botRuntimeOptions = CliOptionsFactory.CreateWindBotRuntimeOptions(configuration, botCardRepository);
+            sharedBotService = new WindBotService(botRuntimeOptions);
+            return sharedBotService;
+        }
+    }
+
+    List<ChatCommandDefinition> cliCommands = new(baseOptions.ChatCommands);
+    if (baseOptions.EnableChatCommands)
+    {
+        cliCommands.Add(new ChatCommandDefinition(
+            "ai",
+            "召唤内置 WindBot 加入当前房间（支持指定卡组与对话）",
+            ctx =>
+            {
+                if (ctx.Game.State != GameState.Lobby)
+                {
+                    ctx.Reply("[AI] 仅可在大厅阶段召唤 AI。");
+                    return;
+                }
+                if (ctx.Game.Players.All(p => p is not null))
+                {
+                    ctx.Reply("[AI] 当前房间决斗席位已满。");
+                    return;
+                }
+                if (activeHost is null || !activeHost.IsRunning)
+                {
+                    ctx.Reply("[AI] 服务端尚未就绪。");
+                    return;
+                }
+
+                WindBotService? botService = GetOrCreateBotService();
+                if (botService is null)
+                {
+                    ctx.Reply("[AI] 未找到可用卡库，无法启动内置 WindBot。");
+                    return;
+                }
+
+                WindBotInfo botInfo = CliOptionsFactory.CreateServerBotInfo(configuration, baseOptions);
+                string? requestedDeck = ctx.Arguments.Count >= 1 ? ctx.Arguments[0] : botInfo.Deck;
+                string? requestedDialog = ctx.Arguments.Count >= 2 ? ctx.Arguments[1] : botInfo.Dialog;
+                int botSeq = Interlocked.Increment(ref spawnedBotCounter);
+
+                botInfo.Deck = requestedDeck;
+                if (!string.IsNullOrWhiteSpace(requestedDialog))
+                    botInfo.Dialog = requestedDialog;
+                if (!string.IsNullOrWhiteSpace(requestedDeck))
+                    botInfo.Name = $"{requestedDeck}#{botSeq}";
+                else if (botSeq > 1)
+                    botInfo.Name = $"{botInfo.Name}#{botSeq}";
+                botInfo.HostInfo = ctx.Game.RoomName;
+
+                try
+                {
+                    botService.StartBot(botInfo, activeHost.CreateLocalTransport(), cancellationToken);
+                    ctx.Broadcast($"[AI] 正在召唤 {botInfo.Name}（Deck={botInfo.Deck ?? "随机"}）加入房间...");
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Failed to spawn WindBot via /ai command.");
+                    ctx.Reply($"[AI] 召唤失败：{ex.Message}");
+                }
+            },
+            Aliases: ["bot", "addai"],
+            Usage: "/ai [卡组名] [对话名]",
+            Category: "AI"));
+
+        cliCommands.Add(new ChatCommandDefinition(
+            "decks",
+            "查看可供 /ai 使用的内置与 Lua 卡组列表",
+            ctx =>
+            {
+                string filter = ctx.RawArguments.Trim();
+                HashSet<string> names = new(DecksManager.GetRegisteredDeckNames(), StringComparer.OrdinalIgnoreCase);
+
+                string[] luaDirs =
+                [
+                    Path.Combine("Decks", "Lua"),
+                    Path.Combine(AppContext.BaseDirectory, "Decks", "Lua"),
+                    Path.Combine(baseOptions.RootPath, "Decks", "Lua")
+                ];
+                foreach (string dir in luaDirs)
+                {
+                    if (!Directory.Exists(dir))
+                        continue;
+                    foreach (string file in Directory.EnumerateFiles(dir, "*.lua", SearchOption.TopDirectoryOnly))
+                        names.Add(Path.GetFileNameWithoutExtension(file));
+                }
+
+                List<string> matched = names
+                    .Where(n => string.IsNullOrEmpty(filter) || n.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(static n => n, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (matched.Count == 0)
+                {
+                    ctx.Reply($"[Decks] 未找到匹配 '{filter}' 的卡组。");
+                    return;
+                }
+
+                const int maxShow = 15;
+                string preview = string.Join(", ", matched.Take(maxShow));
+                string suffix = matched.Count > maxShow ? $" ...（共 {matched.Count} 套，可用 /decks <关键字> 过滤）" : $"（共 {matched.Count} 套）";
+                ctx.Reply($"[Decks] {preview}{suffix}");
+            },
+            Aliases: ["aidecks"],
+            Usage: "/decks [关键字]",
+            Category: "AI"));
+    }
+
+    ServerOptions options = baseOptions with { ChatCommands = cliCommands };
+
     using NativeOcgRuntime runtime = new NativeOcgRuntime();
     logger.LogInformation("Starting YGOProSharp server.");
 
-    if (!CliOptionsFactory.ShouldStartServerBot(configuration))
-    {
-        await YGOProSharpServer.RunAsync(options, runtime, cancellationToken).ConfigureAwait(false);
-        logger.LogInformation("YGOProSharp server stopped.");
-        return 0;
-    }
-
     await using YGOProSharpServerHost serverHost = YGOProSharpServerHost.Create(options, runtime);
+    activeHost = serverHost;
     serverHost.StartBackgroundLoop(tickDelayMilliseconds: 1, embedded: !options.EnableNetworkListener, cancellationToken);
 
-    List<string> botDbPaths = new();
-    foreach (string serverDbPath in YGOProSharpServer.ResolveDatabasePaths(options))
+    if (CliOptionsFactory.ShouldStartServerBot(configuration))
     {
-        if (File.Exists(serverDbPath) && !botDbPaths.Contains(serverDbPath, StringComparer.OrdinalIgnoreCase))
-            botDbPaths.Add(serverDbPath);
-    }
-    foreach (string cliDbPath in CliOptionsFactory.ResolveWindBotDatabasePaths(configuration))
-    {
-        if (File.Exists(cliDbPath) && !botDbPaths.Contains(cliDbPath, StringComparer.OrdinalIgnoreCase))
-            botDbPaths.Add(cliDbPath);
-    }
+        WindBotService? botService = GetOrCreateBotService();
+        if (botService is null)
+        {
+            logger.LogError("Can't find cards database file for embedded WindBot.");
+            await serverHost.StopAsync().ConfigureAwait(false);
+            return 2;
+        }
 
-    if (botDbPaths.Count == 0)
-    {
-        logger.LogError("Can't find cards database file for embedded WindBot.");
-        await serverHost.StopAsync().ConfigureAwait(false);
-        return 2;
+        WindBotInfo botInfo = CliOptionsFactory.CreateServerBotInfo(configuration, options);
+        botService.StartBot(botInfo, serverHost.CreateLocalTransport(), cancellationToken);
+        logger.LogInformation(
+            "Started default in-process WindBot '{BotName}' (Deck={Deck}) on local transport.",
+            botInfo.Name,
+            botInfo.Deck ?? "<default>");
     }
-
-    SqliteCardDatabaseManager databaseManager = new SqliteCardDatabaseManager();
-    INamedCardRepository botCardRepository = databaseManager.LoadNamedCards(botDbPaths);
-    WindBotRuntimeOptions botRuntimeOptions = CliOptionsFactory.CreateWindBotRuntimeOptions(configuration, botCardRepository);
-    WindBotInfo botInfo = CliOptionsFactory.CreateServerBotInfo(configuration, options);
-
-    await using WindBotService botService = new WindBotService(botRuntimeOptions);
-    using WindBotSession botSession = botService.StartBot(botInfo, serverHost.CreateLocalTransport(), cancellationToken);
-    logger.LogInformation(
-        "Started default in-process WindBot '{BotName}' (Deck={Deck}) on local transport.",
-        botInfo.Name,
-        botInfo.Deck ?? "<default>");
 
     try
     {
@@ -122,7 +246,11 @@ static async Task<int> RunServerAsync(CliConfiguration configuration, Cancellati
     }
     finally
     {
-        await botService.StopAllAsync().ConfigureAwait(false);
+        if (sharedBotService is not null)
+        {
+            await sharedBotService.StopAllAsync().ConfigureAwait(false);
+            await sharedBotService.DisposeAsync().ConfigureAwait(false);
+        }
         await serverHost.StopAsync().ConfigureAwait(false);
     }
 

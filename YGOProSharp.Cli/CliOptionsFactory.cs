@@ -68,7 +68,7 @@ public static class CliOptionsFactory
             {
                 Mode = configuration.GetInt("Mode"),
                 Region = region,
-                MasterRule = configuration.GetInt("MasterRule", 3),
+                MasterRule = configuration.GetInt("MasterRule", 5),
                 Banlist = configuration.GetInt("Banlist"),
                 StartLp = configuration.GetInt("StartLp", Game.DEFAULT_LIFEPOINTS),
                 StartHand = configuration.GetInt("StartHand", Game.DEFAULT_START_HAND),
