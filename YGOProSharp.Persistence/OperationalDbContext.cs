@@ -101,6 +101,7 @@ public sealed class OperationalDbContext : DbContext
             b.HasKey(x => x.Id);
             b.Property(x => x.OwnerUsername).HasMaxLength(64).IsRequired();
             b.Property(x => x.Name).HasMaxLength(128).IsRequired();
+            b.Property(x => x.PreferredPlayerName).HasMaxLength(32);
             b.Property(x => x.TokenPrefix).HasMaxLength(32).IsRequired();
             b.Property(x => x.TokenSha256).HasMaxLength(64).IsRequired();
             b.Property(x => x.McpRole).HasMaxLength(32).IsRequired();
@@ -315,6 +316,30 @@ public sealed class OperationalDatabaseManager
             await db.Database.ExecuteSqlRawAsync(
                 "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
                 cancellationToken).ConfigureAwait(false);
+
+            // 兼容已有本地 SQLite 数据库平滑补齐 PreferredPlayerName 列
+            try
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE mcp_tokens ADD COLUMN PreferredPlayerName TEXT NULL;",
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // 列已存在时忽略
+            }
+        }
+        else if (_options.DbProvider == OperationalDbProvider.Postgres)
+        {
+            try
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    "ALTER TABLE mcp_tokens ADD COLUMN IF NOT EXISTS \"PreferredPlayerName\" character varying(32) NULL;",
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
         }
 
         // 1. 种子化五级内置角色

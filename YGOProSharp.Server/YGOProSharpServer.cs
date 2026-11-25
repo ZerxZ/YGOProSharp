@@ -368,11 +368,20 @@ public static class YGOProSharpServer
 
         banlistPaths = banlistPaths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
-        // 随机盲盒预设卡组目录顺序：decks/random -> expansionRoots 中的 decks/ -> 显式 RandomDeckDirectories
+        // 随机盲盒预设卡组目录顺序：decks/random -> RootPath 下 Decks/deck/windbot/Decks -> expansionRoots 中的 decks/ -> 显式 RandomDeckDirectories
         List<string> presetDeckDirs = new();
-        string defaultRandomDecks = Path.Combine(rootFullPath, "decks", "random");
-        if (Directory.Exists(defaultRandomDecks))
-            presetDeckDirs.Add(defaultRandomDecks);
+        string[] candidatePresetDirs =
+        [
+            Path.Combine(rootFullPath, "decks", "random"),
+            Path.Combine(rootFullPath, "Decks"),
+            Path.Combine(rootFullPath, "deck"),
+            Path.Combine(rootFullPath, "windbot", "Decks")
+        ];
+        foreach (string candidateDir in candidatePresetDirs)
+        {
+            if (Directory.Exists(candidateDir))
+                presetDeckDirs.Add(Path.GetFullPath(candidateDir));
+        }
 
         for (int i = 0; i < expansionRoots.Count; i++)
         {

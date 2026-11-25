@@ -125,6 +125,11 @@ public sealed class McpTokenEntity : AuditedEntityBase
 
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 玩家预设或外部 AI 首次使用时自主取名绑定的游戏内决斗者昵称（为空表示待 AI 首次进房时自主取名）。
+    /// </summary>
+    public string? PreferredPlayerName { get; set; }
+
     public string TokenPrefix { get; set; } = string.Empty;
 
     public string TokenSha256 { get; set; } = string.Empty;

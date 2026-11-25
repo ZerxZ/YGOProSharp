@@ -1,0 +1,69 @@
+# =========================
+# 版本控制、参考仓库与测试工程
+# =========================
+.git/
+.gitignore
+.github/
+.external/
+docs/
+YGOProSharp.Tests/
+
+# =========================
+# 构建缓存与 IDE 产物
+# =========================
+**/bin/
+**/obj/
+**/.vs/
+**/.idea/
+**/*.user
+**/*.suo
+artifacts/
+publish/
+out/
+dist/
+TestResults/
+
+# =========================
+# Native 临时编译目录（保留 lib/<rid> 原生库）
+# =========================
+.xmake/
+.xmake-cache/
+YGOProSharp.Native/.xmake/
+YGOProSharp.Native/build/
+YGOProSharp.Native/.deps/
+YGOProSharp.Native/lua_src/
+YGOProSharp.Native/ygopro-core/
+YGOProSharp.Native/lua-api/
+!YGOProSharp.Native/lib/
+!YGOProSharp.Native/lib/**
+
+# =========================
+# Web 前端本地依赖与旧产物
+# =========================
+web/node_modules/
+web/dist/
+YGOProSharp.Web/wwwroot/
+
+# =========================
+# 运行时数据、日志、敏感配置与散落大体积资源
+# =========================
+data/
+*.log
+*.tmp
+*.temp
+*.bak
+crash_*.txt
+lua_*.txt
+*.yrp
+*.db
+*.db-wal
+*.db-shm
+cards.cdb
+pics.zip
+scripts.zip
+sound/
+textures/
+.env
+.env.*
+*.secret
+*.key

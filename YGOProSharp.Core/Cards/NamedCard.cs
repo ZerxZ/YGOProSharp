@@ -17,16 +17,31 @@ public class NamedCard : Card
         int defense,
         int linkMarker,
         string name,
-        string description)
+        string description,
+        IReadOnlyList<string>? effectStrings = null)
         : base(id, ot, alias, setcode, type, level, lScale, rScale, race, attribute, attack, defense, linkMarker)
     {
         Name = name;
         Description = description;
+        EffectStrings = effectStrings ?? [];
     }
 
     public string Name { get; }
 
     public string Description { get; }
+
+    /// <summary>
+    /// 对应 <c>texts.str1 .. str16</c> 的卡片脚本子效果提示文本（供 <c>aux.Stringid(code, offset)</c> 解码可读描述）。
+    /// </summary>
+    public IReadOnlyList<string> EffectStrings { get; }
+
+    public string? GetEffectString(int offset)
+    {
+        if (offset < 0 || offset >= EffectStrings.Count)
+            return null;
+        string s = EffectStrings[offset];
+        return string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+    }
 
     public bool HasSetcode(int setcode)
     {

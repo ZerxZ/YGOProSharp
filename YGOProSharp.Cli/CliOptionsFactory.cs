@@ -49,19 +49,29 @@ public static class CliOptionsFactory
 
         bool enableMultiRoom = configuration.Has("EnableMultiRoom")
             ? configuration.GetBool("EnableMultiRoom")
-            : configuration.GetBool("MultiRoom");
+            : (configuration.Has("MultiRoom")
+                ? configuration.GetBool("MultiRoom")
+                : ParseEnvBool("YGOPRO_MULTI_ROOM"));
 
-        int mode = ParseMode(configuration.GetString("Mode"));
+        string rootPath = configuration.GetString("RootPath")
+                          ?? Environment.GetEnvironmentVariable("YGOPRO_ROOT_PATH")
+                          ?? ".";
+
+        int serverPort = configuration.Has("Port")
+            ? configuration.GetInt("Port", CoreServer.DefaultPort)
+            : ParseEnvInt("YGOPRO_GAME_PORT", CoreServer.DefaultPort);
+
+        int mode = ParseMode(configuration.GetString("Mode") ?? Environment.GetEnvironmentVariable("YGOPRO_DEFAULT_MODE"));
         int defaultStartLp = mode == 2 ? Game.DEFAULT_TAG_LIFEPOINTS : Game.DEFAULT_LIFEPOINTS;
-        RandomDeckMode randomDeckMode = ParseRandomDeckMode(configuration.GetString("RandomDeck"));
+        RandomDeckMode randomDeckMode = ParseRandomDeckMode(configuration.GetString("RandomDeck") ?? Environment.GetEnvironmentVariable("YGOPRO_RANDOM_DECK"));
 
         return new ServerOptions
         {
-            RootPath = configuration.GetString("RootPath", "."),
+            RootPath = rootPath,
             ScriptDirectory = configuration.GetString("ScriptDirectory", "script"),
             DatabaseFile = configuration.GetString("DatabaseFile", "cards.cdb"),
             BanlistFile = configuration.GetString("BanlistFile", "lflist.conf"),
-            Port = configuration.GetInt("Port", CoreServer.DefaultPort),
+            Port = serverPort,
             ClientVersion = configuration.GetUInt("ClientVersion", YGOProSharpServer.DefaultClientVersion),
             StandardStreamProtocol = configuration.GetBool("StandardStreamProtocol"),
             AutoLoadExpansions = configuration.GetBool("AutoLoadExpansions", true),
@@ -326,13 +336,13 @@ public static class CliOptionsFactory
         if (configuration.Has("EnablePortal"))
             return configuration.GetBool("EnablePortal");
 
+        // 默认单端口融合模式（EnableWeb=true 时前台与后台共用 WebPort，通过 / 与 /admin 路径区分）；
+        // 仅当用户显式指定了独立的 PortalPort / PortalHost / YGOPRO_ENABLE_PORTAL 时才额外启动第二个独立门户端口。
         if (configuration.Has("PortalPort") || configuration.Has("PortalHost"))
             return true;
 
-        if (configuration.Has("EnableWeb"))
-            return configuration.GetBool("EnableWeb");
-
-        return ParseEnvBool("YGOPRO_ENABLE_PORTAL") || ParseEnvBool("YGOPRO_ENABLE_WEB");
+        return ParseEnvBool("YGOPRO_ENABLE_PORTAL") ||
+               !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("YGOPRO_PORTAL_PORT"));
     }
 
     public static bool ShouldEnableWeb(CliConfiguration configuration)
@@ -361,7 +371,9 @@ public static class CliOptionsFactory
                !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("YGOPRO_DB_CONNECTION_STRING")) ||
                !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("YGOPRO_REDIS_URL")) ||
                !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("YGOPRO_ADMIN_USER")) ||
-               !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("YGOPRO_ADMIN_PASSWORD"));
+               !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("YGOPRO_ADMIN_PASSWORD")) ||
+               !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("YGOPRO_BOOTSTRAP_ADMIN_USER")) ||
+               !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("YGOPRO_BOOTSTRAP_ADMIN_PASSWORD"));
     }
 
     private static bool ParseEnvBool(string envVarName)
@@ -371,6 +383,12 @@ public static class CliOptionsFactory
                (env.Equals("1", StringComparison.OrdinalIgnoreCase) ||
                 env.Equals("true", StringComparison.OrdinalIgnoreCase) ||
                 env.Equals("yes", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static int ParseEnvInt(string envVarName, int defaultValue)
+    {
+        string? env = Environment.GetEnvironmentVariable(envVarName);
+        return int.TryParse(env, out int parsed) ? parsed : defaultValue;
     }
 
     public static PersistenceOptions CreatePersistenceOptions(CliConfiguration configuration, ServerOptions serverOptions)
@@ -388,10 +406,17 @@ public static class CliOptionsFactory
 
         string? redisUrl = configuration.GetString("RedisUrl") ?? Environment.GetEnvironmentVariable("YGOPRO_REDIS_URL");
         string replayDirectory = configuration.GetString("ReplayDirectory")
+                                 ?? Environment.GetEnvironmentVariable("YGOPRO_REPLAY_DIR")
                                  ?? Path.Combine(serverOptions.RootPath, "data", "replays");
 
-        string? adminUser = configuration.GetString("AdminUser") ?? configuration.GetString("BootstrapAdminUser");
-        string? adminPassword = configuration.GetString("AdminPassword") ?? configuration.GetString("BootstrapAdminPassword");
+        string? adminUser = configuration.GetString("AdminUser")
+                            ?? configuration.GetString("BootstrapAdminUser")
+                            ?? Environment.GetEnvironmentVariable("YGOPRO_ADMIN_USER")
+                            ?? Environment.GetEnvironmentVariable("YGOPRO_BOOTSTRAP_ADMIN_USER");
+        string? adminPassword = configuration.GetString("AdminPassword")
+                                ?? configuration.GetString("BootstrapAdminPassword")
+                                ?? Environment.GetEnvironmentVariable("YGOPRO_ADMIN_PASSWORD")
+                                ?? Environment.GetEnvironmentVariable("YGOPRO_BOOTSTRAP_ADMIN_PASSWORD");
 
         return new PersistenceOptions
         {
@@ -401,7 +426,9 @@ public static class CliOptionsFactory
             ReplayDirectory = replayDirectory,
             BootstrapAdminUser = string.IsNullOrWhiteSpace(adminUser) ? null : adminUser.Trim(),
             BootstrapAdminPassword = string.IsNullOrWhiteSpace(adminPassword) ? null : adminPassword.Trim(),
-            SessionTtlHours = configuration.GetInt("SessionTtlHours", 24),
+            SessionTtlHours = configuration.Has("SessionTtlHours")
+                ? configuration.GetInt("SessionTtlHours", 24)
+                : ParseEnvInt("YGOPRO_SESSION_TTL_HOURS", 24),
             MaxLoginFailures = configuration.GetInt("MaxLoginFailures", 5),
             LockoutMinutes = configuration.GetInt("LockoutMinutes", 15)
         };
@@ -433,13 +460,18 @@ public static class CliOptionsFactory
             ? ResolvePortalPort(configuration)
             : null;
 
+        bool requireHttps = configuration.Has("RequireHttpsCookie")
+            ? configuration.GetBool("RequireHttpsCookie", false)
+            : ParseEnvBool("YGOPRO_REQUIRE_HTTPS_COOKIE");
+
         return new WebControlOptions
         {
             Host = host,
             Port = port,
             PortalPort = portalPort,
-            RequireHttpsCookie = configuration.GetBool("RequireHttpsCookie", false),
-            StaticFilesRoot = configuration.GetString("WebStaticRoot"),
+            PublicGameHost = configuration.GetString("PublicGameHost") ?? Environment.GetEnvironmentVariable("YGOPRO_PUBLIC_GAME_HOST"),
+            RequireHttpsCookie = requireHttps,
+            StaticFilesRoot = configuration.GetString("WebStaticRoot") ?? Environment.GetEnvironmentVariable("YGOPRO_WEB_STATIC_ROOT"),
             WindBotSpawner = windBotSpawner,
             AvailableBotDecksProvider = availableBotDecksProvider,
             NamedCardRepositoryProvider = namedCardRepositoryProvider
@@ -448,7 +480,9 @@ public static class CliOptionsFactory
 
     public static UserPortalOptions CreateUserPortalOptions(
         CliConfiguration configuration,
-        Func<INamedCardRepository>? namedCardRepositoryProvider = null)
+        Func<INamedCardRepository>? namedCardRepositoryProvider = null,
+        Func<Game, string?, string?, int, IReadOnlyList<string>>? windBotSpawner = null,
+        Func<IReadOnlyList<string>>? availableBotDecksProvider = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
 
@@ -465,19 +499,27 @@ public static class CliOptionsFactory
                 adminPortHint = configuration.GetInt("AdminPort", 7912);
             else if (configuration.Has("WebPort"))
                 adminPortHint = configuration.GetInt("WebPort", 7912);
+            else if (int.TryParse(Environment.GetEnvironmentVariable("YGOPRO_ADMIN_PORT") ?? Environment.GetEnvironmentVariable("YGOPRO_WEB_PORT"), out int envAdmPort))
+                adminPortHint = envAdmPort;
             else
                 adminPortHint = 7912;
         }
+
+        bool requireHttps = configuration.Has("RequireHttpsCookie")
+            ? configuration.GetBool("RequireHttpsCookie", false)
+            : ParseEnvBool("YGOPRO_REQUIRE_HTTPS_COOKIE");
 
         return new UserPortalOptions
         {
             Host = host,
             Port = port,
             PublicGameHost = configuration.GetString("PublicGameHost") ?? Environment.GetEnvironmentVariable("YGOPRO_PUBLIC_GAME_HOST"),
-            RequireHttpsCookie = configuration.GetBool("RequireHttpsCookie", false),
+            RequireHttpsCookie = requireHttps,
             McpPortHint = adminPortHint,
-            StaticFilesRoot = configuration.GetString("WebStaticRoot"),
-            NamedCardRepositoryProvider = namedCardRepositoryProvider
+            StaticFilesRoot = configuration.GetString("WebStaticRoot") ?? Environment.GetEnvironmentVariable("YGOPRO_WEB_STATIC_ROOT"),
+            NamedCardRepositoryProvider = namedCardRepositoryProvider,
+            WindBotSpawner = windBotSpawner,
+            AvailableBotDecksProvider = availableBotDecksProvider
         };
     }
 

@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using YGOProSharp.Core;
 using YGOProSharp.Protocol.Enums;
+using YGOProSharp.Protocol.Utils;
 
 namespace YGOProSharp.Server.Addons;
 
@@ -237,6 +238,53 @@ public sealed class ChatCommandAddon : AddonBase
             if (ctx.Player.Type == before)
                 ctx.Reply("[Swap] 当前 4 个决斗席位已满，可先切观战（/observer）后互换。");
         }, "/swap", "玩家", "seat", "team");
+
+        RegisterCommand("partner", "在 2v2 双打中仅向同队搭档发送《卡片力量》式战术方针（不向敌方公开）", ctx =>
+        {
+            if (!ctx.Game.IsTag)
+            {
+                ctx.Reply("[Partner] 当前并非 2v2 双打房间，仅双打模式支持同队战术沟通。");
+                return;
+            }
+            if (ctx.Player.Type == (int)PlayerType.Observer || ctx.Player.Type < 0 || ctx.Player.Type >= 4)
+            {
+                ctx.Reply("[Partner] 仅在席决斗者可向搭档下达战术方针。");
+                return;
+            }
+
+            string raw = ctx.RawArguments.Trim();
+            if (string.IsNullOrEmpty(raw))
+            {
+                ctx.Reply("[Partner] 用法: /partner <agg|control|setup|otk|def|balanced> [补充叮嘱]（如 /partner agg 先踩光对面后场！）");
+                return;
+            }
+
+            string firstToken = ctx.Arguments.Count > 0 ? ctx.Arguments[0] : raw;
+            (string? stanceCode, string stanceLabel) = firstToken.ToLowerInvariant() switch
+            {
+                "agg" or "aggressive" or "attack" or "激进" or "强攻" => ("aggressive", "激进强攻"),
+                "otk" or "allin" or "all_in_otk" or "斩杀" or "总攻" => ("all_in_otk", "本回合总攻斩杀"),
+                "control" or "ctrl" or "steady" or "稳健" or "留康" => ("control", "稳健留康护航"),
+                "setup" or "setup_partner" or "pass" or "铺垫" or "留场" => ("setup_partner", "为搭档铺垫留场"),
+                "def" or "defensive" or "save" or "防守" or "保命" => ("defensive", "全员防守保命"),
+                "bal" or "balanced" or "free" or "均衡" or "自由" => ("balanced", "自由均衡发挥"),
+                _ => (null, "自由沟通")
+            };
+
+            string note = stanceCode is not null
+                ? (raw.Length > firstToken.Length ? raw[firstToken.Length..].Trim() : string.Empty)
+                : raw;
+            string effectiveStance = stanceCode ?? "balanced";
+            int team = ctx.Player.Type >= 2 ? 1 : 0;
+
+            using var pkt = GamePacketFactory.Create(StocMessage.Chat);
+            pkt.Write((short)PlayerType.Yellow);
+            string formatted = string.IsNullOrEmpty(note)
+                ? $"[PartnerTactic|{effectiveStance}|{ctx.Player.Name}] 搭档「{ctx.Player.Name}」切换双打方针为【{stanceLabel}】"
+                : $"[PartnerTactic|{effectiveStance}|{ctx.Player.Name}] 搭档「{ctx.Player.Name}」指示【{stanceLabel}】：{note}";
+            pkt.WriteUnicode(formatted, formatted.Length + 1);
+            ctx.Game.SendToTeam(pkt, team);
+        }, "/partner <agg|control|setup|otk|def|balanced> [备注]", "双打", "p", "tactic", "tag");
 
         RegisterCommand("randdeck", "在大厅为自己单独申请服务端随机卡组（免改本地 .ydk）", ctx =>
         {

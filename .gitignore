@@ -97,6 +97,10 @@ lua_*.txt
 *.db-wal
 *.db-shm
 .env
+.env.*
+!.env.example
+*.secret
+*.key
 data/
 
 # =========================

@@ -89,8 +89,12 @@ public sealed class AgentSessionManager : IDisposable
         bool joined = await session.WaitUntilJoinedAsync(TimeSpan.FromSeconds(4), cancellationToken).ConfigureAwait(false);
         if (!joined)
         {
+            string? reason = session.LastError;
             CloseOwnedSession(ownerTokenId, session.SessionId);
-            return (false, $"加入房间 '{targetRoom}' 超时或被服务端拒绝（可能房间已满、已开局、处于维护模式或被封禁）。", null);
+            string detail = string.IsNullOrWhiteSpace(reason)
+                ? "可能房间已满、已开局、处于维护模式或被封禁"
+                : reason;
+            return (false, $"加入房间 '{targetRoom}' 失败：{detail}。", null);
         }
 
         return (true, $"已成功加入房间 '{targetRoom}'（sessionId={session.SessionId}）。", session);

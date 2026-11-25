@@ -421,6 +421,7 @@ public sealed class RandomDeckGenerator
         ChaosDraftOptions opts = options ?? new ChaosDraftOptions();
         Random rng = random ?? Random.Shared;
 
+        List<Card> lowPlayableMonsters = new();
         List<Card> lowMonsters = new();
         List<Card> highMonsters = new();
         List<Card> spells = new();
@@ -471,6 +472,12 @@ public sealed class RandomDeckGenerator
                     else if (card.Level <= 4)
                     {
                         lowMonsters.Add(card);
+                        // 平衡混沌模式下优先抽取可独立站场或有效果的下级怪兽（ATK >= 1400 或具备效果且非特殊召唤限定）
+                        if (!card.HasType(CardType.SpSummon) &&
+                            (card.Attack >= 1400 || (card.HasType(CardType.Effect) && card.Defense >= 1500)))
+                        {
+                            lowPlayableMonsters.Add(card);
+                        }
                     }
                     else if (!card.HasType(CardType.SpSummon))
                     {
@@ -517,7 +524,15 @@ public sealed class RandomDeckGenerator
             int spellTarget = (int)Math.Round(remaining * 0.23);
             int trapTarget = Math.Max(0, remaining - lowTarget - highTarget - spellTarget);
 
-            PickFromPool(lowMonsters, lowTarget, deck, isExtra: false, usedCounts, maxAllowedByCanonical, rng);
+            if (lowPlayableMonsters.Count >= lowTarget)
+            {
+                PickFromPool(lowPlayableMonsters, lowTarget, deck, isExtra: false, usedCounts, maxAllowedByCanonical, rng);
+            }
+            else
+            {
+                PickFromPool(lowPlayableMonsters, lowPlayableMonsters.Count, deck, isExtra: false, usedCounts, maxAllowedByCanonical, rng);
+                PickFromPool(lowMonsters, Math.Max(0, lowTarget - deck.Main.Count), deck, isExtra: false, usedCounts, maxAllowedByCanonical, rng);
+            }
             PickFromPool(highMonsters, highTarget, deck, isExtra: false, usedCounts, maxAllowedByCanonical, rng);
             PickFromPool(spells, spellTarget, deck, isExtra: false, usedCounts, maxAllowedByCanonical, rng);
             PickFromPool(traps, trapTarget, deck, isExtra: false, usedCounts, maxAllowedByCanonical, rng);

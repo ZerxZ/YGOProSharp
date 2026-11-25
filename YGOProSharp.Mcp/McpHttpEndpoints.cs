@@ -150,22 +150,34 @@ public static class McpHttpEndpoints
         }
 
         string ip = GetRemoteIp(http) ?? "unknown";
-        var rl = await store.Cache.CheckSlidingWindowAsync($"mcp_http_rl:{ip}", 240, TimeSpan.FromMinutes(1), ct).ConfigureAwait(false);
-        if (!rl.Allowed)
-        {
-            return (null, Results.Json(
-                McpServerEngine.BuildJsonRpcError(null, -32002, "Rate limit exceeded on /mcp endpoint."),
-                statusCode: StatusCodes.Status429TooManyRequests));
-        }
-
         ValidatedMcpToken? validated = await store.ValidateMcpTokenAsync(rawToken, ct).ConfigureAwait(false);
         if (validated is null)
         {
+            // 仅对无效令牌请求执行严格 IP 防爆破限流（30次/分钟）
+            var failRl = await store.Cache.CheckSlidingWindowAsync($"mcp_bad_tok_rl:{ip}", 30, TimeSpan.FromMinutes(1), ct).ConfigureAwait(false);
+            if (!failRl.Allowed)
+            {
+                http.Response.Headers.RetryAfter = "5";
+                return (null, Results.Json(
+                    McpServerEngine.BuildJsonRpcError(null, -32002, "Too many invalid MCP token attempts."),
+                    statusCode: StatusCodes.Status429TooManyRequests));
+            }
+
             string masked = MaskToken(rawToken);
             await store.AppendAuditAsync("mcp_token", null, masked, "mcp.auth", null, null, ip, "invalid_token", null, ct).ConfigureAwait(false);
             return (null, Results.Json(
                 McpServerEngine.BuildJsonRpcError(null, -32001, "Invalid, expired, or revoked MCP token."),
                 statusCode: StatusCodes.Status401Unauthorized));
+        }
+
+        // 已认证合法对局 Token 独立按 TokenId 计量高吞吐配额（2400次/分钟 = 40 req/s），避免快速连续打牌或多 AI 同机互搏误触 429
+        var tokenRl = await store.Cache.CheckSlidingWindowAsync($"mcp_tok_rl:{validated.TokenId:N}", 2400, TimeSpan.FromMinutes(1), ct).ConfigureAwait(false);
+        if (!tokenRl.Allowed)
+        {
+            http.Response.Headers.RetryAfter = "1";
+            return (null, Results.Json(
+                McpServerEngine.BuildJsonRpcError(null, -32002, "Rate limit exceeded for this MCP token (max 2400 req/min). Please use duel_wait_for_turn or duel_auto_step."),
+                statusCode: StatusCodes.Status429TooManyRequests));
         }
 
         if (allowedSurfaceRoles is { Count: > 0 } &&

@@ -30,29 +30,56 @@ import { BanlistOption, QuickCopyPill, RoomConfigurator } from './RoomConfigurat
 type TabKey = 'dashboard' | 'rooms' | 'studio' | 'mcp' | 'security';
 
 export default function App() {
+  const [pathname, setPathname] = useState<string>(() => window.location.pathname || '/');
   const [surface, setSurface] = useState<SurfaceInfo | null>(null);
+  const [surfaceChecked, setSurfaceChecked] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [authChecked, setAuthChecked] = useState(false);
+  const [adminAuthChecked, setAdminAuthChecked] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
   const [toast, setToast] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null);
+
+  const isAdminRoute = pathname === '/admin' || pathname.startsWith('/admin/');
+
+  const navigateTo = useCallback((nextPath: string) => {
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState({}, '', nextPath);
+    }
+    setPathname(nextPath);
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => setPathname(window.location.pathname || '/');
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   const notify = useCallback((text: string, kind: 'ok' | 'err' = 'ok') => {
     setToast({ text, kind });
     setTimeout(() => setToast((cur) => (cur?.text === text ? null : cur)), 3800);
   }, []);
 
-  const refreshMe = useCallback(async () => {
-    try {
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
       const sf = await apiFetch<SurfaceInfo>('/api/surface').catch(() => ({
         surface: 'admin' as const,
+        unifiedPortal: true,
+        defaultPage: 'portal',
+        adminPath: '/admin',
         gamePort: 7911
       }));
-      setSurface(sf);
-      if (sf.surface === 'portal') {
-        setAuthChecked(true);
-        return;
+      if (!cancelled) {
+        setSurface(sf);
+        setSurfaceChecked(true);
       }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
+  const refreshMe = useCallback(async () => {
+    try {
       const res = await apiFetch<{ user: AuthUser }>('/api/v1/auth/me');
       setCsrfToken(res.user.csrfToken);
       setUser(res.user);
@@ -60,13 +87,17 @@ export default function App() {
       setCsrfToken('');
       setUser(null);
     } finally {
-      setAuthChecked(true);
+      setAdminAuthChecked(true);
     }
   }, []);
 
+  const shouldRenderPortal =
+    surface?.surface === 'portal' || (!isAdminRoute && surface?.unifiedPortal !== false);
+
   useEffect(() => {
+    if (!surfaceChecked || shouldRenderPortal) return;
     refreshMe();
-  }, [refreshMe]);
+  }, [surfaceChecked, shouldRenderPortal, refreshMe]);
 
   const handleLogout = async () => {
     try {
@@ -78,21 +109,30 @@ export default function App() {
     setUser(null);
   };
 
-  if (!authChecked) {
+  if (!surfaceChecked) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400">
-        正在探测端口服务角色...
+        正在加载页面...
       </div>
     );
   }
 
-  if (surface?.surface === 'portal') {
+  if (shouldRenderPortal && surface) {
     return <UserPortalApp surfaceInfo={surface} />;
+  }
+
+  if (!adminAuthChecked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400">
+        正在验证管理控制面会话...
+      </div>
+    );
   }
 
   if (!user) {
     return (
       <LoginScreen
+        onBackToPortal={surface?.unifiedPortal !== false ? () => navigateTo('/') : undefined}
         onLoggedIn={(u) => {
           setCsrfToken(u.csrfToken);
           setUser(u);
@@ -149,17 +189,27 @@ export default function App() {
               <div className="font-semibold text-sm tracking-wide flex items-center gap-2">
                 YGOProSharp 管理后台
                 <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                  Admin :{window.location.port || surface?.adminPort || 7912}
+                  /admin · :{window.location.port || surface?.adminPort || 7912}
                 </span>
-                {surface?.portalPort && (
-                  <a
-                    href={`${window.location.protocol}//${window.location.hostname}:${surface.portalPort}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30"
+                {surface?.unifiedPortal !== false ? (
+                  <button
+                    type="button"
+                    onClick={() => navigateTo('/')}
+                    className="px-2 py-0.5 rounded text-[11px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30 cursor-pointer"
                   >
-                    打开玩家面板 :{surface.portalPort} ↗
-                  </a>
+                    返回前台玩家大厅 (/)
+                  </button>
+                ) : (
+                  surface?.portalPort && (
+                    <a
+                      href={`${window.location.protocol}//${window.location.hostname}:${surface.portalPort}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30"
+                    >
+                      打开玩家面板 :{surface.portalPort} ↗
+                    </a>
+                  )
                 )}
                 {user.isStreamerOnly && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-amber-500/20 text-amber-300 border border-amber-500/30">
@@ -168,7 +218,7 @@ export default function App() {
                 )}
               </div>
               <div className="text-xs text-slate-400">
-                游戏服 :{surface?.gamePort ?? 7911} · 后台管理与玩家面板独立端口隔离
+                游戏服 :{surface?.gamePort ?? 7911} · 默认路径 `/` 玩家大厅 · `/admin` 管理控制面
               </div>
             </div>
           </div>
@@ -231,7 +281,13 @@ export default function App() {
   );
 }
 
-function LoginScreen({ onLoggedIn }: { onLoggedIn: (u: AuthUser) => void }) {
+function LoginScreen({
+  onLoggedIn,
+  onBackToPortal
+}: {
+  onLoggedIn: (u: AuthUser) => void;
+  onBackToPortal?: () => void;
+}) {
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -258,12 +314,23 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (u: AuthUser) => void }) {
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-950 p-4">
       <form onSubmit={submit} className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-5">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center font-bold text-lg">Y</div>
-          <div>
-            <h1 className="text-lg font-bold">YGOProSharp 管理控制台</h1>
-            <p className="text-xs text-slate-400">Argon2id 认证 · 细粒度 RBAC · 零外发大模型密钥</p>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center font-bold text-lg">Y</div>
+            <div>
+              <h1 className="text-lg font-bold">YGOProSharp 管理控制台 (/admin)</h1>
+              <p className="text-xs text-slate-400">Argon2id 认证 · 细粒度 RBAC · 零外发大模型密钥</p>
+            </div>
           </div>
+          {onBackToPortal && (
+            <button
+              type="button"
+              onClick={onBackToPortal}
+              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-emerald-300 cursor-pointer shrink-0"
+            >
+              返回玩家页
+            </button>
+          )}
         </div>
 
         {error && (
@@ -2169,6 +2236,8 @@ function McpHubView({ user, notify }: { user: AuthUser; notify: (t: string, k?: 
   const [role, setRole] = useState('player');
   const [roomsText, setRoomsText] = useState('');
   const [newlyIssuedRaw, setNewlyIssuedRaw] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingNick, setEditingNick] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -2194,16 +2263,38 @@ function McpHubView({ user, notify }: { user: AuthUser; notify: (t: string, k?: 
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
+      const trimmedName = name.trim();
       const res = await apiFetch('/api/v1/mcp/tokens', {
         method: 'POST',
-        body: JSON.stringify({ name, mcpRole: role, allowedRooms: rooms, maxSessions: 1, expiresInHours: 168 })
+        body: JSON.stringify({
+          name: trimmedName || undefined,
+          preferredPlayerName: trimmedName || undefined,
+          mcpRole: role,
+          allowedRooms: rooms,
+          maxSessions: 1,
+          expiresInHours: 168
+        })
       });
       setNewlyIssuedRaw(res.rawToken);
       setName('');
-      notify('MCP Token 签发成功');
+      notify(trimmedName ? `MCP Token 签发成功（昵称：${trimmedName}）` : 'MCP Token 签发成功（待 AI 首次进房自主取名）');
       load();
     } catch (err) {
       notify(err instanceof Error ? err.message : '签发被拒绝', 'err');
+    }
+  };
+
+  const saveNickname = async (id: string, nextNick: string) => {
+    try {
+      const res = await apiFetch(`/api/v1/mcp/tokens/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ preferredPlayerName: nextNick.trim() || null })
+      });
+      setEditingId(null);
+      notify(res.message || 'AI 昵称已保存');
+      load();
+    } catch (err) {
+      notify(err instanceof Error ? err.message : '修改昵称失败', 'err');
     }
   };
 
@@ -2228,11 +2319,12 @@ function McpHubView({ user, notify }: { user: AuthUser; notify: (t: string, k?: 
         <h2 className="text-sm font-semibold">签发外部 AI MCP Token（严格执行权限不放大原则，仅存储单向 SHA-256）</h2>
         <form onSubmit={issue} className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
           <div>
-            <label className="block text-xs text-slate-400 mb-1">Token 备注名</label>
+            <label className="block text-xs text-slate-400 mb-1">AI 决斗者昵称（选填；留空由 AI 首次进房自取名）</label>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="如 Claude-PlayerA"
+              maxLength={18}
+              placeholder="留空让 AI 自取，或填如 海马濑人"
               className="w-full px-3 py-1.5 rounded bg-slate-950 border border-slate-700 text-xs"
             />
           </div>
@@ -2283,27 +2375,74 @@ function McpHubView({ user, notify }: { user: AuthUser; notify: (t: string, k?: 
           <h3 className="text-sm font-semibold">已签发 Token 列表</h3>
           <div className="space-y-2 max-h-80 overflow-y-auto">
             {tokens.map((t) => (
-              <div key={t.id} className="bg-slate-950 p-3 rounded border border-slate-800 flex items-center justify-between text-xs">
-                <div>
-                  <div className="font-semibold">
-                    {t.name} <span className="text-indigo-400">[{t.mcpRole}]</span>{' '}
-                    {t.revokedAt && <span className="text-rose-400">(已吊销)</span>}
+              <div key={t.id} className="bg-slate-950 p-3 rounded border border-slate-800 space-y-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="font-semibold flex items-center gap-1.5 flex-wrap">
+                      <span>{t.preferredPlayerName || t.name}</span>
+                      <span className="text-indigo-400">[{t.mcpRole}]</span>
+                      {t.mcpRole === 'player' && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-indigo-500/15 border border-indigo-500/30 text-indigo-200">
+                          {t.preferredPlayerName ? `绑定昵称: ${t.preferredPlayerName}` : '待 AI 首次进房自取名'}
+                        </span>
+                      )}
+                      {t.revokedAt && <span className="text-rose-400">(已吊销)</span>}
+                    </div>
+                    <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+                      前缀 {t.tokenPrefix}... · 归属 {t.ownerUsername}
+                    </div>
                   </div>
-                  <div className="text-[11px] text-slate-400 font-mono">
-                    前缀 {t.tokenPrefix}... · 归属 {t.ownerUsername}
-                  </div>
+                  {!t.revokedAt && (
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingId(editingId === t.id ? null : t.id);
+                          setEditingNick(t.preferredPlayerName || '');
+                        }}
+                        className="text-indigo-300 hover:underline cursor-pointer"
+                      >
+                        {t.preferredPlayerName ? '改名' : '指定昵称'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await apiFetch(`/api/v1/mcp/tokens/${t.id}`, { method: 'DELETE' });
+                          notify('Token 已吊销');
+                          load();
+                        }}
+                        className="text-rose-400 hover:underline cursor-pointer"
+                      >
+                        吊销
+                      </button>
+                    </div>
+                  )}
                 </div>
-                {!t.revokedAt && (
-                  <button
-                    onClick={async () => {
-                      await apiFetch(`/api/v1/mcp/tokens/${t.id}`, { method: 'DELETE' });
-                      notify('Token 已吊销');
-                      load();
-                    }}
-                    className="text-rose-400 hover:underline cursor-pointer"
-                  >
-                    吊销
-                  </button>
+
+                {editingId === t.id && (
+                  <div className="flex items-center gap-1.5 pt-1 border-t border-slate-800/80">
+                    <input
+                      value={editingNick}
+                      onChange={(e) => setEditingNick(e.target.value)}
+                      maxLength={18}
+                      placeholder="输入新昵称，或留空交回给 AI 下次自取名"
+                      className="flex-1 px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => saveNickname(t.id, editingNick)}
+                      className="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold cursor-pointer"
+                    >
+                      保存
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingId(null)}
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+                    >
+                      取消
+                    </button>
+                  </div>
                 )}
               </div>
             ))}

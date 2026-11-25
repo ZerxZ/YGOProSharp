@@ -42,6 +42,7 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
     private readonly WebEventHub _eventHub;
     private readonly DiyPackageManager _diyManager;
     private readonly McpServerEngine _mcpEngine;
+    private readonly UserPortalHost? _embeddedPortal;
     private readonly DateTime _startedAtUtc = DateTime.UtcNow;
 
     private WebApplication? _app;
@@ -74,6 +75,26 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
             LuaRuntimeProvider = _options.LuaRuntimeProvider,
             SpawnWindBotCallback = _options.WindBotSpawner
         });
+
+        if (_options.EnableUnifiedPortal)
+        {
+            _embeddedPortal = new UserPortalHost(
+                _serverHost,
+                _store,
+                _coordinator,
+                new UserPortalOptions
+                {
+                    Host = _options.Host,
+                    Port = _options.Port,
+                    PublicGameHost = _options.PublicGameHost,
+                    RequireHttpsCookie = _options.RequireHttpsCookie,
+                    McpPortHint = _options.Port,
+                    StaticFilesRoot = _options.StaticFilesRoot,
+                    NamedCardRepositoryProvider = _options.NamedCardRepositoryProvider,
+                    WindBotSpawner = _options.WindBotSpawner,
+                    AvailableBotDecksProvider = _options.AvailableBotDecksProvider
+                });
+        }
 
         _coordinator.OnPublicEventPublished += HandleCoordinatorEvent;
         _logBuffer.OnEntryAdded += HandleBufferedLogAdded;
@@ -129,7 +150,11 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
 
         IServerAddressesFeature? addrFeature = app.Services.GetService<IServer>()?.Features.Get<IServerAddressesFeature>();
         BoundAddresses = addrFeature?.Addresses.ToArray() ?? [$"http://{bindHost}:{_options.Port}"];
-        _logger.LogInformation("Web control plane listening on {Addresses} (StaticRoot={StaticRoot}).", string.Join(", ", BoundAddresses), staticRoot ?? "<none>");
+        _logger.LogInformation(
+            "Web control plane listening on {Addresses} (PlayerPortal='/', AdminPanel='/admin', Mcp='/mcp', UnifiedPortal={UnifiedPortal}, StaticRoot={StaticRoot}).",
+            string.Join(", ", BoundAddresses),
+            _options.EnableUnifiedPortal,
+            staticRoot ?? "<none>");
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
@@ -155,9 +180,13 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
         app.MapGet("/api/surface", () => Results.Ok(new
         {
             surface = "admin",
+            unifiedPortal = _options.EnableUnifiedPortal,
+            defaultPage = _options.EnableUnifiedPortal ? "portal" : "admin",
+            adminPath = "/admin",
             gamePort = _serverHost.Server.Options.Port,
+            publicGameHost = _options.PublicGameHost,
             adminPort = _options.Port,
-            portalPort = _options.PortalPort
+            portalPort = _options.PortalPort ?? (_options.EnableUnifiedPortal ? _options.Port : null)
         }));
 
         app.MapGet("/healthz", async (CancellationToken ct) =>
@@ -521,16 +550,27 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
                 int count = Math.Clamp(body.AiTokenCount ?? defaultCount, 1, 4);
                 for (int i = 0; i < count; i++)
                 {
-                    (bool issuedOk, _, IssuedMcpTokenResult? issued) = await _store.IssueMcpTokenAsync(
+                    string? customNickname = body.AiPlayerNames is not null && i < body.AiPlayerNames.Length
+                        ? body.AiPlayerNames[i]?.Trim()
+                        : null;
+                    if (string.IsNullOrWhiteSpace(customNickname))
+                        customNickname = null;
+
+                    string label = customNickname ?? $"待AI自取名 ({createdRoom.RoomName})";
+                    (bool issuedOk, string issueErr, IssuedMcpTokenResult? issued) = await _store.IssueMcpTokenAsync(
                         principal,
-                        name: $"{createdRoom.RoomName}-Seat{i + 1}",
+                        name: label,
                         mcpRole: McpRoleCodes.Player,
                         allowedRooms: [createdRoom.RoomName],
                         maxSessions: 1,
                         requireApproval: true,
                         expiresInHours: 12,
                         ip: GetRemoteIp(http),
-                        cancellationToken: ct).ConfigureAwait(false);
+                        cancellationToken: ct,
+                        preferredPlayerName: customNickname).ConfigureAwait(false);
+
+                    if (!issuedOk && customNickname is not null)
+                        return Results.BadRequest(new { success = false, message = issueErr });
 
                     if (issuedOk && issued is not null)
                     {
@@ -538,6 +578,7 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
                         {
                             seat = i,
                             name = issued.Entity.Name,
+                            preferredPlayerName = issued.Entity.PreferredPlayerName,
                             mcpRole = issued.Entity.McpRole,
                             rawToken = issued.RawToken
                         });
@@ -1616,6 +1657,7 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
                 {
                     t.Id,
                     t.Name,
+                    t.PreferredPlayerName,
                     t.OwnerUsername,
                     t.TokenPrefix,
                     t.McpRole,
@@ -1638,6 +1680,10 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
                 ct).ConfigureAwait(false);
             if (err is not null) return err;
 
+            string? preferredName = !string.IsNullOrWhiteSpace(body.PreferredPlayerName)
+                ? body.PreferredPlayerName.Trim()
+                : (!string.IsNullOrWhiteSpace(body.Name) ? body.Name.Trim() : null);
+
             (bool ok, string msg, IssuedMcpTokenResult? issued) = await _store.IssueMcpTokenAsync(
                 principal!,
                 body.Name ?? string.Empty,
@@ -1647,7 +1693,8 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
                 body.RequireApproval ?? true,
                 body.ExpiresInHours,
                 GetRemoteIp(http),
-                ct).ConfigureAwait(false);
+                ct,
+                preferredPlayerName: preferredName).ConfigureAwait(false);
 
             if (!ok || issued is null)
                 return Results.Json(new { success = false, message = msg }, statusCode: StatusCodes.Status403Forbidden);
@@ -1661,6 +1708,7 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
                 {
                     issued.Entity.Id,
                     issued.Entity.Name,
+                    issued.Entity.PreferredPlayerName,
                     issued.Entity.TokenPrefix,
                     issued.Entity.McpRole,
                     issued.Entity.MaxSessions,
@@ -1668,6 +1716,26 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
                     issued.Entity.ExpiresAt
                 }
             });
+        });
+
+        app.MapPatch("/api/v1/mcp/tokens/{id:guid}", async (HttpContext http, Guid id, UpdateMcpTokenNicknameDto body, CancellationToken ct) =>
+        {
+            (AuthenticatedPrincipal? principal, IResult? err) = await RequireAnyPermissionAsync(
+                http,
+                [RbacPermissions.McpTokenIssueSelf, RbacPermissions.McpTokenManageAll, RbacPermissions.UserManage],
+                ct).ConfigureAwait(false);
+            if (err is not null) return err;
+
+            (bool ok, string msg, string? updatedName) = await _store.UpdateMcpTokenNicknameAsync(
+                principal!,
+                id,
+                body.PreferredPlayerName,
+                GetRemoteIp(http),
+                ct).ConfigureAwait(false);
+
+            return ok
+                ? Results.Ok(new { success = true, message = msg, preferredPlayerName = updatedName })
+                : Results.BadRequest(new { success = false, message = msg });
         });
 
         app.MapDelete("/api/v1/mcp/tokens/{id:guid}", async (HttpContext http, Guid id, CancellationToken ct) =>
@@ -1683,6 +1751,9 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
                 _coordinator.RevokeMcpTokenSessions(id);
             return ok ? Results.Ok(new { success = true }) : Results.NotFound(new { success = false, message = "Token 不存在或无权吊销。" });
         });
+
+        // 单端口融合模式下同端口挂载前台玩家门户公开路由（/api/portal/* 与 /ws/public）
+        _embeddedPortal?.MapPortalCoreRoutes(app);
 
         // 挂载标准 Streamable HTTP MCP 服务端（支持全角色 player / spectator / diy_creator / admin，兼容 Bearer Header 与 ?key=）
         app.MapMcpStreamableHttp(_mcpEngine, _store);
@@ -2344,6 +2415,8 @@ public sealed class WebControlHost : IAsyncDisposable, IDisposable
         _coordinator.OnPublicEventPublished -= HandleCoordinatorEvent;
         _logBuffer.OnEntryAdded -= HandleBufferedLogAdded;
         _eventHub.Dispose();
+        if (_embeddedPortal is not null)
+            await _embeddedPortal.DisposeAsync().ConfigureAwait(false);
         await StopAsync().ConfigureAwait(false);
     }
 
@@ -2403,6 +2476,7 @@ public sealed record CreateRoomRequestDto(
     string? RulePrefix,
     bool IssuePlayerTokens,
     int? AiTokenCount = null,
+    string[]? AiPlayerNames = null,
     int? Mode = null,
     int? Region = null,
     int? MasterRule = null,
@@ -2465,7 +2539,10 @@ public sealed record IssueMcpTokenRequestDto(
     string[]? AllowedRooms,
     int? MaxSessions,
     bool? RequireApproval,
-    int? ExpiresInHours);
+    int? ExpiresInHours,
+    string? PreferredPlayerName = null);
+
+public sealed record UpdateMcpTokenNicknameDto(string? PreferredPlayerName);
 
 public sealed record DiyCardEntryDto(
     int? Id,

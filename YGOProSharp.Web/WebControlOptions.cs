@@ -20,7 +20,17 @@ public sealed record WebControlOptions
     public int Port { get; init; } = 7912;
 
     /// <summary>
-    /// 可选：关联展示的前台用户面板端口（如 <c>7913</c>），便于管理员从后台一键跳转预览前台用户面板。
+    /// 是否在同一端口内同时挂载前台玩家门户接口（默认开启：根路径 <c>/</c> 为玩家门户，<c>/admin</c> 为管理后台）。
+    /// </summary>
+    public bool EnableUnifiedPortal { get; init; } = true;
+
+    /// <summary>
+    /// 可选：展示给前台玩家的公网游戏服域名或 IP。
+    /// </summary>
+    public string? PublicGameHost { get; init; }
+
+    /// <summary>
+    /// 可选：关联展示的前台用户面板端口（如独立双端口部署时指定，单端口合并模式下无需设置）。
     /// </summary>
     public int? PortalPort { get; init; }
 

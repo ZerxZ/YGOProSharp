@@ -39,13 +39,14 @@ try
 
     string command = args[0].Trim().ToLowerInvariant();
     CliConfiguration configuration = CliConfiguration.Load(args.Skip(1));
-    LogLevel logLevel = AppLog.ParseLevel(configuration.GetString("LogLevel"));
+    string? rawLogLevelInput = configuration.GetString("LogLevel") ?? Environment.GetEnvironmentVariable("YGOPRO_LOG_LEVEL");
+    LogLevel logLevel = AppLog.ParseLevel(rawLogLevelInput);
     bool isMcpStdio = command == "mcp";
     runtimeLoggerFactory = CreateLoggerFactory(logLevel, sharedLogBuffer, includeConsole: !isMcpStdio);
     AppLog.Configure(runtimeLoggerFactory);
     logger = AppLog.CreateLogger("YGOProSharp.Cli");
 
-    if (configuration.GetString("LogLevel") is { } rawLogLevel &&
+    if (rawLogLevelInput is { Length: > 0 } rawLogLevel &&
         !Enum.TryParse(rawLogLevel, ignoreCase: true, out LogLevel _))
     {
         logger.LogWarning("Invalid LogLevel '{LogLevel}', falling back to {DefaultLogLevel}.", rawLogLevel, logLevel);
@@ -292,7 +293,11 @@ static async Task<int> RunServerAsync(CliConfiguration configuration, LogRingBuf
         : null;
 
     UserPortalOptions? plannedPortalOptions = enablePortal
-        ? CliOptionsFactory.CreateUserPortalOptions(configuration, GetNamedCardRepository)
+        ? CliOptionsFactory.CreateUserPortalOptions(
+            configuration,
+            namedCardRepositoryProvider: GetNamedCardRepository,
+            windBotSpawner: SpawnBotsIntoRoom,
+            availableBotDecksProvider: CollectAvailableBotDeckNames)
         : null;
 
     ValidateDistinctPorts(baseOptions, plannedAdminOptions, plannedPortalOptions);
@@ -345,6 +350,19 @@ static async Task<int> RunServerAsync(CliConfiguration configuration, LogRingBuf
 
     await using YGOProSharpServerHost serverHost = YGOProSharpServerHost.Create(options, runtime);
     activeHost = serverHost;
+    if (serverHost.Server.PresetDecks.Count == 0)
+    {
+        string bundledDecksDir = Path.Combine(AppContext.BaseDirectory, "Decks");
+        if (Directory.Exists(bundledDecksDir))
+        {
+            int fallbackCount = serverHost.Server.PresetDecks.ReloadFromDirectories(
+                [bundledDecksDir],
+                serverHost.Server.ReloadableCards,
+                additionalTags: ["windbot"]);
+            if (fallbackCount > 0)
+                logger.LogInformation("Loaded {PresetDeckCount} bundled WindBot .ydk deck(s) into server preset pool.", fallbackCount);
+        }
+    }
     serverHost.StartBackgroundLoop(tickDelayMilliseconds: 1, embedded: !options.EnableNetworkListener, cancellationToken);
 
     try

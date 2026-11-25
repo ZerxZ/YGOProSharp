@@ -63,6 +63,8 @@ public sealed class McpServerEngine
     private readonly ILogger _logger = AppLog.CreateLogger<McpServerEngine>();
     private readonly McpRuntimeDependencies _deps;
     private readonly IReadOnlyList<McpToolRegistration> _tools;
+    private readonly object _bundledDeckGate = new();
+    private PresetDeckEntry[]? _cachedBundledDecks;
 
     public McpServerEngine(McpRuntimeDependencies dependencies)
     {
@@ -152,12 +154,17 @@ public sealed class McpServerEngine
             ? requestedVer
             : "2025-03-26";
 
+        string namingGuidance = string.IsNullOrWhiteSpace(caller.PreferredPlayerName)
+            ? "【首次使用取名约定】该 Token 尚未绑定决斗者昵称！首次调用 duel_join_room（或 duel_set_profile）时，请严禁使用 AI1、AI2、Bot、Player 等机械编号，请结合你自身的模型人格或游戏王风格自己取一个有个性的决斗者昵称（2~18字符，如『星尘观测者』『深渊魔导』『青眼龙骑』等）填入 playerName，服务器将永久为你记住这个名字！"
+            : $"你当前绑定的专属决斗者昵称为「{caller.PreferredPlayerName}」（进房时默认自动沿用，也可通过 duel_set_profile 更改）。";
+
         string instructions =
-            $"已连接 YGOProSharp MCP 服务（当前令牌角色: {caller.McpRole}，名称: {caller.Name}）。" +
-            "打牌标准流程：1) 调用 room_list 查看房间；2) 调用 duel_join_room 加入目标房间获得 sessionId；" +
-            "3) 非随机房调用 duel_set_deck 设卡组，再调用 duel_set_ready(ready=true, startIfHost=true)；" +
-            "4) 循环调用 duel_wait_for_turn 等待轮到我方决策，阅读返回的 observation 与 pendingPrompt.choices，" +
-            "遇到陌生卡可用 card_get 查卡效，最后调用 duel_submit_action 提交合法动作下标。";
+            $"已连接 YGOProSharp MCP 服务（当前令牌角色: {caller.McpRole}）。{namingGuidance} " +
+            "打牌高效流程：1) 调用 room_list 查看房间，或调用 room_create 自建房间并可用 room_spawn_windbot 召唤内置 AI 对手；" +
+            "2) 调用 duel_join_room 加入房间获得 sessionId；" +
+            "3) 非强制随机房调用 duel_set_deck（自动适配房间禁限表与卡池），再调用 duel_set_ready(ready=true, startIfHost=true)；" +
+            "4) 循环调用 duel_wait_for_turn 等待决策，阅读 pendingPrompt（关注 submitField='actionIndex' 或 'cardIndices'，选项自带卡名/攻守/子效果说明），" +
+            "调用 duel_submit_action 提交动作（高频连打可设 detail='minimal' 或 'none' 节省 90% Token，也可用 duel_submit_batch 批量连招或 duel_auto_play 自动跳过连锁）。";
 
         JsonObject result = new()
         {
@@ -292,16 +299,16 @@ public sealed class McpServerEngine
             case "ygopro://guide/duelist-protocol":
                 text = """
                     # YGOProSharp 外部 AI 决斗指南
-                    1. `room_list` 查看当前房间与规则（如 `RD` 盲盒预组、`RDM` 镜像同卡组、`CHAOS` 混沌随机、`2V2` 双打 16000LP）。
-                    2. `duel_join_room` 传入 `roomName`（如 `"Room01"` 或带规则前缀 `"RD#Room01"`）加入房间，保存返回的 `sessionId`。
-                    3. 若房间为自备卡组房，调用 `duel_set_deck`（支持 `randomMode: "preset" | "chaos" | "diy"` 或指定预设名）；若是强制随机房（`RD`/`RDM`/`CHAOS`）可直接跳过组卡。
-                    4. 调用 `duel_set_ready`（`ready: true, startIfHost: true`）准备就绪。
-                    5. 循环调用 `duel_wait_for_turn(sessionId)` 阻塞等待轮到自己操作。
-                    6. 每次唤醒后阅读 `pendingPrompt.choices`：
-                       - 单选动作传 `actionIndex`；
-                       - 多张选卡/同调凑星（`supportsMultiSelect = true`）传 `cardIndices: [0, 2]`；
-                       - 可附带 `thoughtSummary`（展示在观战界面思考气泡，请勿泄露手牌机密）与 `chatMessage`（与对手/2v2队友互动）。
-                    7. 2v2 双打注意：你与队友共享场上怪兽/魔陷与墓地，但严禁也无法看到队友未公开的手牌；当 `teammateSurrenderPending = true` 时代表队友请求投降，若同意可调用 `duel_surrender`。
+                    1. `room_list` 查看当前房间与规则（如 `RD` 盲盒预组、`RDM` 镜像同卡组、`CHAOS` 混沌随机、`2V2` 双打 16000LP）；无房时可直接用 `room_create` 建房并用 `room_spawn_windbot` 召唤内置 AI 陪练。
+                    2. `duel_join_room` 传入 `room`（如 `"Room01"` 或带规则前缀 `"RD#Room01"`）加入房间，保存返回的 `sessionId`。
+                    3. 若房间为自备卡组房，调用 `duel_set_deck`（支持 `randomMode: "preset" | "chaos" | "diy"` 自动适配房间禁限表，或指定 `presetName`）；若是强制随机房（`RD`/`RDM`/`CHAOS`）可直接跳过组卡。
+                    4. 调用 `duel_set_ready`（`ready: true, startIfHost: true`）等待服务端完成卡组校验与开局同步。
+                    5. 循环调用 `duel_wait_for_turn(sessionId)` 阻塞等待轮到自己操作；支持 `detail: "minimal" | "standard" | "full"` 控制盘面体积。
+                    6. 每次唤醒后阅读 `pendingPrompt`（`submitField` 会明确指示应传 `actionIndex` 还是 `cardIndices` 数组，单选场景两者互通兼容）：
+                       - 单步提交用 `duel_submit_action`（支持 `detail: "none"` 仅返回增量事件与下一步提示，极省上下文）；
+                       - 多步确定性连招可用 `duel_submit_batch` 一次提交；跳过连锁响应可用 `duel_auto_play(strategy="pass_chains")` 或 `duel_configure_policy`；
+                       - 需要查看己方完整卡组剩余构成时再按需调用 `duel_get_deck_list`。
+                    7. 2v2 双打注意：你与队友共享场上怪兽/魔陷与墓地，但严禁也无法看到队友未公开的手牌；可用 `duel_sync_partner_tactic` 与搭档同步战术方针；当 `teammateSurrenderPending = true` 时代表队友请求投降，若同意可调用 `duel_surrender`。
                     """;
                 break;
 
@@ -606,42 +613,117 @@ public sealed class McpServerEngine
 
             // ---------- 2. 决斗玩家工具 (player / admin) ----------
             new(
-                "duel_list_preset_decks",
-                "列出服务端预设随机卡组池（.ydk）与可用卡组名称。",
-                playerRoles,
-                """{"type":"object","properties":{}}""",
-                (_, _, _, _) =>
+                "duel_set_profile",
+                "查看或设置当前 AI Token 在游戏内持久绑定的决斗者昵称（2~18字符，禁止使用 AI1/AI2/Bot 等生硬编号，推荐有个人风格的名字）。",
+                [McpRoleCodes.Spectator, McpRoleCodes.Player, McpRoleCodes.Admin],
+                """{"type":"object","properties":{"playerName":{"type":"string","description":"你想使用的专属决斗者昵称（2~18字符，不要用 AI1/AI2/Bot 等机械名；留空则仅查询当前昵称）"}}}""",
+                async (args, caller, _, ct) =>
                 {
-                    var presets = _deps.ServerHost.Server.PresetDecks.Entries.Select(static d => new
+                    string requested = GetString(args, "playerName");
+                    if (string.IsNullOrWhiteSpace(requested))
                     {
-                        d.Id,
-                        d.Name,
-                        d.HasDiyCards,
-                        tags = d.Data.Tags,
-                        mainCount = d.Data.Main.Count,
-                        extraCount = d.Data.Extra.Count
-                    }).ToArray();
-                    return Task.FromResult<(bool, object)>((false, new { presetDecks = presets }));
+                        return (false, new
+                        {
+                            tokenId = caller.TokenId,
+                            preferredPlayerName = caller.PreferredPlayerName,
+                            needsSelfNaming = string.IsNullOrWhiteSpace(caller.PreferredPlayerName),
+                            hint = string.IsNullOrWhiteSpace(caller.PreferredPlayerName)
+                                ? "当前尚未绑定昵称，请传入一个有个性的决斗者昵称（不要用 AI1/AI2/Bot）。"
+                                : $"当前绑定昵称为「{caller.PreferredPlayerName}」。"
+                        });
+                    }
+
+                    (bool ok, string msg, string? bound) = await _deps.Store.BindMcpTokenPlayerNameAsync(caller.TokenId, requested, ct).ConfigureAwait(false);
+                    return (!ok, new { success = ok, message = msg, preferredPlayerName = bound });
+                }),
+
+            new(
+                "duel_list_preset_decks",
+                "列出服务端预设卡组池与内置 WindBot 可用卡组（.ydk），可选按目标房间规则过滤出可直接过检的合法卡组。",
+                playerRoles,
+                """{"type":"object","properties":{"roomName":{"type":"string","description":"可选：按指定房间的禁限卡表与 OCG/TCG 区域过滤兼容卡组"},"compatibleOnly":{"type":"boolean","description":"若提供 roomName，是否仅返回完全符合该房间禁限表的卡组（默认 false）"}}}""",
+                (args, _, _, _) =>
+                {
+                    string roomName = GetString(args, "roomName");
+                    bool compatibleOnly = GetBool(args, "compatibleOnly", false);
+                    IReadOnlyList<PresetDeckEntry> allEntries = GetCombinedPresetDecks();
+
+                    Game? targetRoom = null;
+                    if (!string.IsNullOrWhiteSpace(roomName))
+                        _deps.ServerHost.Server.TryGetRoom(AgentSessionManager.ExtractTargetRoomName(roomName), out targetRoom);
+
+                    var presets = allEntries
+                        .Select(d =>
+                        {
+                            bool? roomLegal = null;
+                            if (targetRoom is not null)
+                                roomLegal = IsDeckCompatibleWithRoom(d.Data, targetRoom);
+                            return new
+                            {
+                                d.Id,
+                                d.Name,
+                                d.HasDiyCards,
+                                roomCompatible = roomLegal,
+                                tags = d.Data.Tags,
+                                mainCount = d.Data.Main.Count,
+                                extraCount = d.Data.Extra.Count
+                            };
+                        })
+                        .Where(x => !compatibleOnly || targetRoom is null || x.roomCompatible == true)
+                        .ToArray();
+
+                    return Task.FromResult<(bool, object)>((false, new
+                    {
+                        count = presets.Length,
+                        presetDecks = presets,
+                        windBotDecks = DecksManager.GetRegisteredDeckNames()
+                    }));
                 }),
 
             new(
                 "duel_join_room",
-                "以玩家（或观战者）身份加入指定房间（支持规则前缀如 'RD#Box01' 或 '2V2,RDM#Tag01'），返回绑定的专属 sessionId 与当前局面。",
+                "以玩家（或观战者）身份加入指定房间。若该 Token 已被玩家预设了昵称或之前已绑定过昵称，可省略 playerName 自动沿用；若是首次使用未命名 Token，请你自己取一个有个性的决斗者昵称（严禁 AI1/AI2/Bot 等机械名）传入 playerName，系统会自动永久保存。",
                 playerRoles,
-                """{"type":"object","properties":{"room":{"type":"string","description":"房间名或完整主机密码，如 Room01 或 RD#Room01"},"playerName":{"type":"string","description":"游戏内显示的 AI 昵称"},"asObserver":{"type":"boolean","description":"是否作为观战者进入"}},"required":["room"]}""",
+                """{"type":"object","properties":{"room":{"type":"string","description":"房间名或完整主机密码，如 Room01 或 RD#Room01"},"playerName":{"type":"string","description":"游戏内决斗者昵称（2~18字符，严禁使用 AI1/AI2/Bot 等机械名；已绑定昵称时可留空沿用）"},"asObserver":{"type":"boolean","description":"是否作为观战者进入"},"detail":{"type":"string","enum":["minimal","standard","full"],"description":"返回盘面详略级别（默认 standard）"}},"required":["room"]}""",
                 async (args, caller, remoteIp, ct) =>
                 {
                     string roomSpec = GetString(args, "room");
-                    string playerName = GetString(args, "playerName");
-                    if (string.IsNullOrWhiteSpace(playerName))
-                        playerName = caller.Name;
+                    string requestedName = GetString(args, "playerName");
                     bool asObs = GetBool(args, "asObserver", false);
+                    AgentObservationDetail detail = ParseDetail(args, AgentObservationDetail.Standard);
+
+                    string effectiveName;
+                    if (!string.IsNullOrWhiteSpace(caller.PreferredPlayerName))
+                    {
+                        // 已由玩家预设昵称，或该 Token 首次使用时已自取绑定昵称 -> 默认优先沿用
+                        effectiveName = caller.PreferredPlayerName;
+                    }
+                    else
+                    {
+                        // 首次使用未指定昵称的 Token：要求外部 AI 自己取一个非机械的个性化名字并永久绑定
+                        if (string.IsNullOrWhiteSpace(requestedName) || OperationalStore.IsMechanicalAiName(requestedName))
+                        {
+                            return (true, new
+                            {
+                                success = false,
+                                error = "self_naming_required",
+                                needsSelfNaming = true,
+                                message = "这是该 AI Token 首次登场且玩家未预设名字！请不要留空或使用 'AI1'/'AI2'/'Bot'/'Player' 等生硬编号——请结合你的模型个性或游戏王决斗者风格，自己构思一个帅气的名字（2~18字符，如『星尘观测者』『深渊魔导』『电子流·改』），将其填入 playerName 参数再次调用 duel_join_room，服务器会为你永久记住该名字并立即进房！"
+                            });
+                        }
+
+                        (bool boundOk, string boundMsg, string? cleanBound) = await _deps.Store.BindMcpTokenPlayerNameAsync(caller.TokenId, requestedName, ct).ConfigureAwait(false);
+                        if (!boundOk || cleanBound is null)
+                            return (true, new { success = false, error = "invalid_player_name", message = boundMsg });
+
+                        effectiveName = cleanBound;
+                    }
 
                     (bool ok, string msg, AgentDuelSession? session) = await _deps.SessionManager.CreateAndJoinSessionAsync(
                         caller.TokenId,
                         caller.AllowedRooms,
                         caller.MaxSessions,
-                        playerName,
+                        effectiveName,
                         roomSpec,
                         asObs,
                         ct).ConfigureAwait(false);
@@ -681,7 +763,9 @@ public sealed class McpServerEngine
                         success = true,
                         message = msg,
                         sessionId = session.SessionId,
-                        observation = session.GetObservation()
+                        playerName = session.PlayerName,
+                        roomName = session.RoomName,
+                        observation = session.GetObservation(detail)
                     });
                 }),
 
@@ -700,44 +784,51 @@ public sealed class McpServerEngine
                 "duel_swap_seat",
                 "在大厅未准备阶段切换决斗席位/更换 2v2 队伍，或切换到观战席。",
                 playerRoles,
-                """{"type":"object","properties":{"sessionId":{"type":"string"},"toObserver":{"type":"boolean"}},"required":["sessionId"]}""",
-                (args, caller, _, _) =>
+                """{"type":"object","properties":{"sessionId":{"type":"string"},"toObserver":{"type":"boolean"},"detail":{"type":"string","enum":["minimal","standard","full"]}},"required":["sessionId"]}""",
+                async (args, caller, _, ct) =>
                 {
                     (bool ok, string err, AgentDuelSession? s) = _deps.SessionManager.TryGetOwnedSession(caller.TokenId, GetString(args, "sessionId"));
                     if (!ok || s is null)
-                        return Task.FromResult<(bool, object)>((true, new { message = err }));
+                        return (true, new { message = err });
 
-                    (bool swapped, string msg) = s.SwapSeat(GetBool(args, "toObserver", false));
-                    return Task.FromResult<(bool, object)>((!swapped, new { success = swapped, message = msg, observation = s.GetObservation() }));
+                    AgentObservationDetail detail = ParseDetail(args, AgentObservationDetail.Minimal);
+                    (bool swapped, string msg, AgentObservation obs) = await s.SwapSeatAsync(GetBool(args, "toObserver", false), detail, ct).ConfigureAwait(false);
+                    return (!swapped, new { success = swapped, message = msg, observation = obs });
                 }),
 
             new(
                 "duel_set_deck",
-                "在大厅或换副阶段提交卡组：支持 randomMode ('preset'|'chaos'|'diy') 自动生成合法卡组，或传 presetName / ydkContent / main+extra 数组。",
+                "在大厅或换副阶段提交卡组：支持 randomMode ('preset'|'chaos'|'diy') 自动按当前房间禁限表生成合法卡组，或传 presetName / ydkContent / main+extra 数组。",
                 playerRoles,
-                """{"type":"object","properties":{"sessionId":{"type":"string"},"randomMode":{"type":"string","enum":["preset","chaos","diy"]},"presetName":{"type":"string"},"ydkContent":{"type":"string"},"main":{"type":"array","items":{"type":"integer"}},"extra":{"type":"array","items":{"type":"integer"}},"side":{"type":"array","items":{"type":"integer"}}},"required":["sessionId"]}""",
+                """{"type":"object","properties":{"sessionId":{"type":"string"},"randomMode":{"type":"string","enum":["preset","chaos","diy"]},"presetName":{"type":"string"},"ydkContent":{"type":"string"},"main":{"type":"array","items":{"type":"integer"}},"extra":{"type":"array","items":{"type":"integer"}},"side":{"type":"array","items":{"type":"integer"}},"detail":{"type":"string","enum":["minimal","standard","full"]}},"required":["sessionId"]}""",
                 (args, caller, _, _) =>
                 {
                     (bool ok, string err, AgentDuelSession? s) = _deps.SessionManager.TryGetOwnedSession(caller.TokenId, GetString(args, "sessionId"));
                     if (!ok || s is null)
                         return Task.FromResult<(bool, object)>((true, new { message = err }));
 
+                    AgentObservationDetail detail = ParseDetail(args, AgentObservationDetail.Minimal);
                     YdkDeckData? deckData = null;
+                    string? selectedSource = null;
                     string presetName = GetString(args, "presetName");
                     string ydkText = GetString(args, "ydkContent");
                     string randomMode = GetString(args, "randomMode");
 
+                    _deps.ServerHost.Server.TryGetRoom(s.RoomName, out Game? roomGame);
+                    (Banlist? roomBanlist, bool ocg, bool tcg, bool allowCustom, bool noCheck) = ExtractRoomDeckConstraints(roomGame);
+
                     if (!string.IsNullOrWhiteSpace(ydkText))
                     {
                         deckData = YdkSerializer.Parse(ydkText, "McpCustom");
+                        selectedSource = "ydkContent";
                     }
                     else if (!string.IsNullOrWhiteSpace(presetName))
                     {
-                        PresetDeckEntry? found = _deps.ServerHost.Server.PresetDecks.Entries
-                            .FirstOrDefault(d => string.Equals(d.Name, presetName, StringComparison.OrdinalIgnoreCase) || string.Equals(d.Id, presetName, StringComparison.OrdinalIgnoreCase));
+                        PresetDeckEntry? found = FindPresetDeckByName(presetName);
                         if (found is null)
-                            return Task.FromResult<(bool, object)>((true, new { message = $"未找到预设卡组 '{presetName}'。" }));
+                            return Task.FromResult<(bool, object)>((true, new { message = $"未找到预设卡组 '{presetName}'。可调用 duel_list_preset_decks 查看可用列表。" }));
                         deckData = found.Data;
+                        selectedSource = $"preset:{found.Id}";
                     }
                     else if (args["main"] is JsonArray mainArr && mainArr.Count > 0)
                     {
@@ -745,28 +836,33 @@ public sealed class McpServerEngine
                         int[] extraIds = ReadIntArray(args["extra"] as JsonArray);
                         int[] sideIds = ReadIntArray(args["side"] as JsonArray);
                         deckData = new YdkDeckData("McpArrayDeck", mainIds, extraIds, sideIds, []);
+                        selectedSource = "array";
                     }
                     else
                     {
-                        // 默认按 randomMode 生成合法卡组（优先 preset，无预组时自动回退 chaos）
+                        // 默认按 randomMode 生成严格符合当前房间禁限表与 OCG/TCG/DIY 卡池的合法卡组
                         bool wantDiy = string.Equals(randomMode, "diy", StringComparison.OrdinalIgnoreCase);
-                        if (string.IsNullOrWhiteSpace(randomMode) || string.Equals(randomMode, "preset", StringComparison.OrdinalIgnoreCase))
+                        if (string.IsNullOrWhiteSpace(randomMode) || string.Equals(randomMode, "preset", StringComparison.OrdinalIgnoreCase) || wantDiy)
                         {
-                            var candidates = _deps.ServerHost.Server.PresetDecks.Entries
-                                .Where(e => !wantDiy || e.HasDiyCards)
+                            List<PresetDeckEntry> compatible = GetCombinedPresetDecks()
+                                .Where(e => (!wantDiy || e.HasDiyCards) && IsDeckCompatibleWithRoom(e.Data, roomGame))
                                 .ToList();
-                            if (candidates.Count > 0)
-                                deckData = candidates[Random.Shared.Next(candidates.Count)].Data;
+                            if (compatible.Count > 0)
+                            {
+                                PresetDeckEntry chosen = compatible[Random.Shared.Next(compatible.Count)];
+                                deckData = chosen.Data;
+                                selectedSource = $"preset:{chosen.Id}";
+                            }
                         }
 
                         if (deckData is null)
                         {
                             RandomDeckGenerator generator = new(_deps.ServerHost.Server.CardRepository);
                             Deck generated = generator.GenerateChaosDeck(
-                                banlist: null,
-                                ocg: true,
-                                tcg: true,
-                                allowCustom: true,
+                                banlist: noCheck ? null : roomBanlist,
+                                ocg: noCheck || ocg,
+                                tcg: noCheck || tcg,
+                                allowCustom: noCheck || allowCustom || wantDiy,
                                 options: new ChaosDraftOptions
                                 {
                                     MainDeckSize = 40,
@@ -776,6 +872,7 @@ public sealed class McpServerEngine
                                 },
                                 random: Random.Shared);
                             deckData = new YdkDeckData("McpChaosDeck", generated.Main.ToArray(), generated.Extra.ToArray(), generated.Side.ToArray(), []);
+                            selectedSource = "chaos_draft";
                         }
                     }
 
@@ -784,32 +881,17 @@ public sealed class McpServerEngine
                     {
                         success = subOk,
                         message = subMsg,
+                        deckName = deckData.Name,
+                        source = selectedSource,
                         mainCount = deckData.Main.Count,
                         extraCount = deckData.Extra.Count,
-                        observation = s.GetObservation()
+                        observation = s.GetObservation(detail)
                     }));
                 }),
 
             new(
-                "duel_set_ready",
-                "在大厅准备或取消准备；若自己是房主且传入 startIfHost=true，会同时尝试开始对局。",
-                playerRoles,
-                """{"type":"object","properties":{"sessionId":{"type":"string"},"ready":{"type":"boolean"},"startIfHost":{"type":"boolean"}},"required":["sessionId"]}""",
-                (args, caller, _, _) =>
-                {
-                    (bool ok, string err, AgentDuelSession? s) = _deps.SessionManager.TryGetOwnedSession(caller.TokenId, GetString(args, "sessionId"));
-                    if (!ok || s is null)
-                        return Task.FromResult<(bool, object)>((true, new { message = err }));
-
-                    bool ready = GetBool(args, "ready", true);
-                    bool startIfHost = GetBool(args, "startIfHost", true);
-                    (bool rOk, string rMsg) = s.SetReady(ready, startIfHost);
-                    return Task.FromResult<(bool, object)>((!rOk, new { success = rOk, message = rMsg, observation = s.GetObservation() }));
-                }),
-
-            new(
-                "duel_start",
-                "当自己是房主且全员已准备就绪时，主动发起开局。",
+                "duel_get_deck_list",
+                "按需查询己方本局已提交卡组的无序张数清单与估算剩余在牌堆中的张数（不会泄露洗牌顺序；平时无需每回合调用）。",
                 playerRoles,
                 """{"type":"object","properties":{"sessionId":{"type":"string"}},"required":["sessionId"]}""",
                 (args, caller, _, _) =>
@@ -818,15 +900,49 @@ public sealed class McpServerEngine
                     if (!ok || s is null)
                         return Task.FromResult<(bool, object)>((true, new { message = err }));
 
-                    (bool stOk, string stMsg) = s.RequestStartDuel();
-                    return Task.FromResult<(bool, object)>((!stOk, new { success = stOk, message = stMsg, observation = s.GetObservation() }));
+                    IReadOnlyList<AgentDeckCountSummary> list = s.GetDeckList();
+                    return Task.FromResult<(bool, object)>((false, new { count = list.Count, cards = list }));
+                }),
+
+            new(
+                "duel_set_ready",
+                "在大厅准备或取消准备（自动等待服务端完成卡组禁限校验并同步最新席位/开局状态）；若自己是房主且 startIfHost=true，会同时尝试开局。",
+                playerRoles,
+                """{"type":"object","properties":{"sessionId":{"type":"string"},"ready":{"type":"boolean"},"startIfHost":{"type":"boolean"},"detail":{"type":"string","enum":["minimal","standard","full"]}},"required":["sessionId"]}""",
+                async (args, caller, _, ct) =>
+                {
+                    (bool ok, string err, AgentDuelSession? s) = _deps.SessionManager.TryGetOwnedSession(caller.TokenId, GetString(args, "sessionId"));
+                    if (!ok || s is null)
+                        return (true, new { message = err });
+
+                    bool ready = GetBool(args, "ready", true);
+                    bool startIfHost = GetBool(args, "startIfHost", true);
+                    AgentObservationDetail detail = ParseDetail(args, AgentObservationDetail.Standard);
+                    (bool rOk, string rMsg, AgentObservation obs) = await s.SetReadyAsync(ready, startIfHost, detail, ct).ConfigureAwait(false);
+                    return (!rOk, new { success = rOk, message = rMsg, observation = obs });
+                }),
+
+            new(
+                "duel_start",
+                "当自己是房主且全员已准备就绪时，主动发起开局并等待进入猜拳/选先后攻。",
+                playerRoles,
+                """{"type":"object","properties":{"sessionId":{"type":"string"},"detail":{"type":"string","enum":["minimal","standard","full"]}},"required":["sessionId"]}""",
+                async (args, caller, _, ct) =>
+                {
+                    (bool ok, string err, AgentDuelSession? s) = _deps.SessionManager.TryGetOwnedSession(caller.TokenId, GetString(args, "sessionId"));
+                    if (!ok || s is null)
+                        return (true, new { message = err });
+
+                    AgentObservationDetail detail = ParseDetail(args, AgentObservationDetail.Standard);
+                    (bool stOk, string stMsg, AgentObservation obs) = await s.RequestStartDuelAsync(detail, ct).ConfigureAwait(false);
+                    return (!stOk, new { success = stOk, message = stMsg, observation = obs });
                 }),
 
             new(
                 "duel_wait_for_turn",
                 "长轮询等待直到轮到当前会话做出决策（猜拳、选先后攻、出牌、连锁、选卡、2v2队友投降征询）或对局结束，直接返回己方视角局面与编号化合法动作。",
                 playerRoles,
-                """{"type":"object","properties":{"sessionId":{"type":"string"},"timeoutSeconds":{"type":"integer","description":"最长等待秒数 (1~28，默认 20)"}},"required":["sessionId"]}""",
+                """{"type":"object","properties":{"sessionId":{"type":"string"},"timeoutSeconds":{"type":"integer","description":"最长等待秒数 (1~28，默认 20)"},"detail":{"type":"string","enum":["minimal","standard","full"],"description":"盘面详略级别（默认 standard；紧凑连打可传 minimal）"}},"required":["sessionId"]}""",
                 async (args, caller, _, ct) =>
                 {
                     (bool ok, string err, AgentDuelSession? s) = _deps.SessionManager.TryGetOwnedSession(caller.TokenId, GetString(args, "sessionId"));
@@ -834,27 +950,29 @@ public sealed class McpServerEngine
                         return (true, new { message = err });
 
                     int sec = Math.Clamp(GetInt(args, "timeoutSeconds", 20), 1, 28);
-                    AgentObservation obs = await s.WaitForTurnAsync(TimeSpan.FromSeconds(sec), ct).ConfigureAwait(false);
+                    AgentObservationDetail detail = ParseDetail(args, AgentObservationDetail.Standard);
+                    AgentObservation obs = await s.WaitForTurnAsync(TimeSpan.FromSeconds(sec), detail, ct).ConfigureAwait(false);
                     return (false, obs);
                 }),
 
             new(
                 "duel_get_observation",
-                "立即读取严格己方战争迷雾视角的结构化局面（双方 LP、回合阶段、己方手牌与共享场面、墓地除外、连锁与最近公开事件）。",
+                "立即读取严格己方战争迷雾视角的结构化局面（默认 standard 不重复携带 40 张初始卡组表，传 detail='full' 可展开全部卡效）。",
                 playerRoles,
-                """{"type":"object","properties":{"sessionId":{"type":"string"}},"required":["sessionId"]}""",
+                """{"type":"object","properties":{"sessionId":{"type":"string"},"detail":{"type":"string","enum":["minimal","standard","full"],"description":"盘面详略级别（minimal|standard|full，默认 standard）"}},"required":["sessionId"]}""",
                 (args, caller, _, _) =>
                 {
                     (bool ok, string err, AgentDuelSession? s) = _deps.SessionManager.TryGetOwnedSession(caller.TokenId, GetString(args, "sessionId"));
                     if (!ok || s is null)
                         return Task.FromResult<(bool, object)>((true, new { message = err }));
 
-                    return Task.FromResult<(bool, object)>((false, s.GetObservation()));
+                    AgentObservationDetail detail = ParseDetail(args, AgentObservationDetail.Standard);
+                    return Task.FromResult<(bool, object)>((false, s.GetObservation(detail)));
                 }),
 
             new(
                 "duel_get_legal_actions",
-                "读取当前等待响应的 promptId 与编号化合法动作列表。",
+                "读取当前等待响应的 promptId、submitField（'actionIndex' 或 'cardIndices'）与编号化合法动作列表。",
                 playerRoles,
                 """{"type":"object","properties":{"sessionId":{"type":"string"}},"required":["sessionId"]}""",
                 (args, caller, _, _) =>
@@ -869,23 +987,132 @@ public sealed class McpServerEngine
 
             new(
                 "duel_submit_action",
-                "提交所选合法动作：单选传 actionIndex，多张选卡/凑星传 cardIndices 数组；可选附带 thoughtSummary（观战思考气泡）与 chatMessage（房间聊天）。",
+                "提交所选合法动作并等待服务端 ocgcore 完成结算后再返回最新快照：单选传 actionIndex，多张选卡/祭品/凑星传 cardIndices 数组（单选两者自动双向兼容）；支持 detail='none' 仅返回增量变化与下一步提示。",
                 playerRoles,
-                """{"type":"object","properties":{"sessionId":{"type":"string"},"actionIndex":{"type":"integer","description":"单选合法动作编号"},"cardIndices":{"type":"array","items":{"type":"integer"},"description":"多张选卡或凑星时的候选下标数组"},"promptId":{"type":"integer","description":"可选：校验当前询问编号防止重复提交"},"thoughtSummary":{"type":"string","description":"可选：公开展示给观众的简短思考理由（勿写暗手牌机密）"},"chatMessage":{"type":"string","description":"可选：顺带发送到房间聊天框的台词"}},"required":["sessionId"]}""",
+                """{"type":"object","properties":{"sessionId":{"type":"string"},"actionIndex":{"type":"integer","description":"单选合法动作编号（单祭品/单张选卡也可直接传）"},"cardIndices":{"type":"array","items":{"type":"integer"},"description":"多张选卡、多祭品或凑星时的候选下标数组（如 [0, 1]）"},"indices":{"type":"array","items":{"type":"integer"},"description":"cardIndices 的兼容别名"},"promptId":{"type":"integer","description":"可选：校验当前询问编号防止重复提交"},"detail":{"type":"string","enum":["none","minimal","standard","full"],"description":"返回快照详略级别（默认 standard；传 none 最省上下文，仅回传 nextPrompt 与 newEvents）"},"thoughtSummary":{"type":"string","description":"可选：公开展示给观众的简短思考理由（勿写暗手牌机密）"},"chatMessage":{"type":"string","description":"可选：顺带发送到房间聊天框的台词"}},"required":["sessionId"]}""",
+                async (args, caller, _, ct) =>
+                {
+                    (bool ok, string err, AgentDuelSession? s) = _deps.SessionManager.TryGetOwnedSession(caller.TokenId, GetString(args, "sessionId"));
+                    if (!ok || s is null)
+                        return (true, new { message = err });
+
+                    int? actionIndex = args["actionIndex"] is not null ? GetInt(args, "actionIndex", 0) : null;
+                    JsonArray? idxArr = args["cardIndices"] as JsonArray ?? args["indices"] as JsonArray;
+                    int[]? cardIndices = idxArr is not null ? ReadIntArray(idxArr) : null;
+                    long? promptId = args["promptId"] is not null ? args["promptId"]!.GetValue<long>() : null;
+                    string? thought = args["thoughtSummary"]?.GetValue<string>();
+                    string? chat = args["chatMessage"]?.GetValue<string>();
+                    AgentObservationDetail detail = ParseDetail(args, AgentObservationDetail.Standard);
+
+                    AgentActionResult res = await s.SubmitActionAsync(actionIndex, cardIndices, promptId, thought, chat, detail, waitSettleMs: 850, cancellationToken: ct).ConfigureAwait(false);
+                    return (!res.Success, res);
+                }),
+
+            new(
+                "duel_submit_batch",
+                "在单次请求内按谓词连续执行多步确定性操作（如：发动某卡 -> 选目标 -> 自动放弃连锁），一旦遇到未预期分支或对方连锁立即安全停驻并返回当前询问。",
+                playerRoles,
+                """{"type":"object","properties":{"sessionId":{"type":"string"},"steps":{"type":"array","description":"顺序匹配步骤列表（最多 16 步）","items":{"type":"object","properties":{"promptType":{"type":"string","description":"期望的询问类型，如 select_idle_cmd / select_card / select_chain"},"kind":{"type":"string","description":"匹配 choice.kind，如 summon / activate / pass_chain"},"cardCode":{"type":"integer","description":"匹配候选卡片密码"},"labelContains":{"type":"string","description":"匹配选项标签子串"},"cancel":{"type":"boolean","description":"是否优先选择取消/不连锁选项"},"actionIndex":{"type":"integer","description":"兜底直接指定下标"}}}},"detail":{"type":"string","enum":["none","minimal","standard","full"]}},"required":["sessionId","steps"]}""",
+                async (args, caller, _, ct) =>
+                {
+                    (bool ok, string err, AgentDuelSession? s) = _deps.SessionManager.TryGetOwnedSession(caller.TokenId, GetString(args, "sessionId"));
+                    if (!ok || s is null)
+                        return (true, new { message = err });
+
+                    JsonArray? stepsArr = args["steps"] as JsonArray;
+                    if (stepsArr is null || stepsArr.Count == 0)
+                        return (true, new { message = "steps 数组不能为空。" });
+
+                    List<AgentBatchStep> steps = new(Math.Min(16, stepsArr.Count));
+                    foreach (JsonNode? item in stepsArr.Take(16))
+                    {
+                        if (item is not JsonObject stepObj)
+                            continue;
+                        steps.Add(new AgentBatchStep(
+                            PromptType: stepObj["promptType"]?.GetValue<string>(),
+                            Kind: stepObj["kind"]?.GetValue<string>(),
+                            CardCode: stepObj["cardCode"] is not null ? GetInt(stepObj, "cardCode", 0) : null,
+                            LabelContains: stepObj["labelContains"]?.GetValue<string>(),
+                            Cancel: GetBool(stepObj, "cancel", false),
+                            ActionIndex: stepObj["actionIndex"] is not null ? GetInt(stepObj, "actionIndex", 0) : null));
+                    }
+
+                    AgentObservationDetail detail = ParseDetail(args, AgentObservationDetail.Standard);
+                    AgentActionResult res = await s.ExecuteBatchStepsAsync(steps, detail, ct).ConfigureAwait(false);
+                    return (!res.Success, res);
+                }),
+
+            new(
+                "duel_auto_play",
+                "快速连打/自动代步工具：支持 strategy='pass_chains'（自动跳过所有非必发连锁窗口直至轮到主要决策）或 'simple_beatdown'（自动通召最高攻怪兽、进战阶攻击并结束回合，适合快速测试或残局收尾）。",
+                playerRoles,
+                """{"type":"object","properties":{"sessionId":{"type":"string"},"strategy":{"type":"string","enum":["pass_chains","simple_beatdown"],"description":"自动策略（默认 pass_chains）"},"maxSteps":{"type":"integer","description":"最多自动执行步数 (1~20，默认 8)"},"detail":{"type":"string","enum":["none","minimal","standard","full"]}},"required":["sessionId"]}""",
+                async (args, caller, _, ct) =>
+                {
+                    (bool ok, string err, AgentDuelSession? s) = _deps.SessionManager.TryGetOwnedSession(caller.TokenId, GetString(args, "sessionId"));
+                    if (!ok || s is null)
+                        return (true, new { message = err });
+
+                    string strategy = GetString(args, "strategy") is { Length: > 0 } st ? st : "pass_chains";
+                    int maxSteps = Math.Clamp(GetInt(args, "maxSteps", 8), 1, 20);
+                    AgentObservationDetail detail = ParseDetail(args, AgentObservationDetail.Standard);
+                    AgentActionResult res = await s.AutoPlayStepsAsync(maxSteps, strategy, detail, ct).ConfigureAwait(false);
+                    return (!res.Success, res);
+                }),
+
+            new(
+                "duel_configure_policy",
+                "配置当前对局会话的快速响应策略：如开启唯一合法选项自动确认、同阶段重复连锁窗口自动折叠，或静默跳过接下来 N 次可取消连锁询问。",
+                playerRoles,
+                """{"type":"object","properties":{"sessionId":{"type":"string"},"autoConfirmSingleForced":{"type":"boolean","description":"仅剩唯一合法选项时是否自动确认（默认 true）"},"suppressRepeatedChainPass":{"type":"boolean","description":"同一阶段同一张卡 Pass 后是否自动跳过重复询问（默认 true）"},"silenceChainPrompts":{"type":"integer","description":"接下来自动放弃的可取消连锁询问次数 (0~100)"}},"required":["sessionId"]}""",
                 (args, caller, _, _) =>
                 {
                     (bool ok, string err, AgentDuelSession? s) = _deps.SessionManager.TryGetOwnedSession(caller.TokenId, GetString(args, "sessionId"));
                     if (!ok || s is null)
                         return Task.FromResult<(bool, object)>((true, new { message = err }));
 
-                    int? actionIndex = args["actionIndex"] is not null ? GetInt(args, "actionIndex", 0) : null;
-                    int[]? cardIndices = args["cardIndices"] is JsonArray arr ? ReadIntArray(arr) : null;
-                    long? promptId = args["promptId"] is not null ? args["promptId"]!.GetValue<long>() : null;
-                    string? thought = args["thoughtSummary"]?.GetValue<string>();
-                    string? chat = args["chatMessage"]?.GetValue<string>();
+                    bool? autoForced = args["autoConfirmSingleForced"] is not null ? GetBool(args, "autoConfirmSingleForced", true) : null;
+                    bool? suppressEcho = args["suppressRepeatedChainPass"] is not null ? GetBool(args, "suppressRepeatedChainPass", true) : null;
+                    int? silence = args["silenceChainPrompts"] is not null ? GetInt(args, "silenceChainPrompts", 0) : null;
+                    s.ConfigurePolicy(autoForced, suppressEcho, silence);
+                    return Task.FromResult<(bool, object)>((false, new { success = true, message = "已更新会话自动响应策略。" }));
+                }),
 
-                    AgentActionResult res = s.SubmitAction(actionIndex, cardIndices, promptId, thought, chat);
-                    return Task.FromResult<(bool, object)>((!res.Success, res));
+            new(
+                "duel_update_plan",
+                "更新当前会话的跨回合战术备忘录（保存在会话观测 strategicPlan 中，帮助跨回合保持长线计划）。",
+                playerRoles,
+                """{"type":"object","properties":{"sessionId":{"type":"string"},"winCondition":{"type":"string"},"suspectedOpponentDeck":{"type":"string"},"turnGoal":{"type":"string"},"handoffToPartner":{"type":"string"},"bo3SidePlan":{"type":"string"}},"required":["sessionId"]}""",
+                (args, caller, _, _) =>
+                {
+                    (bool ok, string err, AgentDuelSession? s) = _deps.SessionManager.TryGetOwnedSession(caller.TokenId, GetString(args, "sessionId"));
+                    if (!ok || s is null)
+                        return Task.FromResult<(bool, object)>((true, new { message = err }));
+
+                    AgentStrategicPlan plan = s.UpdateStrategicPlan(
+                        args["winCondition"]?.GetValue<string>(),
+                        args["suspectedOpponentDeck"]?.GetValue<string>(),
+                        args["turnGoal"]?.GetValue<string>(),
+                        args["handoffToPartner"]?.GetValue<string>(),
+                        args["bo3SidePlan"]?.GetValue<string>());
+                    return Task.FromResult<(bool, object)>((false, new { success = true, strategicPlan = plan }));
+                }),
+
+            new(
+                "duel_sync_partner_tactic",
+                "在 2v2 双打模式下向同队搭档同步《卡片力量》式战术姿态（仅己方队伍可见，不向敌方公开）。",
+                playerRoles,
+                """{"type":"object","properties":{"sessionId":{"type":"string"},"stance":{"type":"string","enum":["aggressive","all_in_otk","control","setup_partner","defensive","balanced"]},"note":{"type":"string"}},"required":["sessionId"]}""",
+                (args, caller, _, _) =>
+                {
+                    (bool ok, string err, AgentDuelSession? s) = _deps.SessionManager.TryGetOwnedSession(caller.TokenId, GetString(args, "sessionId"));
+                    if (!ok || s is null)
+                        return Task.FromResult<(bool, object)>((true, new { message = err }));
+
+                    (bool syncOk, string msg, AgentPartnerTactic? tactic) = s.SyncPartnerTactic(
+                        args["stance"]?.GetValue<string>(),
+                        args["note"]?.GetValue<string>());
+                    return Task.FromResult<(bool, object)>((!syncOk, new { success = syncOk, message = msg, partnerTactic = tactic }));
                 }),
 
             new(
@@ -1083,7 +1310,7 @@ public sealed class McpServerEngine
                     if (!string.IsNullOrWhiteSpace(ydk))
                         data = YdkSerializer.Parse(ydk, "Inspect");
                     else if (!string.IsNullOrWhiteSpace(presetName))
-                        data = _deps.ServerHost.Server.PresetDecks.Entries.FirstOrDefault(d => string.Equals(d.Name, presetName, StringComparison.OrdinalIgnoreCase) || string.Equals(d.Id, presetName, StringComparison.OrdinalIgnoreCase))?.Data;
+                        data = FindPresetDeckByName(presetName)?.Data;
 
                     if (data is null)
                         return Task.FromResult<(bool, object)>((true, new { message = "请提供有效的 presetName 或 ydkContent。" }));
@@ -1254,21 +1481,85 @@ public sealed class McpServerEngine
 
             new(
                 "room_create",
-                "在服务器预创建一个公开对局房间（支持规则前缀如 '2V2,RDM'）。",
-                adminOnly,
-                """{"type":"object","properties":{"roomName":{"type":"string"},"rulePrefix":{"type":"string"}},"required":["roomName"]}""",
-                (args, _, _, _) =>
+                "在服务器创建一个公开对局房间（player 与 admin 均可用；支持规则前缀如 'CHAOS'、'RD'、'NC,NF'、'2V2,RDM'，并可一键召唤内置 WindBot 对手）。",
+                playerRoles,
+                """{"type":"object","properties":{"roomName":{"type":"string","description":"房间名称（如 Arena01；若受 AllowedRooms 白名单约束需在白名单内）"},"rulePrefix":{"type":"string","description":"可选规则前缀，如 'CHAOS'、'RD'、'NC,NF'、'2V2,RDM'"},"noCheckDeck":{"type":"boolean","description":"可选：是否关闭卡组禁限检查"},"spawnWindBot":{"type":"boolean","description":"可选：建房后是否立即召唤内置 WindBot 进入该房间"},"windBotDeck":{"type":"string","description":"可选：召唤的内置 WindBot 卡组名（如 BlueEyes 或 random）"},"windBotCount":{"type":"integer","description":"召唤数量 (1~3，默认 1)"}},"required":["roomName"]}""",
+                async (args, caller, remoteIp, ct) =>
                 {
-                    string rName = GetString(args, "roomName");
+                    string rawInput = GetString(args, "roomName");
                     string prefix = GetString(args, "rulePrefix");
+                    if (rawInput.Contains('#'))
+                    {
+                        int hashIdx = rawInput.LastIndexOf('#');
+                        if (string.IsNullOrWhiteSpace(prefix))
+                            prefix = rawInput[..hashIdx].Trim();
+                        rawInput = rawInput[(hashIdx + 1)..].Trim();
+                    }
+
+                    if (string.IsNullOrWhiteSpace(rawInput) || rawInput.Length > 24)
+                        return (true, new { success = false, message = "roomName 长度必须在 1~24 个字符之间。" });
+
+                    if (caller.McpRole != McpRoleCodes.Admin &&
+                        caller.AllowedRooms.Count > 0 &&
+                        !caller.AllowedRooms.Contains(rawInput, StringComparer.OrdinalIgnoreCase))
+                    {
+                        return (true, new
+                        {
+                            success = false,
+                            error = "room_not_in_whitelist",
+                            message = $"当前 Token 仅被允许在房间白名单 [{string.Join(", ", caller.AllowedRooms)}] 内建房或进房。"
+                        });
+                    }
+
                     GameOptions opts = _deps.ServerHost.Server.Options.Game;
                     if (!string.IsNullOrWhiteSpace(prefix))
                     {
-                        string spec = prefix.Contains('#') ? prefix : $"{prefix}#{rName}";
+                        string spec = prefix.Contains('#') ? prefix : $"{prefix}#{rawInput}";
                         opts = _deps.ServerHost.Server.PasswordParser.Parse(spec).ApplyTo(opts);
                     }
-                    bool created = _deps.ServerHost.Server.TryCreateRoom(rName, out Game? g, opts);
-                    return Task.FromResult<(bool, object)>((!created, new { success = created, roomName = g?.RoomName ?? rName }));
+                    if (args["noCheckDeck"] is not null)
+                        opts = opts with { NoCheckDeck = GetBool(args, "noCheckDeck", opts.NoCheckDeck) };
+
+                    bool created = _deps.ServerHost.Server.TryCreateRoom(rawInput, out Game? g, opts);
+                    if (!created || g is null)
+                        return (true, new { success = false, message = $"房间 '{rawInput}' 已存在或服务器已达房间上限。" });
+
+                    IReadOnlyList<string>? spawnedBots = null;
+                    if (GetBool(args, "spawnWindBot", false) && _deps.SpawnWindBotCallback is not null)
+                    {
+                        string? botDeck = args["windBotDeck"]?.GetValue<string>();
+                        int botCnt = Math.Clamp(GetInt(args, "windBotCount", 1), 1, g.IsTag ? 3 : 1);
+                        try
+                        {
+                            spawnedBots = _deps.SpawnWindBotCallback(g, botDeck, null, botCnt);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogDebug(ex, "Optional WindBot spawn during room_create failed.");
+                        }
+                    }
+
+                    await _deps.Store.AppendAuditAsync(
+                        "mcp_token",
+                        caller.TokenId.ToString(),
+                        $"{caller.OwnerUsername}:{caller.Name}",
+                        "mcp.room_create",
+                        caller.McpRole,
+                        g.RoomName,
+                        remoteIp,
+                        "ok",
+                        prefix,
+                        ct).ConfigureAwait(false);
+
+                    return (false, new
+                    {
+                        success = true,
+                        roomName = g.RoomName,
+                        mode = g.Mode,
+                        randomDeckMode = g.RandomDeckMode.ToString(),
+                        noCheckDeck = g.NoCheckDeck,
+                        spawnedBots
+                    });
                 }),
 
             new(
@@ -1320,24 +1611,147 @@ public sealed class McpServerEngine
 
             new(
                 "room_spawn_windbot",
-                "向指定大厅房间召唤 1~4 台内置 WindBot 机器人。",
-                adminOnly,
-                """{"type":"object","properties":{"roomName":{"type":"string"},"deck":{"type":"string"},"count":{"type":"integer"}},"required":["roomName"]}""",
-                (args, _, _, _) =>
+                "向指定大厅房间召唤 1~4 台内置 WindBot 机器人陪练或补齐 2v2 席位（player 角色可向自己所在房间或新建空房召唤）。",
+                playerRoles,
+                """{"type":"object","properties":{"roomName":{"type":"string","description":"目标房间名"},"deck":{"type":"string","description":"可选：卡组名（如 BlueEyes、Yubel）或 'random'"},"count":{"type":"integer","description":"召唤数量 (1~4，默认 1)"}},"required":["roomName"]}""",
+                (args, caller, _, _) =>
                 {
                     if (_deps.SpawnWindBotCallback is null)
-                        return Task.FromResult<(bool, object)>((true, new { message = "当前未配置内置 WindBot 服务。" }));
+                        return Task.FromResult<(bool, object)>((true, new { success = false, message = "当前未配置内置 WindBot 服务或尚未加载卡库。" }));
 
-                    string rName = GetString(args, "roomName");
+                    string rName = AgentSessionManager.ExtractTargetRoomName(GetString(args, "roomName"));
                     if (!_deps.ServerHost.Server.TryGetRoom(rName, out Game? g) || g is null)
-                        return Task.FromResult<(bool, object)>((true, new { message = $"房间 '{rName}' 不存在。" }));
+                        return Task.FromResult<(bool, object)>((true, new { success = false, message = $"房间 '{rName}' 不存在。" }));
 
-                    string? deck = args["deck"]?.GetValue<string>();
-                    int count = Math.Clamp(GetInt(args, "count", 1), 1, 4);
-                    IReadOnlyList<string> spawned = _deps.SpawnWindBotCallback(g, deck, null, count);
-                    return Task.FromResult<(bool, object)>((false, new { success = true, spawned }));
+                    if (caller.McpRole != McpRoleCodes.Admin)
+                    {
+                        if (caller.AllowedRooms.Count > 0 &&
+                            !caller.AllowedRooms.Contains(g.RoomName, StringComparer.OrdinalIgnoreCase))
+                        {
+                            return Task.FromResult<(bool, object)>((true, new { success = false, message = $"当前 Token 无权操作房间 '{g.RoomName}'。" }));
+                        }
+
+                        bool isRoomEmpty = g.Players.All(static p => p is null);
+                        bool callerInRoom = _deps.SessionManager.ListOwnedSessions(caller.TokenId)
+                            .Any(s => s.IsConnected && string.Equals(s.RoomName, g.RoomName, StringComparison.OrdinalIgnoreCase));
+                        if (!isRoomEmpty && !callerInRoom)
+                        {
+                            return Task.FromResult<(bool, object)>((true, new { success = false, message = "非管理员角色仅可向自己当前所在的房间或刚创建的空房间召唤内置 AI。" }));
+                        }
+                    }
+
+                    try
+                    {
+                        string? deck = args["deck"]?.GetValue<string>();
+                        int count = Math.Clamp(GetInt(args, "count", 1), 1, 4);
+                        IReadOnlyList<string> spawned = _deps.SpawnWindBotCallback(g, deck, null, count);
+                        return Task.FromResult<(bool, object)>((false, new { success = true, roomName = g.RoomName, spawned }));
+                    }
+                    catch (Exception ex)
+                    {
+                        return Task.FromResult<(bool, object)>((true, new { success = false, message = ex.Message }));
+                    }
                 })
         ];
+    }
+
+    // ==================== 预设卡组发现、房间禁限匹配与辅助 ====================
+
+    private IReadOnlyList<PresetDeckEntry> GetCombinedPresetDecks()
+    {
+        IReadOnlyList<PresetDeckEntry> serverPool = _deps.ServerHost.Server.PresetDecks.Entries;
+        PresetDeckEntry[] bundled = GetBundledWindBotDecks();
+        if (bundled.Length == 0)
+            return serverPool;
+        if (serverPool.Count == 0)
+            return bundled;
+
+        Dictionary<string, PresetDeckEntry> merged = new(serverPool.Count + bundled.Length, StringComparer.OrdinalIgnoreCase);
+        foreach (PresetDeckEntry entry in serverPool)
+            merged[entry.Id] = entry;
+        foreach (PresetDeckEntry entry in bundled)
+            merged.TryAdd(entry.Id, entry);
+        return merged.Values.ToArray();
+    }
+
+    private PresetDeckEntry[] GetBundledWindBotDecks()
+    {
+        if (_cachedBundledDecks is not null)
+            return _cachedBundledDecks;
+
+        lock (_bundledDeckGate)
+        {
+            if (_cachedBundledDecks is not null)
+                return _cachedBundledDecks;
+
+            PresetDeckPool tempPool = new();
+            string[] candidates =
+            [
+                Path.Combine(AppContext.BaseDirectory, "Decks"),
+                "Decks"
+            ];
+            tempPool.ReloadFromDirectories(candidates, _deps.ServerHost.Server.CardRepository, additionalTags: ["windbot"]);
+            _cachedBundledDecks = tempPool.Entries.ToArray();
+            return _cachedBundledDecks;
+        }
+    }
+
+    private PresetDeckEntry? FindPresetDeckByName(string nameOrId)
+    {
+        string trimmed = nameOrId.Trim();
+        string aiPrefixed = trimmed.StartsWith("AI_", StringComparison.OrdinalIgnoreCase) ? trimmed : $"AI_{trimmed}";
+        foreach (PresetDeckEntry d in GetCombinedPresetDecks())
+        {
+            if (string.Equals(d.Name, trimmed, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(d.Id, trimmed, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(d.Name, aiPrefixed, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(d.Id, aiPrefixed, StringComparison.OrdinalIgnoreCase))
+            {
+                return d;
+            }
+        }
+        return null;
+    }
+
+    private bool IsDeckCompatibleWithRoom(YdkDeckData data, Game? room)
+    {
+        ICardRepository cardRepo = _deps.ServerHost.Server.CardRepository;
+        Deck deck = YdkSerializer.ToDeck(data, cardRepo);
+        if (deck.Main.Count < 40)
+            return false;
+
+        if (room is null || room.NoCheckDeck)
+            return true;
+
+        (Banlist? banlist, bool ocg, bool tcg, bool allowCustom, _) = ExtractRoomDeckConstraints(room);
+        return deck.Check(banlist, ocg, tcg, allowCustom, DeckRules.Default) == 0;
+    }
+
+    private static (Banlist? Banlist, bool Ocg, bool Tcg, bool AllowCustom, bool NoCheck) ExtractRoomDeckConstraints(Game? room)
+    {
+        if (room is null)
+            return (null, true, true, true, false);
+
+        int region = room.Region;
+        bool ocg = region != 1;
+        bool tcg = region != 0;
+        bool allowCustom = region >= 3;
+        return (room.Banlist, ocg, tcg, allowCustom, room.NoCheckDeck);
+    }
+
+    private static AgentObservationDetail ParseDetail(JsonObject args, AgentObservationDetail fallback)
+    {
+        string raw = GetString(args, "detail");
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        return raw.ToLowerInvariant() switch
+        {
+            "none" or "quiet" => AgentObservationDetail.None,
+            "min" or "minimal" or "compact" => AgentObservationDetail.Minimal,
+            "std" or "standard" => AgentObservationDetail.Standard,
+            "full" or "verbose" => AgentObservationDetail.Full,
+            _ => fallback
+        };
     }
 
     // ==================== JSON-RPC 辅助 ====================
@@ -1358,7 +1772,7 @@ public sealed class McpServerEngine
 
     private static JsonObject BuildToolCallResponse(JsonNode? idNode, bool isError, object payload)
     {
-        string text = payload is string s ? s : JsonSerializer.Serialize(payload, PrettyJsonOpts);
+        string text = payload is string s ? s : JsonSerializer.Serialize(payload, JsonOpts);
         return BuildJsonRpcResult(idNode, new JsonObject
         {
             ["content"] = new JsonArray

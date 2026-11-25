@@ -18,13 +18,16 @@ import {
   Trash2,
   Lock
 } from 'lucide-react';
-import { apiFetch, setCsrfToken } from './api';
+import { apiFetch, setPortalCsrfToken } from './api';
 import { QuickCopyPill, RoomConfigurator } from './RoomConfigurator';
 
 type PortalTab = 'lobby' | 'ai_tokens' | 'replays' | 'catalog' | 'selfservice';
 
 export interface SurfaceInfo {
   surface: 'admin' | 'portal';
+  unifiedPortal?: boolean;
+  defaultPage?: string;
+  adminPath?: string;
   gamePort: number;
   adminPort?: number;
   portalPort?: number;
@@ -88,14 +91,14 @@ export function UserPortalApp({ surfaceInfo }: { surfaceInfo: SurfaceInfo }) {
     try {
       const me = await apiFetch<{ authenticated: boolean; user: PortalUser | null }>('/api/portal/auth/me');
       if (me.authenticated && me.user) {
-        setCsrfToken(me.user.csrfToken);
+        setPortalCsrfToken(me.user.csrfToken);
         setPortalUser(me.user);
       } else {
-        setCsrfToken('');
+        setPortalCsrfToken('');
         setPortalUser(null);
       }
     } catch {
-      setCsrfToken('');
+      setPortalCsrfToken('');
       setPortalUser(null);
     }
   }, []);
@@ -149,7 +152,7 @@ export function UserPortalApp({ surfaceInfo }: { surfaceInfo: SurfaceInfo }) {
     } catch {
       // ignore
     }
-    setCsrfToken('');
+    setPortalCsrfToken('');
     setPortalUser(null);
     notify('已退出玩家账号');
   };
@@ -263,10 +266,12 @@ export function UserPortalApp({ surfaceInfo }: { surfaceInfo: SurfaceInfo }) {
               <div className="font-semibold text-sm flex items-center gap-2">
                 YGOProSharp 玩家大厅
                 <span className="px-2 py-0.5 rounded text-[11px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  用户面板独立端口 :{window.location.port || surfaceInfo.portalPort}
+                  {surfaceInfo.surface === 'portal'
+                    ? `独立门户端口 :${window.location.port || surfaceInfo.portalPort}`
+                    : `玩家门户 · 游戏端口 :${gamePort}`}
                 </span>
               </div>
-              <div className="text-[11px] text-slate-400">自助建房配置 · 观众列表围观 · 个人 AI Token · 云录像回放</div>
+              <div className="text-[11px] text-slate-400">自助建房配置 · 观众列表围观 · 个性化 AI 决斗令牌 · 云录像回放</div>
             </div>
           </div>
 
@@ -346,7 +351,7 @@ export function UserPortalApp({ surfaceInfo }: { surfaceInfo: SurfaceInfo }) {
           onSwitchMode={setAuthModalMode}
           onClose={() => setAuthModalMode(null)}
           onAuthenticated={(u, msg) => {
-            setCsrfToken(u.csrfToken);
+            setPortalCsrfToken(u.csrfToken);
             setPortalUser(u);
             setAuthModalMode(null);
             notify(msg);
@@ -929,7 +934,9 @@ function PortalAiTokenCenter({
   const [roomsText, setRoomsText] = useState('');
   const [expiresHours, setExpiresHours] = useState(72);
   const [newlyIssuedRaw, setNewlyIssuedRaw] = useState('');
-  const [serverMcpPort, setServerMcpPort] = useState<number | undefined>(mcpPortHint);
+  const [editingTokenId, setEditingTokenId] = useState<string | null>(null);
+  const [editingNickname, setEditingNickname] = useState('');
+  const [, setServerMcpPort] = useState<number | undefined>(mcpPortHint);
 
   const loadTokens = useCallback(async () => {
     if (!user) return;
@@ -972,10 +979,12 @@ function PortalAiTokenCenter({
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
+      const trimmedName = name.trim();
       const res = await apiFetch('/api/portal/mcp/tokens', {
         method: 'POST',
         body: JSON.stringify({
-          name: name.trim() || undefined,
+          name: trimmedName || undefined,
+          preferredPlayerName: trimmedName || undefined,
           mcpRole: role,
           allowedRooms: rooms,
           maxSessions: 1,
@@ -984,10 +993,24 @@ function PortalAiTokenCenter({
       });
       setNewlyIssuedRaw(res.rawToken);
       setName('');
-      notify('AI Token 创建成功！请复制保存');
+      notify(trimmedName ? `AI Token 创建成功（已绑定昵称：${trimmedName}）！` : 'AI Token 创建成功（首次进房时将由 AI 自主取名）！');
       loadTokens();
     } catch (err) {
       notify(err instanceof Error ? err.message : '创建 AI Token 失败', 'err');
+    }
+  };
+
+  const saveTokenNickname = async (tokenId: string, nextNickname: string) => {
+    try {
+      const res = await apiFetch(`/api/portal/mcp/tokens/${tokenId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ preferredPlayerName: nextNickname.trim() || null })
+      });
+      setEditingTokenId(null);
+      notify(res.message || 'AI 昵称已更新');
+      loadTokens();
+    } catch (err) {
+      notify(err instanceof Error ? err.message : '修改 AI 昵称失败', 'err');
     }
   };
 
@@ -1015,11 +1038,12 @@ function PortalAiTokenCenter({
 
         <form onSubmit={issueToken} className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
           <div>
-            <label className="block text-slate-400 mb-1">Token 备注名称（选填）</label>
+            <label className="block text-slate-400 mb-1">AI 决斗者昵称（留空让 AI 首次进房自取名）</label>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="如 MyClaudePartner"
+              maxLength={18}
+              placeholder="留空由 AI 自取，或填如 海马濑人"
               className="w-full px-3 py-1.5 rounded bg-slate-950 border border-slate-700"
             />
           </div>
@@ -1082,27 +1106,80 @@ function PortalAiTokenCenter({
           <h3 className="text-sm font-semibold">我已创建的 AI Token 列表</h3>
           <div className="space-y-2 max-h-80 overflow-y-auto">
             {tokens.map((t) => (
-              <div key={t.id} className="bg-slate-950 p-3 rounded border border-slate-800 flex items-center justify-between">
-                <div>
-                  <div className="font-semibold">
-                    {t.name} <span className="text-emerald-400">[{t.mcpRole}]</span>{' '}
-                    {t.revokedAt && <span className="text-rose-400">(已吊销)</span>}
+              <div key={t.id} className="bg-slate-950 p-3 rounded border border-slate-800 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="font-semibold flex items-center gap-1.5 flex-wrap">
+                      <span>{t.preferredPlayerName || t.name}</span>
+                      <span className="text-emerald-400">[{t.mcpRole}]</span>
+                      {t.mcpRole === 'player' && (
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] border ${
+                            t.preferredPlayerName
+                              ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-200'
+                              : 'bg-amber-500/15 border-amber-500/30 text-amber-200'
+                          }`}
+                        >
+                          {t.preferredPlayerName ? `绑定昵称: ${t.preferredPlayerName}` : '待 AI 首次进房自取名'}
+                        </span>
+                      )}
+                      {t.revokedAt && <span className="text-rose-400">(已吊销)</span>}
+                    </div>
+                    <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+                      前缀 {t.tokenPrefix}... · 房间限制: {(t.allowedRooms || []).join(', ') || '不限'}
+                    </div>
                   </div>
-                  <div className="text-[11px] text-slate-400 font-mono">
-                    前缀 {t.tokenPrefix}... · 房间限制: {(t.allowedRooms || []).join(', ') || '不限'}
-                  </div>
+                  {!t.revokedAt && (
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingTokenId(editingTokenId === t.id ? null : t.id);
+                          setEditingNickname(t.preferredPlayerName || '');
+                        }}
+                        className="text-emerald-400 hover:underline cursor-pointer"
+                      >
+                        {t.preferredPlayerName ? '改名' : '指定昵称'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await apiFetch(`/api/portal/mcp/tokens/${t.id}`, { method: 'DELETE' });
+                          notify('Token 已吊销');
+                          loadTokens();
+                        }}
+                        className="text-rose-400 hover:underline flex items-center gap-1 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" /> 吊销
+                      </button>
+                    </div>
+                  )}
                 </div>
-                {!t.revokedAt && (
-                  <button
-                    onClick={async () => {
-                      await apiFetch(`/api/portal/mcp/tokens/${t.id}`, { method: 'DELETE' });
-                      notify('Token 已吊销');
-                      loadTokens();
-                    }}
-                    className="text-rose-400 hover:underline flex items-center gap-1 cursor-pointer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" /> 吊销
-                  </button>
+
+                {editingTokenId === t.id && (
+                  <div className="flex items-center gap-1.5 pt-1 border-t border-slate-800/80">
+                    <input
+                      value={editingNickname}
+                      onChange={(e) => setEditingNickname(e.target.value)}
+                      maxLength={18}
+                      placeholder="输入新昵称，或留空交回给 AI 下次自取名"
+                      className="flex-1 px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => saveTokenNickname(t.id, editingNickname)}
+                      className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer"
+                    >
+                      保存
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingTokenId(null)}
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+                    >
+                      取消
+                    </button>
+                  </div>
                 )}
               </div>
             ))}

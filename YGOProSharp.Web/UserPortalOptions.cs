@@ -1,4 +1,5 @@
 using YGOProSharp.Core.Cards;
+using YGOProSharp.Server;
 
 namespace YGOProSharp.Web;
 
@@ -43,4 +44,14 @@ public sealed record UserPortalOptions
     /// 可选：提供带名称与效果文本的卡片查询仓库（用于玩家卡查与 DIY 图鉴展示）。
     /// </summary>
     public Func<INamedCardRepository>? NamedCardRepositoryProvider { get; init; }
+
+    /// <summary>
+    /// 可选：由宿主注入的内置 WindBot 召唤回调（供 player 角色通过 MCP 自助召唤 AI 陪练或补齐 2v2 空位）。
+    /// </summary>
+    public Func<Game, string?, string?, int, IReadOnlyList<string>>? WindBotSpawner { get; init; }
+
+    /// <summary>
+    /// 可选：获取当前内置 WindBot 支持的卡组列表。
+    /// </summary>
+    public Func<IReadOnlyList<string>>? AvailableBotDecksProvider { get; init; }
 }

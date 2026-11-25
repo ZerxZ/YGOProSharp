@@ -71,7 +71,8 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
             Store = _store,
             SessionManager = sessionManager,
             DiyManager = _diyManager,
-            NamedCardRepositoryProvider = () => _options.NamedCardRepositoryProvider?.Invoke() ?? EmptyNamedCardRepository.Instance
+            NamedCardRepositoryProvider = () => _options.NamedCardRepositoryProvider?.Invoke() ?? EmptyNamedCardRepository.Instance,
+            SpawnWindBotCallback = _options.WindBotSpawner
         });
 
         _coordinator.OnPublicEventPublished += HandlePublicEvent;
@@ -169,7 +170,7 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
             gamePort = _serverHost.Server.Options.Port,
             publicGameHost = _options.PublicGameHost,
             portalPort = _options.Port,
-            mcpPortHint = _options.McpPortHint
+            mcpPortHint = _options.McpPortHint ?? _options.Port
         }));
 
         app.MapGet("/healthz", async (CancellationToken ct) =>
@@ -185,6 +186,33 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
             }, statusCode: ok ? StatusCodes.Status200OK : StatusCodes.Status503ServiceUnavailable);
         });
 
+        // 独立门户端口下挂载受限 Streamable HTTP MCP 入口（仅允许 player / spectator）
+        app.MapMcpStreamableHttp(_mcpEngine, _store, allowedSurfaceRoles: [McpRoleCodes.Player, McpRoleCodes.Spectator]);
+
+        MapPortalCoreRoutes(app);
+
+        if (staticRoot is not null)
+        {
+            string indexHtml = Path.Combine(staticRoot, "index.html");
+            app.MapFallback(async (HttpContext http) =>
+            {
+                if (http.Request.Path.StartsWithSegments("/api") ||
+                    http.Request.Path.StartsWithSegments("/ws") ||
+                    http.Request.Path.StartsWithSegments("/mcp"))
+                {
+                    http.Response.StatusCode = StatusCodes.Status404NotFound;
+                    await http.Response.WriteAsJsonAsync(new { error = "not_found", message = "前台用户面板不存在该接口。" });
+                    return;
+                }
+
+                http.Response.ContentType = "text/html; charset=utf-8";
+                await http.Response.SendFileAsync(indexHtml);
+            });
+        }
+    }
+
+    internal void MapPortalCoreRoutes(WebApplication app)
+    {
         // 1. 服务器实时公开概览与房间口令速查
         app.MapGet("/api/portal/overview", () =>
         {
@@ -414,16 +442,27 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
                 int count = Math.Clamp(body.AiTokenCount ?? defaultCount, 1, 4);
                 for (int i = 0; i < count; i++)
                 {
-                    (bool issuedOk, _, IssuedMcpTokenResult? issued) = await _store.IssueMcpTokenAsync(
+                    string? customNickname = body.AiPlayerNames is not null && i < body.AiPlayerNames.Length
+                        ? body.AiPlayerNames[i]?.Trim()
+                        : null;
+                    if (string.IsNullOrWhiteSpace(customNickname))
+                        customNickname = null;
+
+                    string label = customNickname ?? $"待AI自取名 ({createdRoom.RoomName})";
+                    (bool issuedOk, string issueErr, IssuedMcpTokenResult? issued) = await _store.IssueMcpTokenAsync(
                         principal,
-                        name: $"{createdRoom.RoomName}-AI{i + 1}",
+                        name: label,
                         mcpRole: McpRoleCodes.Player,
                         allowedRooms: [createdRoom.RoomName],
                         maxSessions: 1,
                         requireApproval: true,
                         expiresInHours: 12,
                         ip: ip,
-                        cancellationToken: ct).ConfigureAwait(false);
+                        cancellationToken: ct,
+                        preferredPlayerName: customNickname).ConfigureAwait(false);
+
+                    if (!issuedOk && customNickname is not null)
+                        return Results.BadRequest(new { message = issueErr });
 
                     if (issuedOk && issued is not null)
                     {
@@ -431,6 +470,7 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
                         {
                             seat = i,
                             name = issued.Entity.Name,
+                            preferredPlayerName = issued.Entity.PreferredPlayerName,
                             mcpRole = issued.Entity.McpRole,
                             rawToken = issued.RawToken
                         });
@@ -506,6 +546,7 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
                 {
                     t.Id,
                     t.Name,
+                    t.PreferredPlayerName,
                     t.TokenPrefix,
                     t.McpRole,
                     allowedRooms = string.IsNullOrWhiteSpace(t.AllowedRoomsJson) ? [] : (JsonSerializer.Deserialize<string[]>(t.AllowedRoomsJson) ?? []),
@@ -526,6 +567,10 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
             if (requestedRole is not (McpRoleCodes.Player or McpRoleCodes.Spectator))
                 return Results.Json(new { message = "前台玩家面板仅允许签发 player（对战 AI）或 spectator（观战 AI）令牌。" }, statusCode: StatusCodes.Status403Forbidden);
 
+            string? preferredName = !string.IsNullOrWhiteSpace(body.PreferredPlayerName)
+                ? body.PreferredPlayerName.Trim()
+                : (!string.IsNullOrWhiteSpace(body.Name) ? body.Name.Trim() : null);
+
             (bool ok, string msg, IssuedMcpTokenResult? issued) = await _store.IssueMcpTokenAsync(
                 principal!,
                 body.Name ?? string.Empty,
@@ -535,7 +580,8 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
                 requireApproval: true,
                 expiresInHours: Math.Clamp(body.ExpiresInHours ?? 48, 1, 720),
                 ip: GetRemoteIp(http),
-                cancellationToken: ct).ConfigureAwait(false);
+                cancellationToken: ct,
+                preferredPlayerName: preferredName).ConfigureAwait(false);
 
             if (!ok || issued is null)
                 return Results.BadRequest(new { success = false, message = msg });
@@ -549,11 +595,29 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
                 {
                     issued.Entity.Id,
                     issued.Entity.Name,
+                    issued.Entity.PreferredPlayerName,
                     issued.Entity.McpRole,
                     issued.Entity.TokenPrefix,
                     issued.Entity.ExpiresAt
                 }
             });
+        });
+
+        app.MapPatch("/api/portal/mcp/tokens/{id:guid}", async (HttpContext http, Guid id, UpdateMcpTokenNicknameDto body, CancellationToken ct) =>
+        {
+            (AuthenticatedPrincipal? principal, IResult? err) = await AuthenticatePortalUserAsync(http, allowWhenMustChangePassword: false, ct).ConfigureAwait(false);
+            if (err is not null) return err;
+
+            (bool ok, string msg, string? updatedName) = await _store.UpdateMcpTokenNicknameAsync(
+                principal!,
+                id,
+                body.PreferredPlayerName,
+                GetRemoteIp(http),
+                ct).ConfigureAwait(false);
+
+            return ok
+                ? Results.Ok(new { success = true, message = msg, preferredPlayerName = updatedName })
+                : Results.BadRequest(new { success = false, message = msg });
         });
 
         app.MapDelete("/api/portal/mcp/tokens/{id:guid}", async (HttpContext http, Guid id, CancellationToken ct) =>
@@ -566,9 +630,6 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
                 _coordinator.RevokeMcpTokenSessions(id);
             return revoked ? Results.Ok(new { success = true }) : Results.NotFound(new { message = "未找到属于您的有效 AI Token。" });
         });
-
-        // 在玩家门户端口挂载受限 Streamable HTTP MCP 入口（严格仅放行 player / spectator 角色，绝不暴露 admin / diy_creator 工具）
-        app.MapMcpStreamableHttp(_mcpEngine, _store, allowedSurfaceRoles: [McpRoleCodes.Player, McpRoleCodes.Spectator]);
 
         // 3. 历史对局战报与云录像下载（剥离 IP；进行中不会入库，仅展示已结束对局）
         app.MapGet("/api/portal/replays", async (int? limit, string? player, CancellationToken ct) =>
@@ -875,25 +936,6 @@ public sealed class UserPortalHost : IAsyncDisposable, IDisposable
                 _publicSubscribers.TryRemove(subId, out _);
             }
         });
-
-        if (staticRoot is not null)
-        {
-            string indexHtml = Path.Combine(staticRoot, "index.html");
-            app.MapFallback(async (HttpContext http) =>
-            {
-                if (http.Request.Path.StartsWithSegments("/api") ||
-                    http.Request.Path.StartsWithSegments("/ws") ||
-                    http.Request.Path.StartsWithSegments("/mcp"))
-                {
-                    http.Response.StatusCode = StatusCodes.Status404NotFound;
-                    await http.Response.WriteAsJsonAsync(new { error = "not_found", message = "前台用户面板不存在该接口。" });
-                    return;
-                }
-
-                http.Response.ContentType = "text/html; charset=utf-8";
-                await http.Response.SendFileAsync(indexHtml);
-            });
-        }
     }
 
     private PortalRoomSummaryDto[] BuildPublicRoomSummaries()

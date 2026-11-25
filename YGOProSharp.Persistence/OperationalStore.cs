@@ -47,7 +47,8 @@ public sealed record ValidatedMcpToken(
     string McpRole,
     IReadOnlyList<string> AllowedRooms,
     int MaxSessions,
-    bool RequireApproval);
+    bool RequireApproval,
+    string? PreferredPlayerName = null);
 
 public sealed record IssuedMcpTokenResult(
     McpTokenEntity Entity,
@@ -1094,6 +1095,37 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
         return await query.OrderByDescending(t => t.CreatedAt).ToListAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    public static bool IsMechanicalAiName(string? candidate)
+    {
+        if (string.IsNullOrWhiteSpace(candidate))
+            return true;
+
+        string t = candidate.Trim();
+        if (t.StartsWith("待AI", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // 拦截如 AI, AI1, AI2, ai_01, Bot, Bot2, Player1, Seat1, Room01-AI1, Room-Seat2 等生硬编号名
+        return System.Text.RegularExpressions.Regex.IsMatch(
+            t,
+            @"^(?:ai|bot|player|duelist|seat|user|mcp|agent|robot)[-_#\s]*\d*$|[-_](?:ai|seat|bot)\d+$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    }
+
+    public static (bool Valid, string? CleanNickname, string? ErrorMessage) ValidateAndCleanAiNickname(string? rawNickname, bool rejectMechanical = true)
+    {
+        if (string.IsNullOrWhiteSpace(rawNickname))
+            return (false, null, "昵称不能为空。");
+
+        string cleaned = new string(rawNickname.Trim().Where(static c => !char.IsControl(c) && c is not ('#' or '$' or ';' or '\r' or '\n')).ToArray()).Trim();
+        if (cleaned.Length < 2 || cleaned.Length > 18)
+            return (false, null, "决斗者昵称长度需在 2 ~ 18 个字符之间（不含 # $ 符号）。");
+
+        if (rejectMechanical && IsMechanicalAiName(cleaned))
+            return (false, null, $"请不要使用 '{cleaned}' 这类机械编号名称，请取一个有个性的真实风格昵称（例如『星尘观测者』『深渊魔导』『青眼龙骑』）。");
+
+        return (true, cleaned, null);
+    }
+
     public async Task<(bool Success, string Message, IssuedMcpTokenResult? Issued)> IssueMcpTokenAsync(
         AuthenticatedPrincipal actor,
         string name,
@@ -1103,7 +1135,8 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
         bool requireApproval,
         int? expiresInHours,
         string? ip,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? preferredPlayerName = null)
     {
         string normalizedRole = string.IsNullOrWhiteSpace(mcpRole) ? McpRoleCodes.Player : mcpRole.Trim().ToLowerInvariant();
         if (!McpRoleCodes.All.Contains(normalizedRole, StringComparer.OrdinalIgnoreCase))
@@ -1114,6 +1147,25 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
             await AppendAuditAsync("panel_user", actor.UserId.ToString(), actor.Username, "mcp_token.issue", RbacPermissions.McpTokenIssueSelf, normalizedRole, ip, "privilege_escalation_blocked", null, cancellationToken).ConfigureAwait(false);
             return (false, $"权限不放大保护：当前账号无权签发 '{normalizedRole}' 级别的 MCP Token。", null);
         }
+
+        string? resolvedPreferredName = null;
+        if (!string.IsNullOrWhiteSpace(preferredPlayerName))
+        {
+            (bool nickOk, string? cleanNick, string? nickErr) = ValidateAndCleanAiNickname(preferredPlayerName, rejectMechanical: true);
+            if (!nickOk)
+                return (false, nickErr ?? "AI 昵称格式不合法。", null);
+            resolvedPreferredName = cleanNick;
+        }
+        else if (!string.IsNullOrWhiteSpace(name) && !IsMechanicalAiName(name))
+        {
+            (bool nickOk, string? cleanNick, _) = ValidateAndCleanAiNickname(name, rejectMechanical: true);
+            if (nickOk)
+                resolvedPreferredName = cleanNick;
+        }
+
+        string displayLabel = !string.IsNullOrWhiteSpace(resolvedPreferredName)
+            ? resolvedPreferredName
+            : (!string.IsNullOrWhiteSpace(name) ? name.Trim() : "待AI首次自取名");
 
         (string rawToken, string prefix, string sha256) = TokenCrypto.GeneratePrefixedToken($"ygp_mcp_{normalizedRole}");
         string[] cleanRooms = allowedRooms?
@@ -1126,7 +1178,8 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
         {
             OwnerUserId = actor.UserId,
             OwnerUsername = actor.Username,
-            Name = string.IsNullOrWhiteSpace(name) ? $"{normalizedRole}-{DateTime.UtcNow:MMddHHmm}" : name.Trim(),
+            Name = displayLabel,
+            PreferredPlayerName = resolvedPreferredName,
             TokenPrefix = prefix,
             TokenSha256 = sha256,
             McpRole = normalizedRole,
@@ -1207,6 +1260,7 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
                     token.OwnerUsername,
                     token.TokenSha256,
                     token.Name,
+                    token.PreferredPlayerName,
                     token.McpRole,
                     rooms,
                     token.MaxSessions,
@@ -1231,7 +1285,70 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
             cached.McpRole,
             cached.AllowedRooms,
             cached.MaxSessions,
-            cached.RequireApproval);
+            cached.RequireApproval,
+            cached.PreferredPlayerName);
+    }
+
+    public async Task<(bool Success, string Message, string? BoundName)> BindMcpTokenPlayerNameAsync(
+        Guid tokenId,
+        string chosenNickname,
+        CancellationToken cancellationToken = default)
+    {
+        (bool valid, string? clean, string? err) = ValidateAndCleanAiNickname(chosenNickname, rejectMechanical: true);
+        if (!valid || clean is null)
+            return (false, err ?? "AI 昵称无效。", null);
+
+        await using OperationalDbContext db = _dbManager.CreateDbContext();
+        McpTokenEntity? token = await db.McpTokens
+            .FirstOrDefaultAsync(t => t.Id == tokenId && t.RevokedAt == null, cancellationToken)
+            .ConfigureAwait(false);
+        if (token is null)
+            return (false, "Token 不存在或已吊销。", null);
+
+        token.PreferredPlayerName = clean;
+        if (IsMechanicalAiName(token.Name))
+            token.Name = clean;
+        token.LastUsedAt = DateTime.UtcNow;
+
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await _cache.FlushNamespaceAsync("auth", cancellationToken).ConfigureAwait(false);
+        return (true, $"已将决斗者昵称绑定为「{clean}」。", clean);
+    }
+
+    public async Task<(bool Success, string Message, string? PreferredPlayerName)> UpdateMcpTokenNicknameAsync(
+        AuthenticatedPrincipal actor,
+        Guid tokenId,
+        string? newPreferredNickname,
+        string? ip,
+        CancellationToken cancellationToken = default)
+    {
+        string? cleaned = null;
+        if (!string.IsNullOrWhiteSpace(newPreferredNickname))
+        {
+            (bool valid, string? c, string? err) = ValidateAndCleanAiNickname(newPreferredNickname, rejectMechanical: true);
+            if (!valid)
+                return (false, err ?? "昵称不合法。", null);
+            cleaned = c;
+        }
+
+        await using OperationalDbContext db = _dbManager.CreateDbContext();
+        McpTokenEntity? token = await db.McpTokens
+            .FirstOrDefaultAsync(t => t.Id == tokenId && t.RevokedAt == null, cancellationToken)
+            .ConfigureAwait(false);
+        if (token is null)
+            return (false, "未找到该 AI Token。", null);
+
+        bool canManageAll = actor.HasPermission(RbacPermissions.McpTokenManageAll) || actor.HasPermission(RbacPermissions.UserManage);
+        if (token.OwnerUserId != actor.UserId && !canManageAll)
+            return (false, "无权修改他人的 AI Token。", null);
+
+        token.PreferredPlayerName = cleaned;
+        token.Name = cleaned ?? "待AI首次自取名";
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await _cache.FlushNamespaceAsync("auth", cancellationToken).ConfigureAwait(false);
+        await AppendAuditAsync("panel_user", actor.UserId.ToString(), actor.Username, "mcp_token.rename", RbacPermissions.McpTokenIssueSelf, $"{tokenId}:{cleaned ?? "<auto>"}", ip, "ok", null, cancellationToken).ConfigureAwait(false);
+
+        return (true, cleaned is null ? "已重置为由 AI 下次进房时自主取名。" : $"已将 AI 决斗昵称设为「{cleaned}」。", cleaned);
     }
 
     public async Task<bool> RevokeMcpTokenAsync(
@@ -1994,6 +2111,7 @@ public sealed class OperationalStore : IAsyncDisposable, IDisposable
         string OwnerUsername,
         string TokenSha256,
         string Name,
+        string? PreferredPlayerName,
         string McpRole,
         string[] AllowedRooms,
         int MaxSessions,

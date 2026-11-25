@@ -88,3 +88,26 @@
 - 更完整的 CDB/lflist 文档和导入校验。
 - 服务端房间列表、房间发现、观战字段同步的兼容性测试。
 - WindBot server mode 的 bot pool、限流和更清晰的错误响应。
+
+## Phase 5 专项调研审计：AI 决斗代理、复盘评分与双打协同
+
+详细演进规划见 [AI 决斗智能体 MCP v2、赛后复盘、卡组六维评分与「卡片力量」双打协同规划](ai-mcp-review-rating-tagforce-plan.md)。
+
+参考来源：
+
+- `Noctfom/Galatea-Link`（`GPL-3.0`）
+- `Noctfom/Galatea-Core`（`GPL-3.0`）
+- `dynamder/ygo-ai`（`MIT`）
+
+计划吸收的设计思想（全部在 YGOProSharp 既有分层内洁净室重新实现）：
+
+- **单次事件票据与往返压缩**（参考 `ygo-ai`）：单调递增 `promptId` 票据校验（越界错误不烧票）、`duel_submit_action` 内联返回下一待决提示 + 只追加增量事件 `newEvents` + 盘面差异 `boardChanges`、唯一合法项 `[fast]` 快路径与同阶段重复连锁 `echo` 折叠。
+- **游戏内聊天防注入与双通道吐槽**（参考 `Galatea-Link`）：拆分独立有界聊天流 `chatContext` 并标注 `untrusted_player_chat`，支持出牌内联 `chatLine`（UTF-16LE 长度裁剪 + 重复与频率节流）与人设风格绑定。
+- **多时间尺度长期规划与卡组构筑画像分离**（参考 `Galatea-Core`）：分离稳定初始构筑画像与动态无序剩余卡组计数；在会话内维护 `GamePlan / TurnPlan / PhaseIntent` 三层战略规划黑板并在每次观测中回显，搭配跨局 `ai_duelist_memories` 经验库。
+- **本仓原创扩展**：2v2 双打显式敌我/队友顺位拓扑（`TagTeamContext`）、《游戏王：卡片力量》风格搭档战术指令系统（`/partner` + `duel_tag_sync` + 网页战术轮盘）、赛后全视角复盘打分（`duel_reviews`）及六维 `0-100` 卡组量化评分体系（`burst_power`、`resilience`、`stun_toxicity`、`fun_factor`、`complexity`、`meta_adaptability`）。
+
+明确不吸收内容：
+
+- **绝不复制 `Galatea-Link` / `Galatea-Core` 的任何 GPL-3.0 源码、脚本或模型制品**，保持本仓库 MIT 许可证纯净性。
+- **不引入内置大模型客户端或模型密钥托管**（不吸收 `Galatea-Link` 直连 OpenAI Compatible API 及 `link_secrets.json` 机制，严守全仓零内置 LLM SDK 约束）。
+- **不在服务端引入 Python / PyTorch / ONNX Runtime 重型训练推理栈**。

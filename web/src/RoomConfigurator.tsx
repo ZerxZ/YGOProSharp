@@ -44,6 +44,7 @@ interface RoomFormState {
   customRulePrefix: string;
   issuePlayerTokens: boolean;
   aiTokenCount: number;
+  aiPlayerNames: string[];
 }
 
 const PRESETS: PresetItem[] = [
@@ -204,7 +205,8 @@ export function RoomConfigurator({
     suddenDeath: false,
     customRulePrefix: '',
     issuePlayerTokens: false,
-    aiTokenCount: 2
+    aiTokenCount: 2,
+    aiPlayerNames: ['', '', '', '']
   });
 
   const [submitting, setSubmitting] = useState(false);
@@ -337,7 +339,11 @@ export function RoomConfigurator({
           noShuffleDeck: form.noShuffleDeck,
           suddenDeath: form.suddenDeath,
           issuePlayerTokens: canIssueAiTokens && form.issuePlayerTokens,
-          aiTokenCount: Number(form.aiTokenCount)
+          aiTokenCount: Number(form.aiTokenCount),
+          aiPlayerNames:
+            canIssueAiTokens && form.issuePlayerTokens
+              ? form.aiPlayerNames.slice(0, Number(form.aiTokenCount)).map((n) => n.trim())
+              : undefined
         })
       });
 
@@ -626,6 +632,32 @@ export function RoomConfigurator({
           </div>
         </div>
 
+        {form.issuePlayerTokens && (
+          <div className="bg-slate-950/80 border border-amber-500/30 rounded-xl p-3 space-y-2">
+            <div className="text-[11px] text-amber-200 font-medium">
+              AI 决斗者昵称设置（选填：你可以直接给每个 AI 起名字；留空则不预设，由外部 AI 首次使用该 Token 进房时自己取名）
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+              {Array.from({ length: form.aiTokenCount }).map((_, idx) => (
+                <div key={idx}>
+                  <label className="block text-[11px] text-slate-400 mb-0.5">第 {idx + 1} 枚 Token 的 AI 昵称</label>
+                  <input
+                    value={form.aiPlayerNames[idx] || ''}
+                    onChange={(e) => {
+                      const nextNames = [...form.aiPlayerNames];
+                      nextNames[idx] = e.target.value;
+                      updateField('aiPlayerNames', nextNames);
+                    }}
+                    maxLength={18}
+                    placeholder="留空让 AI 自己取名"
+                    className="w-full px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-xs"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* 4. 实时主机密码预览与操作栏 */}
         <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 flex-wrap">
@@ -689,17 +721,25 @@ export function RoomConfigurator({
               <div className="text-emerald-300 font-semibold">
                 已自动生成房间专属外部 AI 对战 Token（仅展示一次！可直接复制「MCP 直连 URL」粘贴到外部客户端的 streamable-http URL 框）：
               </div>
-              {createdResult.issuedPlayerTokens.map((t: any) => {
+              {createdResult.issuedPlayerTokens.map((t: any, idx: number) => {
                 const directMcpUrl = `${window.location.origin}/mcp?key=${encodeURIComponent(t.rawToken)}`;
+                const nickBadge = t.preferredPlayerName
+                  ? `已绑定昵称：${t.preferredPlayerName}`
+                  : '昵称：待 AI 首次进房时自主取名';
                 return (
                   <div
-                    key={t.name}
+                    key={t.rawToken || `${t.name}-${idx}`}
                     className="flex flex-wrap items-center justify-between gap-2 bg-slate-950/90 px-3 py-2 rounded border border-slate-800 font-mono"
                   >
                     <div className="space-y-0.5 break-all">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-amber-300 font-semibold">席位令牌 #{idx + 1}</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-sans bg-amber-500/15 border border-amber-500/30 text-amber-200">
+                          {nickBadge}
+                        </span>
+                      </div>
                       <div>
-                        <span className="text-amber-300 font-semibold">{t.name}</span> 直连 URL:{' '}
-                        <span className="text-emerald-300">{directMcpUrl}</span>
+                        直连 URL: <span className="text-emerald-300">{directMcpUrl}</span>
                       </div>
                       <div className="text-[11px] text-slate-400">纯 Token: {t.rawToken}</div>
                     </div>
@@ -707,9 +747,13 @@ export function RoomConfigurator({
                       <QuickCopyPill
                         text={directMcpUrl}
                         label="复制 MCP 直连 URL"
-                        onCopied={() => notify(`已复制 ${t.name} 的 streamable-http 直连 URL`)}
+                        onCopied={() => notify(`已复制令牌 #${idx + 1} 的 streamable-http 直连 URL`)}
                       />
-                      <QuickCopyPill text={t.rawToken} label="复制纯 Token" onCopied={() => notify(`已复制 ${t.name} Token`)} />
+                      <QuickCopyPill
+                        text={t.rawToken}
+                        label="复制纯 Token"
+                        onCopied={() => notify(`已复制令牌 #${idx + 1} 纯 Token`)}
+                      />
                     </div>
                   </div>
                 );

@@ -12,10 +12,15 @@ export interface AuthUser {
   allowedMcpRolesToIssue: string[];
 }
 
-let currentCsrfToken = '';
+let adminCsrfToken = '';
+let portalCsrfToken = '';
 
 export function setCsrfToken(token: string) {
-  currentCsrfToken = token || '';
+  adminCsrfToken = token || '';
+}
+
+export function setPortalCsrfToken(token: string) {
+  portalCsrfToken = token || '';
 }
 
 export class ApiError extends Error {
@@ -36,8 +41,9 @@ export async function apiFetch<T = any>(path: string, init: RequestInit = {}): P
   if (!(init.body instanceof FormData) && !headers.has('Content-Type') && init.body !== undefined) {
     headers.set('Content-Type', 'application/json');
   }
-  if (currentCsrfToken && init.method && init.method.toUpperCase() !== 'GET') {
-    headers.set('X-CSRF-Token', currentCsrfToken);
+  const activeCsrf = path.startsWith('/api/portal') ? portalCsrfToken : adminCsrfToken;
+  if (activeCsrf && init.method && init.method.toUpperCase() !== 'GET') {
+    headers.set('X-CSRF-Token', activeCsrf);
   }
 
   const res = await fetch(path, {

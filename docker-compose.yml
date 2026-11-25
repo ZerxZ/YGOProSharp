@@ -1,0 +1,106 @@
+# ==============================================================================
+# YGOProSharp 单机 SQLite / 生产 PostgreSQL + Redis 双模编排
+#   - 默认轻量模式（SQLite WAL + L1 内存缓存）：docker compose up -d
+#   - 生产高并发模式（PostgreSQL 17 + Redis 7）：docker compose --profile prod up -d
+# ==============================================================================
+
+services:
+  ygoprosharp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ygoprosharp:latest
+    container_name: ygoprosharp
+    restart: unless-stopped
+    ports:
+      # 1. 游戏联机协议端口（TCP / WebSocket）
+      - "${YGOPRO_HOST_GAME_PORT:-7911}:7911"
+      # 2. 统一 Web 端口（默认 / 为前台玩家页面，/admin 为后台管理控制台，/mcp 为外部 AI MCP 入口）
+      - "${YGOPRO_HOST_WEB_PORT:-7912}:7912"
+    sysctls:
+      net.ipv4.tcp_keepalive_time: 60
+      net.ipv4.tcp_keepalive_intvl: 15
+      net.ipv4.tcp_keepalive_probes: 4
+    environment:
+      YGOPRO_ROOT_PATH: /app/data
+      YGOPRO_GAME_PORT: 7911
+      YGOPRO_ENABLE_WEB: "true"
+      YGOPRO_WEB_HOST: 0.0.0.0
+      YGOPRO_WEB_PORT: 7912
+      YGOPRO_PUBLIC_GAME_HOST: ${YGOPRO_PUBLIC_GAME_HOST:-}
+      YGOPRO_REQUIRE_HTTPS_COOKIE: ${YGOPRO_REQUIRE_HTTPS_COOKIE:-false}
+      YGOPRO_MULTI_ROOM: ${YGOPRO_MULTI_ROOM:-true}
+      YGOPRO_LOG_LEVEL: ${YGOPRO_LOG_LEVEL:-Information}
+      YGOPRO_DB_PROVIDER: ${YGOPRO_DB_PROVIDER:-Sqlite}
+      YGOPRO_DB_CONNECTION_STRING: ${YGOPRO_DB_CONNECTION_STRING:-Data Source=/app/data/db/ygoprosharp.db}
+      YGOPRO_REDIS_URL: ${YGOPRO_REDIS_URL:-}
+      YGOPRO_BOOTSTRAP_ADMIN_USER: ${YGOPRO_BOOTSTRAP_ADMIN_USER:-admin}
+      YGOPRO_BOOTSTRAP_ADMIN_PASSWORD: ${YGOPRO_BOOTSTRAP_ADMIN_PASSWORD:-}
+    volumes:
+      - ./data/base:/app/data/base:ro
+      - ./data/expansions:/app/data/expansions:ro
+      - ./data/db:/app/data/db
+      - ./data/decks:/app/data/decks
+      - ./data/windbot:/app/data/windbot
+      - ./data/diy:/app/data/diy
+      - ./data/replays:/app/data/replays
+      - ./data/logs:/app/data/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+      redis:
+        condition: service_healthy
+        required: false
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7912/healthz || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: ygoprosharp-postgres
+    profiles: ["prod"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ygoprosharp}
+      POSTGRES_USER: ${POSTGRES_USER:-ygopro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ChangeMe_PgStrongPass}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ygopro} -d ${POSTGRES_DB:-ygoprosharp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: ygoprosharp-redis
+    profiles: ["prod"]
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:

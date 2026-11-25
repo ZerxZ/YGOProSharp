@@ -606,9 +606,12 @@ flowchart LR
 - [x] 实现 `YGOProSharp.AgentBridge` 与 `YGOProSharp.Mcp`：接入 `mcp_tokens` 表与 Redis 热缓存、强制校验面板用户签发权限不放大、实现玩家对局工具、会话隔离与战争迷雾保护、`windbot_write_*` 与 `windbot_simulate_match`（进程内闪电自博弈 + 思考轨迹），同时兼容 `Authorization: Bearer`、无 Header 客户端 `?key=`（日志自动脱敏）与 CLI `stdio` 转发模式。
 - [x] 前端在玩家大厅、房间配置器与管理后台完成 AI Token 一键复制 `streamable-http` 直连 URL 及公开思考气泡展示。
 
-### Phase 4：Docker 容器化与单机/生产双模编排
-- [ ] 新增四阶段净化 `Dockerfile`、支持默认 SQLite 与 `--profile prod`（`PostgreSQL + Redis`）的 `docker-compose.yml`、`.dockerignore`、`.env.example`，并完善 `.gitignore`。
-- [ ] 验证单机模式与 `Postgres + Redis` 模式下的一键拉起、健康检查、缓存命中与数据卷持久化。
+### Phase 4：Docker 容器化与单机/生产双模编排（已完成）
+- [x] 新增四阶段净化 [Dockerfile](../Dockerfile)、支持默认 SQLite 与 `--profile prod`（`PostgreSQL + Redis`）的 [docker-compose.yml](../docker-compose.yml)、[.dockerignore](../.dockerignore)、[.env.example](../.env.example)，并完善 [.gitignore](../.gitignore)。
+- [x] 验证单机模式与 `Postgres + Redis` 模式下的一键编排解析、CLI `YGOPRO_*` 全环境变量映射、非 root 运行约束与 `/healthz` 健康探针配置。
+
+### Phase 5（演进规划）：MCP v2 深度智能体体验、赛后复盘、卡组六维评分与「卡片力量」双打协同
+- [ ] 详见专项规划文档：[AI 决斗智能体 MCP v2、赛后复盘、卡组六维评分与「卡片力量」双打协同规划](ai-mcp-review-rating-tagforce-plan.md)（涵盖 `Galatea-Link` / `Galatea-Core` / `ygo-ai` 深度对照、1-RTT 增量观测与快路径、局内吐槽与防注入聊天、2v2 敌我识别与《卡片力量》战术指挥、多尺度长期规划记忆、赛后复盘打分与卡组六维 `0-100` 量化评分）。
 
 ---
 

@@ -9,9 +9,6 @@ namespace YGOProSharp.Core.Cards;
 public sealed class SqliteCardDatabaseManager : ICardDatabaseManager
 {
     private const string CardQuery = "SELECT id, ot, alias, setcode, type, level, race, attribute, atk, def FROM datas";
-    private const string NamedCardQuery =
-        "SELECT datas.id, ot, alias, setcode, type, level, race, attribute, atk, def, texts.name, texts.desc" +
-        " FROM datas INNER JOIN texts ON datas.id = texts.id";
 
     public ICardRepository LoadCards(string databaseFullPath)
     {
@@ -306,12 +303,28 @@ public sealed class SqliteCardDatabaseManager : ICardDatabaseManager
         foreach (string databaseFullPath in databaseFullPaths)
         {
             using SqliteConnection connection = OpenConnection(databaseFullPath);
+            HashSet<string> textCols = GetTableColumns(connection, "texts");
+            int strColCount = 0;
+            for (int i = 1; i <= 16; i++)
+            {
+                if (textCols.Contains($"str{i}"))
+                    strColCount = i;
+                else
+                    break;
+            }
+
+            string strSelect = strColCount > 0
+                ? ", " + string.Join(", ", Enumerable.Range(1, strColCount).Select(static i => $"COALESCE(texts.str{i}, '')"))
+                : string.Empty;
+
             using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = NamedCardQuery;
+            command.CommandText =
+                $"SELECT datas.id, ot, alias, setcode, type, level, race, attribute, atk, def, texts.name, texts.desc{strSelect}" +
+                " FROM datas INNER JOIN texts ON datas.id = texts.id";
 
             using SqliteDataReader reader = command.ExecuteReader();
             while (reader.Read())
-                cards.Add(ReadNamedCard(reader));
+                cards.Add(ReadNamedCard(reader, strColCount));
         }
 
         return cards.Count == 0
@@ -352,10 +365,32 @@ public sealed class SqliteCardDatabaseManager : ICardDatabaseManager
             fields.LinkMarker);
     }
 
-    private static NamedCard ReadNamedCard(SqliteDataReader reader)
+    private static NamedCard ReadNamedCard(SqliteDataReader reader, int strColCount = 0)
     {
         // 使用值类型中转字段，避免加载 NamedCard 时为每张卡额外分配临时 Card 对象。
         RawCardFields fields = ReadCardFields(reader);
+        IReadOnlyList<string>? effectStrings = null;
+        if (strColCount > 0)
+        {
+            int lastNonEmpty = -1;
+            string[] buffer = new string[strColCount];
+            for (int i = 0; i < strColCount; i++)
+            {
+                int colIdx = 12 + i;
+                string val = reader.IsDBNull(colIdx) ? string.Empty : reader.GetString(colIdx);
+                buffer[i] = val;
+                if (!string.IsNullOrWhiteSpace(val))
+                    lastNonEmpty = i;
+            }
+
+            if (lastNonEmpty >= 0)
+            {
+                effectStrings = lastNonEmpty == strColCount - 1
+                    ? buffer
+                    : buffer[..(lastNonEmpty + 1)];
+            }
+        }
+
         return new NamedCard(
             fields.Id,
             fields.Ot,
@@ -370,8 +405,9 @@ public sealed class SqliteCardDatabaseManager : ICardDatabaseManager
             fields.Attack,
             fields.Defense,
             fields.LinkMarker,
-            reader.GetString(10),
-            reader.GetString(11));
+            reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
+            reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
+            effectStrings);
     }
 
     private static RawCardFields ReadCardFields(SqliteDataReader reader)
