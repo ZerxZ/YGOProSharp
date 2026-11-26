@@ -13,6 +13,7 @@
     <ProjectReference Include="..\YGOProSharp.Abstractions\YGOProSharp.Abstractions.csproj" />
     <ProjectReference Include="..\YGOProSharp.Core\YGOProSharp.Core.csproj" />
     <ProjectReference Include="..\YGOProSharp.Protocol\YGOProSharp.Protocol.csproj" />
+    <ProjectReference Include="..\YGOProSharp.Generators\YGOProSharp.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>

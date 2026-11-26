@@ -24,6 +24,13 @@ public sealed record RoomPublicEventRecord(
     string EventType,
     string Summary);
 
+public sealed record ArchivedTimelineEntryDto(
+    DateTime TimestampUtc,
+    int Turn,
+    string Kind,
+    string? Actor,
+    string Text);
+
 /// <summary>
 /// 单个房间的公开运行轨迹缓存（严格遵守战争迷雾：仅缓存公开聊天与公开阶段变更，绝不采集任何玩家暗手牌或洗牌牌序）。
 /// </summary>
@@ -32,7 +39,9 @@ public sealed class RoomActivityState
     private readonly object _gate = new();
     private readonly Queue<RoomChatRecord> _chats = new();
     private readonly Queue<RoomPublicEventRecord> _events = new();
+    private readonly List<ArchivedTimelineEntryDto> _duelTimeline = new();
     private const int MaxEntries = 80;
+    private const int MaxTimelineEntries = 1500;
 
     public string RoomName { get; }
     public DateTime CreatedAtUtc { get; } = DateTime.UtcNow;
@@ -46,24 +55,46 @@ public sealed class RoomActivityState
         RoomName = roomName;
     }
 
-    public void AddChat(string senderName, int senderType, string message)
+    public void AddChat(string senderName, int senderType, string message, int turn = 0)
     {
+        // 同队私密战术指令绝不写入公共聊天展示流，防止观战页向敌方剧透
+        if (message.StartsWith("[PartnerTactic|", StringComparison.Ordinal))
+            return;
+
         lock (_gate)
         {
             while (_chats.Count >= MaxEntries)
                 _chats.Dequeue();
-            _chats.Enqueue(new RoomChatRecord(DateTime.UtcNow, senderName, senderType, message));
+            DateTime now = DateTime.UtcNow;
+            _chats.Enqueue(new RoomChatRecord(now, senderName, senderType, message));
+            if (_duelTimeline.Count < MaxTimelineEntries)
+                _duelTimeline.Add(new ArchivedTimelineEntryDto(now, turn, "chat", senderName, message));
         }
     }
 
-    public void AddPublicEvent(string eventType, string summary)
+    public void AddPublicEvent(string eventType, string summary, int turn = 0, string? actor = null)
     {
         lock (_gate)
         {
             while (_events.Count >= MaxEntries)
                 _events.Dequeue();
-            _events.Enqueue(new RoomPublicEventRecord(DateTime.UtcNow, eventType, summary));
+            DateTime now = DateTime.UtcNow;
+            _events.Enqueue(new RoomPublicEventRecord(now, eventType, summary));
+            if (_duelTimeline.Count < MaxTimelineEntries)
+                _duelTimeline.Add(new ArchivedTimelineEntryDto(now, turn, eventType, actor, summary));
         }
+    }
+
+    public void ResetDuelTimeline()
+    {
+        lock (_gate)
+            _duelTimeline.Clear();
+    }
+
+    public IReadOnlyList<ArchivedTimelineEntryDto> GetDuelTimelineSnapshot()
+    {
+        lock (_gate)
+            return _duelTimeline.ToArray();
     }
 
     public IReadOnlyList<RoomChatRecord> GetChats()
@@ -115,7 +146,7 @@ public sealed class OperationalServerCoordinator : IDisposable
             _agentSessionManager.OnThoughtPublished += thought =>
             {
                 RoomActivityState state = GetOrCreateRoomState(thought.RoomName);
-                state.AddPublicEvent("ai.thought", $"[AI 思考 · {thought.PlayerName}] {thought.Summary}");
+                state.AddPublicEvent("ai.thought", $"[AI 思考 · {thought.PlayerName}] {thought.Summary}", thought.TurnCount, thought.PlayerName);
                 PublishEvent("ai.thought", new
                 {
                     roomName = thought.RoomName,
@@ -162,6 +193,57 @@ public sealed class OperationalServerCoordinator : IDisposable
     public void RemoveRoomState(string roomName)
     {
         _roomStates.TryRemove(roomName, out _);
+    }
+
+    /// <summary>
+    /// 在 2v2 双打房间内向指定队伍（0 = A队, 1 = B队）单向下发《卡片力量》式搭档战术方针（不向敌方阵营广播）。
+    /// </summary>
+    public (bool Ok, string Message, string NormalizedStance) DispatchTagPartnerDirective(
+        Game game,
+        int teamId,
+        string? rawStance,
+        string? note,
+        string senderName)
+    {
+        ArgumentNullException.ThrowIfNull(game);
+        if (!game.IsTag)
+            return (false, "当前房间不是 2v2 双打模式（Mode != 2）。", "balanced");
+        if (teamId is not (0 or 1))
+            return (false, "teamId 必须为 0（A队）或 1（B队）。", "balanced");
+
+        (string normStance, string label) = (rawStance?.Trim().ToLowerInvariant()) switch
+        {
+            "agg" or "aggressive" or "激进" or "强攻" => ("aggressive", "激进强攻"),
+            "otk" or "all_in_otk" or "斩杀" or "总攻" => ("all_in_otk", "本回合总攻斩杀"),
+            "ctrl" or "control" or "稳健" or "留康" => ("control", "稳健留康护航"),
+            "setup" or "setup_partner" or "铺垫" or "留场" => ("setup_partner", "为搭档铺垫留场"),
+            "def" or "defensive" or "防守" or "保命" => ("defensive", "全员防守保命"),
+            _ => ("balanced", "自由均衡发挥")
+        };
+
+        string cleanNote = string.IsNullOrWhiteSpace(note)
+            ? string.Empty
+            : (note.Trim().Length <= 140 ? note.Trim() : note.Trim()[..140]);
+        string cleanSender = string.IsNullOrWhiteSpace(senderName) ? "搭档指挥" : senderName.Trim();
+
+        using (BinaryWriter pkt = GamePacketFactory.Create(StocMessage.Chat))
+        {
+            pkt.Write((short)PlayerType.Yellow);
+            string formatted = string.IsNullOrEmpty(cleanNote)
+                ? $"[PartnerTactic|{normStance}|{cleanSender}] 搭档「{cleanSender}」切换双打方针为【{label}】"
+                : $"[PartnerTactic|{normStance}|{cleanSender}] 搭档「{cleanSender}」指示【{label}】：{cleanNote}";
+            pkt.WriteUnicode(formatted, formatted.Length + 1);
+            game.SendToTeam(pkt, teamId);
+        }
+
+        int aiDelivered = 0;
+        lock (_agentGate)
+        {
+            if (_agentSessionManager is not null)
+                aiDelivered = _agentSessionManager.BroadcastPartnerDirectiveToTeam(game.RoomName, teamId, normStance, cleanNote, cleanSender);
+        }
+
+        return (true, $"已向 {(teamId == 0 ? "A 队" : "B 队")} 发送双打战术指令【{label}】（同步唤醒 {aiDelivered} 个 AI 搭档会话）。", normStance);
     }
 
     public int CountOwnedActiveRooms(Guid userId, CoreServer server)
@@ -355,32 +437,36 @@ public sealed class OperationalServerCoordinator : IDisposable
             if (e.Player is not Player p)
                 return;
 
-            EnsureState().AddChat(p.Name ?? "Player", p.Type, e.Message);
-            _coordinator.PublishEvent("room.chat", new
+            EnsureState().AddChat(p.Name ?? "Player", p.Type, e.Message, Game.TurnCount);
+            if (!e.Message.StartsWith("[PartnerTactic|", StringComparison.Ordinal))
             {
-                roomName = Game.RoomName,
-                sender = p.Name ?? "Player",
-                senderType = p.Type,
-                message = e.Message,
-                timestampUtc = DateTime.UtcNow
-            });
+                _coordinator.PublishEvent("room.chat", new
+                {
+                    roomName = Game.RoomName,
+                    sender = p.Name ?? "Player",
+                    senderType = p.Type,
+                    message = e.Message,
+                    timestampUtc = DateTime.UtcNow
+                });
+            }
         }
 
         private void HandleGameStart(object sender, EventArgs e)
         {
             RoomActivityState state = EnsureState();
+            state.ResetDuelTimeline();
             state.DuelStartedAtUtc = DateTime.UtcNow;
             _capturedStartDecks = new Deck?[Game.Players.Length];
             for (int i = 0; i < Game.Players.Length; i++)
                 _capturedStartDecks[i] = Game.Players[i]?.Deck;
 
-            state.AddPublicEvent("duel.starting", "对局进入猜拳与先后攻阶段。");
+            state.AddPublicEvent("duel.starting", "对局进入猜拳与先后攻阶段。", 0);
             _coordinator.PublishEvent("duel.public_event", new { roomName = Game.RoomName, eventType = "duel.starting" });
         }
 
         private void HandleBeforeDuelStart(object sender, DuelStartContext e)
         {
-            EnsureState().AddPublicEvent("duel.started", $"第 {Game.DuelCount + 1} 局正式开始（Seed={e.Seed}）。");
+            EnsureState().AddPublicEvent("duel.started", $"第 {Game.DuelCount + 1} 局正式开始（Seed={e.Seed}）。", 1);
             _coordinator.PublishEvent("duel.public_event", new
             {
                 roomName = Game.RoomName,
@@ -395,7 +481,7 @@ public sealed class OperationalServerCoordinator : IDisposable
         {
             int duelIdx = Math.Max(0, Game.DuelCount - 1);
             int duelWinner = duelIdx < Game.MatchResults.Length ? Game.MatchResults[duelIdx] : Game.Winner;
-            EnsureState().AddPublicEvent("duel.ended", $"第 {Game.DuelCount} 局结束，胜方阵营={duelWinner}，回合数={Game.TurnCount}。");
+            EnsureState().AddPublicEvent("duel.ended", $"第 {Game.DuelCount} 局结束，胜方阵营={duelWinner}，回合数={Game.TurnCount}。", Game.TurnCount);
             _coordinator.PublishEvent("duel.public_event", new
             {
                 roomName = Game.RoomName,
@@ -475,6 +561,11 @@ public sealed class OperationalServerCoordinator : IDisposable
                     noShuffleDeck = Game.NoShuffleDeck
                 });
 
+                IReadOnlyList<ArchivedTimelineEntryDto> timelineSnapshot = state.GetDuelTimelineSnapshot();
+                string? timelineJson = timelineSnapshot.Count > 0
+                    ? JsonSerializer.Serialize(timelineSnapshot)
+                    : null;
+
                 DuelRecordEntity saved = await _store.SaveDuelRecordAsync(new SaveDuelRecordRequest(
                     RoomName: Game.RoomName,
                     RoomIdentifier: $"{Game.RoomName}_{DateTime.UtcNow:yyyyMMddHHmmss}",
@@ -494,7 +585,8 @@ public sealed class OperationalServerCoordinator : IDisposable
                     EndedAt: DateTime.UtcNow,
                     YrpBytes: yrpBytes,
                     ObserverPacketFrames: null,
-                    Players: slots)).ConfigureAwait(false);
+                    Players: slots,
+                    DecisionTimelineJson: timelineJson)).ConfigureAwait(false);
 
                 _coordinator.PublishEvent("replay.saved", new
                 {

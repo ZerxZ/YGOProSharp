@@ -118,6 +118,12 @@ public sealed record AgentChatEntry(
     int? SeatIndex,
     string Text);
 
+public sealed record AgentTagRotationSlot(
+    int Order,
+    int SeatIndex,
+    string? PlayerName,
+    string Relation);
+
 public sealed record AgentTagTeamContext(
     int MySeatIndex,
     int MyTeamId,
@@ -125,13 +131,16 @@ public sealed record AgentTagTeamContext(
     string? PartnerName,
     IReadOnlyList<string> EnemyNames,
     string CurrentTurnRelation,
-    string? NextTurnHint);
+    string? NextTurnHint,
+    IReadOnlyList<AgentTagRotationSlot>? TurnRotationOrder = null,
+    string? SharedBoardHandoffNote = null);
 
 public sealed record AgentPartnerTactic(
     string Stance,
     string? Note,
     string UpdatedBy,
-    DateTime UpdatedAtUtc);
+    DateTime UpdatedAtUtc,
+    string? SharedBoardHandoffNote = null);
 
 public sealed record AgentStrategicPlan(
     string? WinCondition,

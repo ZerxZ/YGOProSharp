@@ -130,6 +130,11 @@ public sealed class McpTokenEntity : AuditedEntityBase
     /// </summary>
     public string? PreferredPlayerName { get; set; }
 
+    /// <summary>
+    /// 可选：决斗者性格与吐槽人设标签（如“中二热血决斗王”“毒舌技术流解说”“温柔可靠双打学姐”）。
+    /// </summary>
+    public string? PersonaStyle { get; set; }
+
     public string TokenPrefix { get; set; } = string.Empty;
 
     public string TokenSha256 { get; set; } = string.Empty;
@@ -219,6 +224,11 @@ public sealed class DuelRecordEntity : AuditedEntityBase
     public string? YrpPath { get; set; }
 
     public string? ObserverFramesPath { get; set; }
+
+    /// <summary>
+    /// 已结束对局归档的公开事件、聊天与 AI 思考摘要时间轴 JSON（仅在对局结束后写入，不侵入 Server 核心）。
+    /// </summary>
+    public string? DecisionTimelineJson { get; set; }
 
     public DateTime StartedAt { get; set; } = DateTime.UtcNow;
 
@@ -363,4 +373,107 @@ public sealed class AuditLogEntity : AuditedEntityBase
     public string Result { get; set; } = "ok";
 
     public string? DetailJson { get; set; }
+}
+
+/// <summary>
+/// 卡组六维量化评分与套路总结表（<c>deck_evaluations</c>，按规范化 <c>DeckHash</c> 索引复用）。
+/// 六个核心评分维度严格约束为 <c>0..100</c> 整数。
+/// </summary>
+public sealed class DeckEvaluationEntity : AuditedEntityBase
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public string DeckHash { get; set; } = string.Empty;
+
+    public string DeckName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// <c>preset</c> / <c>tournament</c> / <c>duel_player</c> / <c>custom_ydk</c>。
+    /// </summary>
+    public string SourceType { get; set; } = "custom_ydk";
+
+    public string? SourceRef { get; set; }
+
+    public string ArchetypeTitle { get; set; } = string.Empty;
+
+    /// <summary>爆发强度 (0-100)</summary>
+    public int BurstPower { get; set; }
+
+    /// <summary>续航韧性 (0-100)</summary>
+    public int Resilience { get; set; }
+
+    /// <summary>阴间指数 (0-100)</summary>
+    public int StunToxicity { get; set; }
+
+    /// <summary>娱乐整活度 (0-100)</summary>
+    public int FunFactor { get; set; }
+
+    /// <summary>操作复杂度 (0-100)</summary>
+    public int Complexity { get; set; }
+
+    /// <summary>环境适应性 (0-100)</summary>
+    public int MetaAdaptability { get; set; }
+
+    /// <summary>综合评级：<c>S+</c> / <c>S</c> / <c>A</c> / <c>B</c> / <c>C</c>。</summary>
+    public string OverallTier { get; set; } = "B";
+
+    /// <summary>结构化套路总结 JSON（起手初动、核心连招、标准终场、怕吃坑点、优缺点与改良建议）。</summary>
+    public string RoutinesJson { get; set; } = "{}";
+
+    public string Commentary { get; set; } = string.Empty;
+
+    public string EvaluatorName { get; set; } = string.Empty;
+
+    public Guid? EvaluatorTokenId { get; set; }
+}
+
+/// <summary>
+/// 已结束对局的赛后复盘、胜负手提炼与选手打分报告表（<c>duel_reviews</c>）。
+/// </summary>
+public sealed class DuelReviewEntity : AuditedEntityBase
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public long DuelRecordId { get; set; }
+
+    public string Headline { get; set; } = string.Empty;
+
+    public string Summary { get; set; } = string.Empty;
+
+    /// <summary>各席位选手 0-100 操作分、2v2 配合分、等级徽章与亮点失误点评 JSON。</summary>
+    public string PlayerRatingsJson { get; set; } = "[]";
+
+    /// <summary>关键胜负手节点列表 JSON。</summary>
+    public string TurningPointsJson { get; set; } = "[]";
+
+    /// <summary>实战观察到的代表性套路与 Combo 列表 JSON。</summary>
+    public string ObservedPatternsJson { get; set; } = "[]";
+
+    public string ReviewerName { get; set; } = string.Empty;
+
+    /// <summary><c>player_self</c> / <c>spectator_ai</c> / <c>coach</c>。</summary>
+    public string ReviewerRole { get; set; } = "coach";
+
+    public Guid? ReviewerTokenId { get; set; }
+}
+
+/// <summary>
+/// 外部 AI 决斗者跨局长期经验记忆账本表（<c>ai_duelist_memories</c>，每个 Token 有界保留最新高价值经验）。
+/// </summary>
+public sealed class AiDuelistMemoryEntity : AuditedEntityBase
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public Guid TokenId { get; set; }
+
+    public string? DeckHash { get; set; }
+
+    public string? OpponentArchetype { get; set; }
+
+    public string? OpponentName { get; set; }
+
+    /// <summary><c>win</c> / <c>loss</c> / <c>draw</c> / <c>note</c>。</summary>
+    public string Result { get; set; } = "note";
+
+    public string StrategicNote { get; set; } = string.Empty;
 }

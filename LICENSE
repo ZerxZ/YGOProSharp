@@ -91,6 +91,24 @@ remain with their respective authors.
     License: MIT License / ISC License
     Copyright (c) Meta Platforms, Inc., Evan You & Vite contributors, Lucide contributors, Tailwind Labs, Inc.
 
+12. Microsoft.CodeAnalysis (Roslyn)
+    Source: https://github.com/dotnet/roslyn
+    Role: compile-time incremental C# source generation in YGOProSharp.Generators
+    License: MIT License
+    Copyright (c) .NET Foundation and Contributors
+
+13. ModelContextProtocol C# SDK
+    Source: https://github.com/modelcontextprotocol/csharp-sdk
+    Role: Model Context Protocol server SDK and schema/tool binding in YGOProSharp.Mcp
+    License: MIT License
+    Copyright (c) Model Context Protocol Contributors
+
+14. xUnit.net (xunit.v3)
+    Source: https://github.com/xunit/xunit
+    Role: unit and integration testing framework in YGOProSharp.Tests
+    License: Apache License 2.0
+    Copyright (c) .NET Foundation and Contributors
+
 YGOProSharp is an experimental AI-assisted adaptation and refactoring project.
 It does not imply endorsement by the upstream projects and does not guarantee
 compatibility with upstream clients, scripts, databases, or runtime behavior.

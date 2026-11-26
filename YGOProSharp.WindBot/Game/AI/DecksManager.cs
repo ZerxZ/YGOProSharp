@@ -1,32 +1,23 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Reflection;
 using WindBot.Game.AI.Lua;
 using YGOProSharp.Abstractions.Scripting;
 
 namespace WindBot.Game.AI
 {
-    public static class DecksManager
+    public static partial class DecksManager
     {
-        private class DeckInstance
-        {
-            public string Deck { get; private set; }
-            public Type Type { get; private set; }
-            public string Level { get; private set; }
-
-            public DeckInstance(string deck, Type type, string level)
-            {
-                Deck = deck;
-                Type = type;
-                Level = level;
-            }
-        }
+        private readonly record struct DeckEntry(
+            string Name,
+            string Deck,
+            string Level,
+            Func<GameAI, Duel, Executor> Factory);
 
         private static readonly object _syncRoot = new();
-        private static Dictionary<string, DeckInstance> _decks;
-        private static Dictionary<string, DeckInstance> _decksByFile;
-        private static List<DeckInstance> _list;
+        private static Dictionary<string, DeckEntry> _decks;
+        private static Dictionary<string, DeckEntry> _decksByFile;
+        private static List<DeckEntry> _list;
         private static bool _initialized;
 
         private static readonly Dictionary<string, LuaDeckDescriptor> _luaDecks =
@@ -45,30 +36,19 @@ namespace WindBot.Game.AI
                 if (_initialized)
                     return;
 
-                _decks = new Dictionary<string, DeckInstance>(StringComparer.OrdinalIgnoreCase);
-                _decksByFile = new Dictionary<string, DeckInstance>(StringComparer.OrdinalIgnoreCase);
+                DeckEntry[] generated = CreateGeneratedDecks();
+                _decks = new Dictionary<string, DeckEntry>(generated.Length, StringComparer.OrdinalIgnoreCase);
+                _decksByFile = new Dictionary<string, DeckEntry>(generated.Length, StringComparer.OrdinalIgnoreCase);
 
-                Assembly asm = Assembly.GetExecutingAssembly();
-                Type[] types = asm.GetTypes();
-
-                foreach (Type type in types)
+                for (int i = 0; i < generated.Length; i++)
                 {
-                    MemberInfo info = type;
-                    object[] attributes = info.GetCustomAttributes(false);
-                    foreach (object attribute in attributes)
-                    {
-                        if (attribute is DeckAttribute deck)
-                        {
-                            DeckInstance instance = new DeckInstance(deck.File, type, deck.Level);
-                            _decks.TryAdd(deck.Name, instance);
-                            if (!string.IsNullOrWhiteSpace(deck.File))
-                                _decksByFile.TryAdd(deck.File, instance);
-                        }
-                    }
+                    DeckEntry entry = generated[i];
+                    _decks.TryAdd(entry.Name, entry);
+                    if (!string.IsNullOrWhiteSpace(entry.Deck))
+                        _decksByFile.TryAdd(entry.Deck, entry);
                 }
 
-                _list = new List<DeckInstance>();
-                _list.AddRange(_decks.Values);
+                _list = new List<DeckEntry>(_decks.Values);
                 _initialized = true;
 
                 Logger.WriteLine("Decks initialized, " + _decks.Count + " found.");
@@ -203,7 +183,7 @@ namespace WindBot.Game.AI
             List<DeckCatalogItem> items = new List<DeckCatalogItem>();
             lock (_syncRoot)
             {
-                foreach (KeyValuePair<string, DeckInstance> pair in _decks)
+                foreach (KeyValuePair<string, DeckEntry> pair in _decks)
                 {
                     items.Add(new DeckCatalogItem(
                         Name: pair.Key,
@@ -253,7 +233,8 @@ namespace WindBot.Game.AI
             EnsureInitialized();
 
             string deck = ai.Game.Deck;
-            DeckInstance managedDeck = null;
+            DeckEntry managedDeck = default;
+            bool hasManagedDeck = false;
             LuaDeckDescriptor luaDeck = null;
             ILuaRuntime luaRuntime;
             ILuaScriptSourceProvider luaScriptProvider;
@@ -269,8 +250,8 @@ namespace WindBot.Game.AI
 
                 if (!string.IsNullOrWhiteSpace(deck))
                 {
-                    if (!_decks.TryGetValue(deck, out managedDeck))
-                        _decksByFile.TryGetValue(deck, out managedDeck);
+                    hasManagedDeck = _decks.TryGetValue(deck, out managedDeck) ||
+                                     _decksByFile.TryGetValue(deck, out managedDeck);
 
                     if (!_luaDecks.TryGetValue(deck, out luaDeck))
                         _luaDecksByFile.TryGetValue(deck, out luaDeck);
@@ -279,12 +260,12 @@ namespace WindBot.Game.AI
 
             if (luaDeck != null)
             {
-                bool shouldUseRegisteredLua = managedDeck == null || luaDeck.AllowOverride || preferLuaDecks;
+                bool shouldUseRegisteredLua = !hasManagedDeck || luaDeck.AllowOverride || preferLuaDecks;
                 if (shouldUseRegisteredLua)
                     return InstantiateLuaDeck(ai, duel, luaDeck, luaRuntime, luaScriptProvider, throwOnLuaScriptError);
             }
 
-            if (managedDeck != null)
+            if (hasManagedDeck)
             {
                 if (preferLuaDecks &&
                     luaRuntime != null &&
@@ -305,7 +286,7 @@ namespace WindBot.Game.AI
                     return overrideExecutor;
                 }
 
-                Executor managedExecutor = (Executor)Activator.CreateInstance(managedDeck.Type, ai, duel);
+                Executor managedExecutor = managedDeck.Factory(ai, duel);
                 managedExecutor.Deck = managedDeck.Deck;
                 return managedExecutor;
             }
@@ -373,8 +354,8 @@ namespace WindBot.Game.AI
             ILuaScriptSourceProvider luaScriptProvider,
             bool throwOnLuaScriptError)
         {
-            List<DeckInstance> normalManaged = new List<DeckInstance>();
-            List<DeckInstance> allManaged = new List<DeckInstance>();
+            List<DeckEntry> normalManaged = new List<DeckEntry>();
+            List<DeckEntry> allManaged = new List<DeckEntry>();
             List<LuaDeckDescriptor> normalLua = new List<LuaDeckDescriptor>();
             List<LuaDeckDescriptor> allLua = new List<LuaDeckDescriptor>();
 
@@ -404,8 +385,8 @@ namespace WindBot.Game.AI
                 int index = Random.Shared.Next(normalTotal);
                 if (index < normalManaged.Count)
                 {
-                    DeckInstance picked = normalManaged[index];
-                    Executor executor = (Executor)Activator.CreateInstance(picked.Type, ai, duel);
+                    DeckEntry picked = normalManaged[index];
+                    Executor executor = picked.Factory(ai, duel);
                     executor.Deck = picked.Deck;
                     return executor;
                 }
@@ -420,8 +401,8 @@ namespace WindBot.Game.AI
             int fallbackIndex = Random.Shared.Next(total);
             if (fallbackIndex < allManaged.Count)
             {
-                DeckInstance picked = allManaged[fallbackIndex];
-                Executor executor = (Executor)Activator.CreateInstance(picked.Type, ai, duel);
+                DeckEntry picked = allManaged[fallbackIndex];
+                Executor executor = picked.Factory(ai, duel);
                 executor.Deck = picked.Deck;
                 return executor;
             }

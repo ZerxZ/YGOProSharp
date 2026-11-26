@@ -1,0 +1,41 @@
+global using System.Buffers;
+global using System.Buffers.Binary;
+global using System.Collections.Specialized;
+global using System.IO.Compression;
+global using System.Net;
+global using System.Net.Http;
+global using System.Net.Sockets;
+global using System.Net.WebSockets;
+global using System.Runtime.InteropServices;
+global using System.Text;
+global using System.Text.Json;
+global using Microsoft.Data.Sqlite;
+global using Microsoft.Extensions.Logging;
+global using Xunit;
+global using YGOProSharp.Abstractions.Logging;
+global using YGOProSharp.Abstractions.Ocg;
+global using YGOProSharp.Abstractions.Ocg.Enums;
+global using YGOProSharp.Abstractions.Scripting;
+global using YGOProSharp.AgentBridge;
+global using YGOProSharp.Cli;
+global using YGOProSharp.Core;
+global using YGOProSharp.Core.Cards;
+global using YGOProSharp.Mcp;
+global using YGOProSharp.NativeApi;
+global using YGOProSharp.Persistence;
+global using YGOProSharp.Persistence.Caching;
+global using YGOProSharp.Persistence.Entities;
+global using YGOProSharp.Persistence.Security;
+global using YGOProSharp.Protocol;
+global using YGOProSharp.Protocol.Enums;
+global using YGOProSharp.Protocol.Utils;
+global using YGOProSharp.Server;
+global using YGOProSharp.Server.Addons;
+global using YGOProSharp.Web;
+global using YGOProSharp.Web.Logging;
+global using YGOProSharp.Web.Services;
+global using YGOProSharp.Tests.TestSupport;
+global using static YGOProSharp.Tests.TestSupport.TestHarness;
+
+// 共享静态资源（如 BanlistManager、DecksManager、TestLog）保持顺序执行以保证 100% 确定性
+[assembly: CollectionBehavior(DisableTestParallelization = true)]

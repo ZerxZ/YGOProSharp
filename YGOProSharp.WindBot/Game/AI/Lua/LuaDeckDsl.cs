@@ -20,7 +20,7 @@ namespace WindBot.Game.AI.Lua
     /// <c>add_executor</c>/<c>add_executors</c>/<c>add_default</c> 规则注册、
     /// <c>on_activate</c>/<c>on_summon</c> 等动作简写，以及 <c>on_new_turn</c>/<c>on_select_card</c> 等全套生命周期钩子。
     /// </summary>
-    public sealed class LuaDeckDsl
+    public sealed partial class LuaDeckDsl
     {
         private readonly LuaDeckExecutor _executor;
         private readonly ILuaScriptContext _context;
@@ -114,51 +114,8 @@ namespace WindBot.Game.AI.Lua
             _context.SetGlobal("emit_thought", (LuaDslAction1)EmitThoughtGlobal);
             _context.SetGlobal("ask_external_agent", (Func<object, object, object>)AskExternalAgentGlobal);
 
-            // 生命周期与决策钩子（类似 xmake 的 on_load / on_build / on_clean）
-            BindHook("on_init", LuaDeckHookNames.OnInit);
-            BindHook("on_dispose", LuaDeckHookNames.OnDispose);
-            BindHook("on_rock_paper_scissors", LuaDeckHookNames.OnRockPaperScissors);
-            BindHook("on_select_hand", LuaDeckHookNames.OnSelectHand);
-            BindHook("on_battle", LuaDeckHookNames.OnBattle);
-            BindHook("on_select_attacker", LuaDeckHookNames.OnSelectAttacker);
-            BindHook("on_select_attack_target", LuaDeckHookNames.OnSelectAttackTarget);
-            BindHook("on_pre_battle", LuaDeckHookNames.OnPreBattleBetween);
-            BindHook("on_pre_battle_between", LuaDeckHookNames.OnPreBattleBetween);
-            BindHook("on_select_battle_replay", LuaDeckHookNames.OnSelectBattleReplay);
-            BindHook("on_pre_activate", LuaDeckHookNames.OnPreActivate);
-            BindHook("on_chaining", LuaDeckHookNames.OnChaining);
-            BindHook("on_chain_solved", LuaDeckHookNames.OnChainSolved);
-            BindHook("on_chain_end", LuaDeckHookNames.OnChainEnd);
-            BindHook("on_select_chain", LuaDeckHookNames.OnSelectChain);
-            BindHook("on_receiving_announce", LuaDeckHookNames.OnReceivingAnnouce);
-            BindHook("on_new_phase", LuaDeckHookNames.OnNewPhase);
-            BindHook("on_new_turn", LuaDeckHookNames.OnNewTurn);
-            BindHook("on_draw", LuaDeckHookNames.OnDraw);
-            BindHook("on_player_hint", LuaDeckHookNames.OnPlayerHint);
-            BindHook("on_hint_zone", LuaDeckHookNames.OnHintZone);
-            BindHook("on_move", LuaDeckHookNames.OnMove);
-            BindHook("on_pos_change", LuaDeckHookNames.OnPosChange);
-            BindHook("on_summoning", LuaDeckHookNames.OnSummoning);
-            BindHook("on_sp_summoning", LuaDeckHookNames.OnSpSummoning);
-            BindHook("on_sp_summoned", LuaDeckHookNames.OnSpSummoned);
-            BindHook("on_select_card", LuaDeckHookNames.OnSelectCard);
-            BindHook("on_select_tribute", LuaDeckHookNames.OnSelectTribute);
-            BindHook("on_select_sum", LuaDeckHookNames.OnSelectSum);
-            BindHook("on_select_fusion_material", LuaDeckHookNames.OnSelectFusionMaterial);
-            BindHook("on_select_synchro_material", LuaDeckHookNames.OnSelectSynchroMaterial);
-            BindHook("on_select_xyz_material", LuaDeckHookNames.OnSelectXyzMaterial);
-            BindHook("on_select_link_material", LuaDeckHookNames.OnSelectLinkMaterial);
-            BindHook("on_select_ritual_tribute", LuaDeckHookNames.OnSelectRitualTribute);
-            BindHook("on_select_pendulum_summon", LuaDeckHookNames.OnSelectPendulumSummon);
-            BindHook("on_card_sorting", LuaDeckHookNames.OnCardSorting);
-            BindHook("on_select_yesno", LuaDeckHookNames.OnSelectYesNo);
-            BindHook("on_select_option", LuaDeckHookNames.OnSelectOption);
-            BindHook("on_select_place", LuaDeckHookNames.OnSelectPlace);
-            BindHook("on_select_disfield", LuaDeckHookNames.OnSelectDisfield);
-            BindHook("on_select_position", LuaDeckHookNames.OnSelectPosition);
-            BindHook("on_select_battle_direct_attack", LuaDeckHookNames.OnSelectBattleDirectAttack);
-            BindHook("on_select_monster_summon_or_set", LuaDeckHookNames.OnSelectMonsterSummonOrSet);
-            BindHook("on_announce_card", LuaDeckHookNames.OnAnnounceCard);
+            // 生命周期与决策钩子（由 YGOProSharp.Generators 从 Executor 虚方法编译期自动生成绑定）
+            BindGeneratedHooks();
         }
 
         public void Deck(object name)

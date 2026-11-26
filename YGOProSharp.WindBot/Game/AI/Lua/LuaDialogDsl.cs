@@ -17,7 +17,7 @@ namespace WindBot.Game.AI.Lua
     /// <c>add_*</c>/<c>set_*</c>/<c>clear_lines</c> 台词声明，以及 <c>on_summon</c>/<c>on_attack</c> 等动态台词钩子。
     /// 全局函数均通过 <see cref="LuaDslAction0"/>~<see cref="LuaDslAction3"/> 与 <see cref="LuaDslPredicate3"/> 固定参委托注入，兼容 XLua / NLua / MoonSharp / Lua-CSharp。
     /// </summary>
-    public sealed class LuaDialogDsl
+    public sealed partial class LuaDialogDsl
     {
         private readonly ILuaScriptContext _context;
         private readonly string _targetDialogName;
@@ -129,49 +129,8 @@ namespace WindBot.Game.AI.Lua
             _context.SetGlobal("set_lines", (LuaDslAction3)SetLines);
             _context.SetGlobal("clear_lines", (LuaDslAction1)ClearLines);
 
-            // 按事件类型提供的静态台词追加/覆盖简写（支持 1~3 个字符串或 Lua 字符串数组表）
-            BindEventLineHelpers(LuaDialogHookNames.Welcome, "welcome");
-            BindEventLineHelpers(LuaDialogHookNames.DeckError, "deckerror", "deck_error");
-            BindEventLineHelpers(LuaDialogHookNames.DuelStart, "duelstart", "duel_start");
-            BindEventLineHelpers(LuaDialogHookNames.NewTurn, "newturn", "new_turn");
-            BindEventLineHelpers(LuaDialogHookNames.EndTurn, "endturn", "end_turn");
-            BindEventLineHelpers(LuaDialogHookNames.DirectAttack, "directattack", "direct_attack");
-            BindEventLineHelpers(LuaDialogHookNames.Attack, "attack");
-            BindEventLineHelpers(LuaDialogHookNames.OnDirectAttack, "ondirectattack", "on_direct_attack");
-            BindEventLineHelpers(LuaDialogHookNames.Activate, "activate");
-            BindEventLineHelpers(LuaDialogHookNames.Summon, "summon");
-            BindEventLineHelpers(LuaDialogHookNames.SetMonster, "setmonster", "set_monster");
-            BindEventLineHelpers(LuaDialogHookNames.Chaining, "chaining");
-            BindEventLineHelpers(LuaDialogHookNames.Surrender, "surrender");
-            BindEventLineHelpers(LuaDialogHookNames.Custom, "custom");
-
-            // 动态台词与生命周期钩子（类似 xmake 的 on_load / on_build / on_clean）
-            BindHook("on_init", LuaDialogHookNames.OnInit);
-            BindHook("on_dispose", LuaDialogHookNames.OnDispose);
-            BindHook("on_message", LuaDialogHookNames.OnMessage);
-
-            BindHook("on_welcome", LuaDialogHookNames.OnWelcome);
-            BindHook("on_deckerror", LuaDialogHookNames.OnDeckError);
-            BindHook("on_deck_error", LuaDialogHookNames.OnDeckError);
-            BindHook("on_duelstart", LuaDialogHookNames.OnDuelStart);
-            BindHook("on_duel_start", LuaDialogHookNames.OnDuelStart);
-            BindHook("on_newturn", LuaDialogHookNames.OnNewTurn);
-            BindHook("on_new_turn", LuaDialogHookNames.OnNewTurn);
-            BindHook("on_endturn", LuaDialogHookNames.OnEndTurn);
-            BindHook("on_end_turn", LuaDialogHookNames.OnEndTurn);
-            BindHook("on_directattack", LuaDialogHookNames.OnDirectAttackHook);
-            BindHook("on_direct_attack", LuaDialogHookNames.OnDirectAttackHook);
-            BindHook("on_attack", LuaDialogHookNames.OnAttack);
-            BindHook("on_ondirectattack", LuaDialogHookNames.OnReceiveDirectAttack);
-            BindHook("on_on_direct_attack", LuaDialogHookNames.OnReceiveDirectAttack);
-            BindHook("on_receive_direct_attack", LuaDialogHookNames.OnReceiveDirectAttack);
-            BindHook("on_activate", LuaDialogHookNames.OnActivate);
-            BindHook("on_summon", LuaDialogHookNames.OnSummon);
-            BindHook("on_setmonster", LuaDialogHookNames.OnSetMonster);
-            BindHook("on_set_monster", LuaDialogHookNames.OnSetMonster);
-            BindHook("on_chaining", LuaDialogHookNames.OnChaining);
-            BindHook("on_surrender", LuaDialogHookNames.OnSurrender);
-            BindHook("on_custom", LuaDialogHookNames.OnCustom);
+            // 按 DialogsData 单一事实源编译期自动生成全部静态台词简写与动态钩子绑定
+            BindGeneratedDialogEvents();
         }
 
         public void Dialog(object name)

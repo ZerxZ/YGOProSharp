@@ -165,6 +165,23 @@ public sealed class AgentSessionManager : IDisposable
         return closed;
     }
 
+    public int BroadcastPartnerDirectiveToTeam(string roomName, int teamId, string stance, string? note, string senderName)
+    {
+        if (string.IsNullOrWhiteSpace(roomName) || teamId is not (0 or 1))
+            return 0;
+
+        int delivered = 0;
+        foreach (AgentDuelSession session in _sessions.Values)
+        {
+            if (!session.IsConnected || !string.Equals(session.RoomName, roomName.Trim(), StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (session.TryDeliverTeamPartnerDirective(teamId, stance, note, senderName))
+                delivered++;
+        }
+        return delivered;
+    }
+
     private void PruneDeadSessionsForToken(Guid tokenId)
     {
         foreach ((string key, AgentDuelSession session) in _sessions.ToArray())

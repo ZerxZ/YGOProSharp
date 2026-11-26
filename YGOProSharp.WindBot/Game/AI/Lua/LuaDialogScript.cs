@@ -12,26 +12,9 @@ namespace WindBot.Game.AI.Lua
     /// 2) 模块表返回式（<c>return { welcome = {...}, OnSummon = function(ctx, monster) ... end }</c>）；
     /// 3) 全局函数式（<c>function OnSummon(ctx, monster) ... end</c>）。
     /// </summary>
-    public sealed class LuaDialogScript : IDisposable
+    [GenerateLuaDialogBindings]
+    public sealed partial class LuaDialogScript : IDisposable
     {
-        private static readonly string[] AllEventKeys =
-        [
-            LuaDialogHookNames.Welcome,
-            LuaDialogHookNames.DeckError,
-            LuaDialogHookNames.DuelStart,
-            LuaDialogHookNames.NewTurn,
-            LuaDialogHookNames.EndTurn,
-            LuaDialogHookNames.DirectAttack,
-            LuaDialogHookNames.Attack,
-            LuaDialogHookNames.OnDirectAttack,
-            LuaDialogHookNames.Activate,
-            LuaDialogHookNames.Summon,
-            LuaDialogHookNames.SetMonster,
-            LuaDialogHookNames.Chaining,
-            LuaDialogHookNames.Surrender,
-            LuaDialogHookNames.Custom
-        ];
-
         private ILuaScriptContext _context;
         private ILuaTable _moduleTable;
         private readonly ILuaScriptSourceProvider _scriptProvider;

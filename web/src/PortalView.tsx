@@ -4,8 +4,6 @@ import {
   Sparkles,
   Swords,
   Video,
-  Copy,
-  Check,
   Download,
   ShieldCheck,
   Send,
@@ -14,36 +12,20 @@ import {
   KeyRound,
   UserPlus,
   LogOut,
-  Plus,
-  Trash2,
-  Lock
+  Plus
 } from 'lucide-react';
 import { apiFetch, setPortalCsrfToken } from './api';
 import { QuickCopyPill, RoomConfigurator } from './RoomConfigurator';
+import { StatBox, SmallCopy, type PortalUser, type SurfaceInfo } from './portal/portalTypes';
+import { PortalAuthModal } from './portal/PortalAuthModal';
+import { PortalAiTokenCenter } from './portal/PortalAiTokenCenter';
+import { TagForceCommandPad } from './portal/TagForceCommandPad';
+import { ReplayReviewPanel } from './portal/ReplayReviewPanel';
+import { DeckSixDimRadarSection } from './portal/DeckSixDimRadarSection';
+
+export type { SurfaceInfo } from './portal/portalTypes';
 
 type PortalTab = 'lobby' | 'ai_tokens' | 'replays' | 'catalog' | 'selfservice';
-
-export interface SurfaceInfo {
-  surface: 'admin' | 'portal';
-  unifiedPortal?: boolean;
-  defaultPage?: string;
-  adminPath?: string;
-  gamePort: number;
-  adminPort?: number;
-  portalPort?: number;
-  publicGameHost?: string;
-  mcpPortHint?: number;
-}
-
-interface PortalUser {
-  userId: string;
-  username: string;
-  displayName: string;
-  mustChangePassword: boolean;
-  csrfToken: string;
-  roleCodes: string[];
-  allowedMcpRolesToIssue: string[];
-}
 
 export function UserPortalApp({ surfaceInfo }: { surfaceInfo: SurfaceInfo }) {
   const [tab, setTab] = useState<PortalTab>('lobby');
@@ -54,6 +36,8 @@ export function UserPortalApp({ surfaceInfo }: { surfaceInfo: SurfaceInfo }) {
   const [overview, setOverview] = useState<any>(null);
   const [rooms, setRooms] = useState<any[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<any>(null);
+  const [selectedReplayDetail, setSelectedReplayDetail] = useState<any>(null);
+  const [loadingReplayId, setLoadingReplayId] = useState<number | null>(null);
   const [replays, setReplays] = useState<any[]>([]);
   const [diyPackages, setDiyPackages] = useState<any[]>([]);
   const [cards, setCards] = useState<any[]>([]);
@@ -63,7 +47,6 @@ export function UserPortalApp({ surfaceInfo }: { surfaceInfo: SurfaceInfo }) {
   const [toast, setToast] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
-  // 玩家自助表单状态
   const [vpassName, setVpassName] = useState('');
   const [vpassCode, setVpassCode] = useState('');
   const [vpassResult, setVpassResult] = useState('');
@@ -127,6 +110,21 @@ export function UserPortalApp({ surfaceInfo }: { surfaceInfo: SurfaceInfo }) {
         setSelectedRoom(res.room);
       } catch (err) {
         notify(err instanceof Error ? err.message : '房间已结束', 'err');
+      }
+    },
+    [notify]
+  );
+
+  const openReplayDetail = useCallback(
+    async (duelId: number) => {
+      setLoadingReplayId(duelId);
+      try {
+        const detail = await apiFetch(`/api/portal/replays/${duelId}/detail`);
+        setSelectedReplayDetail(detail);
+      } catch (err) {
+        notify(err instanceof Error ? err.message : '读取赛后复盘详情失败', 'err');
+      } finally {
+        setLoadingReplayId(null);
       }
     },
     [notify]
@@ -397,7 +395,6 @@ export function UserPortalApp({ surfaceInfo }: { surfaceInfo: SurfaceInfo }) {
               />
             </div>
 
-            {/* 可视化房间配置器与一键建房 / 快速复制主机密码 */}
             {showConfigurator ? (
               <RoomConfigurator
                 apiEndpoint="/api/portal/rooms"
@@ -521,7 +518,6 @@ export function UserPortalApp({ surfaceInfo }: { surfaceInfo: SurfaceInfo }) {
                           ))}
                         </div>
 
-                        {/* 房间卡片底部：观众列表预览与自建房管理 */}
                         <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2 text-[11px] text-slate-400">
                           <div className="flex items-center gap-1 truncate">
                             <Eye className="w-3.5 h-3.5 text-sky-400 shrink-0" />
@@ -589,7 +585,16 @@ export function UserPortalApp({ surfaceInfo }: { surfaceInfo: SurfaceInfo }) {
                         )}
                     </div>
 
-                    {/* 独立观众列表区块 */}
+                    {selectedRoom.summary.mode === 2 && (
+                      <TagForceCommandPad
+                        roomName={selectedRoom.summary.roomName}
+                        slots={selectedRoom.summary.slots || []}
+                        user={portalUser}
+                        onRequireAuth={() => setAuthModalMode('login')}
+                        notify={notify}
+                      />
+                    )}
+
                     <div className="bg-slate-950 border border-slate-800 rounded-lg p-2.5 space-y-1.5">
                       <div className="font-semibold text-sky-300 flex items-center justify-between">
                         <span>当前观战观众列表 ({(selectedRoom.summary.observers || []).length} 人)</span>
@@ -646,58 +651,88 @@ export function UserPortalApp({ surfaceInfo }: { surfaceInfo: SurfaceInfo }) {
         )}
 
         {tab === 'replays' && (
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
-            <h2 className="text-sm font-semibold">全服历史对局战报与云录像（复制 R#编号 粘贴到游戏客户端「主机密码」即可直接看回放）</h2>
-            <table className="w-full text-xs text-left">
-              <thead className="text-slate-400 border-b border-slate-800">
-                <tr>
-                  <th className="py-2">回放主机密码</th>
-                  <th>房间</th>
-                  <th>模式</th>
-                  <th>对阵玩家</th>
-                  <th>回合</th>
-                  <th>结束时间</th>
-                  <th>下载</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60">
-                {replays.map((r) => (
-                  <tr key={r.id}>
-                    <td className="py-2">
-                      <QuickCopyPill
-                        text={r.replayCode}
-                        label={`复制 ${r.replayCode}`}
-                        onCopied={() => notify(`已复制回放主机密码：${r.replayCode}`)}
-                      />
-                    </td>
-                    <td>{r.roomName}</td>
-                    <td>{r.mode === 2 ? '2v2 Tag' : r.mode === 1 ? 'Match' : 'Single'}</td>
-                    <td>{(r.players || []).map((p: any) => `${p.playerName}${p.isWinner ? '(胜)' : ''}`).join(' vs ')}</td>
-                    <td>{r.turnCount}</td>
-                    <td className="text-slate-400">{new Date(r.endedAt).toLocaleString()}</td>
-                    <td>
-                      {r.hasYrp && (
-                        <a href={`/api/portal/replays/${r.id}.yrp`} download className="text-sky-400 hover:underline">
-                          下载 .yrp
-                        </a>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-                {replays.length === 0 && (
+          <div className="space-y-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <h2 className="text-sm font-semibold">
+                  全服历史对局战报与 AI 赛后复盘剧场（点击「复盘详情」查看 0~100 发挥评分、胜负手转折点与时间轴）
+                </h2>
+                <span className="text-[11px] text-emerald-300">严格仅归档已完结对局 · 零进行中暗牌泄露</span>
+              </div>
+              <table className="w-full text-xs text-left">
+                <thead className="text-slate-400 border-b border-slate-800">
                   <tr>
-                    <td colSpan={7} className="py-6 text-center text-slate-500">
-                      暂无已归档的历史对局录像
-                    </td>
+                    <th className="py-2">回放主机密码</th>
+                    <th>房间</th>
+                    <th>模式</th>
+                    <th>对阵玩家</th>
+                    <th>回合</th>
+                    <th>结束时间</th>
+                    <th>复盘 & 录像</th>
                   </tr>
-                )}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {replays.map((r) => (
+                    <tr
+                      key={r.id}
+                      onClick={() => openReplayDetail(r.id)}
+                      className={`cursor-pointer transition hover:bg-slate-800/50 ${
+                        selectedReplayDetail?.duelId === r.id ? 'bg-emerald-950/30' : ''
+                      }`}
+                    >
+                      <td className="py-2" onClick={(e) => e.stopPropagation()}>
+                        <QuickCopyPill
+                          text={r.replayCode}
+                          label={`复制 ${r.replayCode}`}
+                          onCopied={() => notify(`已复制回放主机密码：${r.replayCode}`)}
+                        />
+                      </td>
+                      <td className="font-medium">{r.roomName}</td>
+                      <td>{r.mode === 2 ? '2v2 Tag' : r.mode === 1 ? 'Match' : 'Single'}</td>
+                      <td>{(r.players || []).map((p: any) => `${p.playerName}${p.isWinner ? '(胜)' : ''}`).join(' vs ')}</td>
+                      <td>{r.turnCount}</td>
+                      <td className="text-slate-400">{new Date(r.endedAt).toLocaleString()}</td>
+                      <td className="space-x-2" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => openReplayDetail(r.id)}
+                          className="px-2 py-0.5 rounded bg-emerald-600/20 hover:bg-emerald-600/40 border border-emerald-500/40 text-emerald-200 cursor-pointer"
+                        >
+                          {loadingReplayId === r.id ? '加载中...' : 'AI 复盘详情'}
+                        </button>
+                        {r.hasYrp && (
+                          <a href={`/api/portal/replays/${r.id}.yrp`} download className="text-sky-400 hover:underline">
+                            下载 .yrp
+                          </a>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {replays.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="py-6 text-center text-slate-500">
+                        暂无已归档的历史对局录像
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {selectedReplayDetail && (
+              <ReplayReviewPanel
+                detail={selectedReplayDetail}
+                onClose={() => setSelectedReplayDetail(null)}
+                notify={notify}
+              />
+            )}
           </div>
         )}
 
         {tab === 'catalog' && (
           <div className="space-y-6">
+            <DeckSixDimRadarSection chaosYdk={chaosDeck?.ydk} notify={notify} />
+
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
               <h2 className="text-sm font-semibold flex items-center gap-2">
                 <Download className="w-4 h-4 text-emerald-400" /> 本服启用 DIY 扩展包下载（下载 .ypk 放入客户端 expansions/ 文件夹即可显示卡图与文本）
@@ -914,533 +949,5 @@ export function UserPortalApp({ surfaceInfo }: { surfaceInfo: SurfaceInfo }) {
         )}
       </main>
     </div>
-  );
-}
-
-function PortalAiTokenCenter({
-  user,
-  mcpPortHint,
-  onRequireAuth,
-  notify
-}: {
-  user: PortalUser | null;
-  mcpPortHint?: number;
-  onRequireAuth: () => void;
-  notify: (t: string, k?: 'ok' | 'err') => void;
-}) {
-  const [tokens, setTokens] = useState<any[]>([]);
-  const [name, setName] = useState('');
-  const [role, setRole] = useState('player');
-  const [roomsText, setRoomsText] = useState('');
-  const [expiresHours, setExpiresHours] = useState(72);
-  const [newlyIssuedRaw, setNewlyIssuedRaw] = useState('');
-  const [editingTokenId, setEditingTokenId] = useState<string | null>(null);
-  const [editingNickname, setEditingNickname] = useState('');
-  const [, setServerMcpPort] = useState<number | undefined>(mcpPortHint);
-
-  const loadTokens = useCallback(async () => {
-    if (!user) return;
-    try {
-      const res = await apiFetch('/api/portal/mcp/tokens');
-      setTokens(res.tokens || []);
-      if (res.mcpPortHint) setServerMcpPort(res.mcpPortHint);
-    } catch (err) {
-      notify(err instanceof Error ? err.message : '加载 AI Token 失败', 'err');
-    }
-  }, [user, notify]);
-
-  useEffect(() => {
-    loadTokens();
-  }, [loadTokens]);
-
-  if (!user) {
-    return (
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-10 text-center space-y-4">
-        <KeyRound className="w-10 h-10 text-emerald-400 mx-auto" />
-        <h2 className="text-base font-bold">注册或登录账号，免费创建你的专属外部 AI 对战 Token</h2>
-        <p className="text-xs text-slate-400 max-w-lg mx-auto">
-          注册账号后可自助签发受限视角 <code className="text-emerald-300">player</code>（上桌打牌 AI）或{' '}
-          <code className="text-sky-300">spectator</code>（观战解说 AI）令牌，让 Claude、Gemini、DeepSeek、ChatGPT 等外部客户端陪你双打或斗蛐蛐。
-        </p>
-        <button
-          onClick={onRequireAuth}
-          className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-semibold cursor-pointer"
-        >
-          立即注册 / 登录账号
-        </button>
-      </div>
-    );
-  }
-
-  const issueToken = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const rooms = roomsText
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const trimmedName = name.trim();
-      const res = await apiFetch('/api/portal/mcp/tokens', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: trimmedName || undefined,
-          preferredPlayerName: trimmedName || undefined,
-          mcpRole: role,
-          allowedRooms: rooms,
-          maxSessions: 1,
-          expiresInHours: Number(expiresHours)
-        })
-      });
-      setNewlyIssuedRaw(res.rawToken);
-      setName('');
-      notify(trimmedName ? `AI Token 创建成功（已绑定昵称：${trimmedName}）！` : 'AI Token 创建成功（首次进房时将由 AI 自主取名）！');
-      loadTokens();
-    } catch (err) {
-      notify(err instanceof Error ? err.message : '创建 AI Token 失败', 'err');
-    }
-  };
-
-  const saveTokenNickname = async (tokenId: string, nextNickname: string) => {
-    try {
-      const res = await apiFetch(`/api/portal/mcp/tokens/${tokenId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ preferredPlayerName: nextNickname.trim() || null })
-      });
-      setEditingTokenId(null);
-      notify(res.message || 'AI 昵称已更新');
-      loadTokens();
-    } catch (err) {
-      notify(err instanceof Error ? err.message : '修改 AI 昵称失败', 'err');
-    }
-  };
-
-  const mcpUrl = `${window.location.origin}/mcp`;
-  const directMcpUrl = `${mcpUrl}?key=${newlyIssuedRaw ? encodeURIComponent(newlyIssuedRaw) : '<粘贴你刚生成的_ygp_mcp_Token>'}`;
-  const mcpConfigJson = JSON.stringify(
-    {
-      mcpServers: {
-        ygoprosharp: {
-          type: 'streamable-http',
-          url: directMcpUrl
-        }
-      }
-    },
-    null,
-    2
-  );
-
-  return (
-    <div className="space-y-6 text-xs">
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-4">
-        <h2 className="text-sm font-semibold flex items-center gap-2">
-          <KeyRound className="w-4 h-4 text-emerald-400" /> 创建我的外部 AI Token（严格遵守战争迷雾，禁止透视暗牌）
-        </h2>
-
-        <form onSubmit={issueToken} className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
-          <div>
-            <label className="block text-slate-400 mb-1">AI 决斗者昵称（留空让 AI 首次进房自取名）</label>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              maxLength={18}
-              placeholder="留空由 AI 自取，或填如 海马濑人"
-              className="w-full px-3 py-1.5 rounded bg-slate-950 border border-slate-700"
-            />
-          </div>
-          <div>
-            <label className="block text-slate-400 mb-1">AI 角色类型</label>
-            <select
-              value={role}
-              onChange={(e) => setRole(e.target.value)}
-              className="w-full px-3 py-1.5 rounded bg-slate-950 border border-slate-700"
-            >
-              <option value="player">对战选手 AI (player)</option>
-              <option value="spectator">只读观战解说 AI (spectator)</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-slate-400 mb-1">限定房间白名单（逗号分隔，留空不限）</label>
-            <input
-              value={roomsText}
-              onChange={(e) => setRoomsText(e.target.value)}
-              placeholder="如 Room01,Tag02"
-              className="w-full px-3 py-1.5 rounded bg-slate-950 border border-slate-700"
-            />
-          </div>
-          <div>
-            <label className="block text-slate-400 mb-1">有效期</label>
-            <select
-              value={expiresHours}
-              onChange={(e) => setExpiresHours(Number(e.target.value))}
-              className="w-full px-3 py-1.5 rounded bg-slate-950 border border-slate-700"
-            >
-              <option value={12}>12 小时</option>
-              <option value={48}>2 天 (48h)</option>
-              <option value={168}>7 天 (168h)</option>
-              <option value={720}>30 天 (720h)</option>
-            </select>
-          </div>
-          <button className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-semibold text-white cursor-pointer">
-            生成 AI Token
-          </button>
-        </form>
-
-        {newlyIssuedRaw && (
-          <div className="p-3 rounded-lg bg-emerald-950/70 border border-emerald-500/40 space-y-2 font-mono">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="break-all text-emerald-200">
-                streamable-http 直连 URL（直接粘贴到客户端 url 框）：{directMcpUrl}
-              </span>
-              <QuickCopyPill text={directMcpUrl} label="复制 MCP 直连 URL" onCopied={() => notify('已复制 MCP 直连 URL')} />
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 text-slate-300 text-[11px]">
-              <span className="break-all">纯明文 Token（仅显示一次）：{newlyIssuedRaw}</span>
-              <QuickCopyPill text={newlyIssuedRaw} label="复制纯 Token" onCopied={() => notify('已复制 AI Token')} />
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
-          <h3 className="text-sm font-semibold">我已创建的 AI Token 列表</h3>
-          <div className="space-y-2 max-h-80 overflow-y-auto">
-            {tokens.map((t) => (
-              <div key={t.id} className="bg-slate-950 p-3 rounded border border-slate-800 space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <div className="font-semibold flex items-center gap-1.5 flex-wrap">
-                      <span>{t.preferredPlayerName || t.name}</span>
-                      <span className="text-emerald-400">[{t.mcpRole}]</span>
-                      {t.mcpRole === 'player' && (
-                        <span
-                          className={`px-1.5 py-0.5 rounded text-[10px] border ${
-                            t.preferredPlayerName
-                              ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-200'
-                              : 'bg-amber-500/15 border-amber-500/30 text-amber-200'
-                          }`}
-                        >
-                          {t.preferredPlayerName ? `绑定昵称: ${t.preferredPlayerName}` : '待 AI 首次进房自取名'}
-                        </span>
-                      )}
-                      {t.revokedAt && <span className="text-rose-400">(已吊销)</span>}
-                    </div>
-                    <div className="text-[11px] text-slate-400 font-mono mt-0.5">
-                      前缀 {t.tokenPrefix}... · 房间限制: {(t.allowedRooms || []).join(', ') || '不限'}
-                    </div>
-                  </div>
-                  {!t.revokedAt && (
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingTokenId(editingTokenId === t.id ? null : t.id);
-                          setEditingNickname(t.preferredPlayerName || '');
-                        }}
-                        className="text-emerald-400 hover:underline cursor-pointer"
-                      >
-                        {t.preferredPlayerName ? '改名' : '指定昵称'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          await apiFetch(`/api/portal/mcp/tokens/${t.id}`, { method: 'DELETE' });
-                          notify('Token 已吊销');
-                          loadTokens();
-                        }}
-                        className="text-rose-400 hover:underline flex items-center gap-1 cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" /> 吊销
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {editingTokenId === t.id && (
-                  <div className="flex items-center gap-1.5 pt-1 border-t border-slate-800/80">
-                    <input
-                      value={editingNickname}
-                      onChange={(e) => setEditingNickname(e.target.value)}
-                      maxLength={18}
-                      placeholder="输入新昵称，或留空交回给 AI 下次自取名"
-                      className="flex-1 px-2.5 py-1 rounded bg-slate-900 border border-slate-700 text-xs"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => saveTokenNickname(t.id, editingNickname)}
-                      className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer"
-                    >
-                      保存
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditingTokenId(null)}
-                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
-                    >
-                      取消
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-            {tokens.length === 0 && <div className="text-slate-500 py-6 text-center">暂未创建任何 AI Token</div>}
-          </div>
-        </div>
-
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2.5">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <h3 className="text-sm font-semibold">外部 AI 客户端接入填法（streamable-http / JSON）</h3>
-            <div className="flex items-center gap-1.5">
-              <QuickCopyPill text={directMcpUrl} label="复制 URL" onCopied={() => notify('已复制 streamable-http URL')} />
-              <QuickCopyPill text={mcpConfigJson} label="复制 JSON" onCopied={() => notify('已复制 MCP 配置 JSON')} />
-            </div>
-          </div>
-          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 text-[11px] text-slate-300 space-y-1">
-            <div>1. <span className="text-slate-400">serverName：</span><code className="text-emerald-300">ygoprosharp</code></div>
-            <div>2. <span className="text-slate-400">transport：</span><code className="text-emerald-300">streamable-http</code></div>
-            <div className="break-all">3. <span className="text-slate-400">url：</span><code className="text-emerald-300">{directMcpUrl}</code></div>
-          </div>
-          <pre className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-[11px] font-mono overflow-x-auto text-slate-300">
-            {mcpConfigJson}
-          </pre>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PortalAuthModal({
-  mode,
-  currentUser,
-  onSwitchMode,
-  onClose,
-  onAuthenticated
-}: {
-  mode: 'login' | 'register' | 'password';
-  currentUser: PortalUser | null;
-  onSwitchMode: (m: 'login' | 'register' | 'password') => void;
-  onClose: () => void;
-  onAuthenticated: (u: PortalUser, msg: string) => void;
-}) {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPw, setConfirmPw] = useState('');
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newUsername, setNewUsername] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    try {
-      if (mode === 'register') {
-        if (password.length < 6) {
-          setError('密码长度至少需要 6 位字符。');
-          setLoading(false);
-          return;
-        }
-        if (password !== confirmPw) {
-          setError('两次输入的密码不一致。');
-          setLoading(false);
-          return;
-        }
-        const res = await apiFetch<{ user: PortalUser; message: string }>('/api/portal/auth/register', {
-          method: 'POST',
-          body: JSON.stringify({ username: username.trim(), password })
-        });
-        onAuthenticated(res.user, res.message || '注册并登录成功！');
-      } else if (mode === 'login') {
-        const res = await apiFetch<{ user: PortalUser; message: string }>('/api/portal/auth/login', {
-          method: 'POST',
-          body: JSON.stringify({ username: username.trim(), password })
-        });
-        onAuthenticated(res.user, res.message || '登录成功！');
-      } else {
-        if (password && password.length < 6) {
-          setError('新密码长度至少需要 6 位字符。');
-          setLoading(false);
-          return;
-        }
-        const res = await apiFetch<{ user: PortalUser; message: string }>('/api/portal/auth/change-password', {
-          method: 'POST',
-          body: JSON.stringify({
-            currentPassword,
-            newUsername: newUsername.trim() || undefined,
-            newPassword: password || undefined
-          })
-        });
-        if (res.user) {
-          onAuthenticated(res.user, res.message || '账号设置已更新');
-        } else {
-          onClose();
-        }
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '操作失败');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
-      <form onSubmit={submit} className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-6 shadow-2xl space-y-4 text-xs">
-        <div className="flex items-center justify-between">
-          <div className="font-bold text-sm flex items-center gap-2 text-emerald-300">
-            <Lock className="w-4 h-4" />
-            {mode === 'register' ? '注册新玩家账号' : mode === 'login' ? '玩家账号登录' : `修改账号设置 (${currentUser?.username})`}
-          </div>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-white cursor-pointer">
-            关闭
-          </button>
-        </div>
-
-        {mode !== 'password' && (
-          <div className="grid grid-cols-2 gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
-            <button
-              type="button"
-              onClick={() => {
-                setError('');
-                onSwitchMode('login');
-              }}
-              className={`py-1.5 rounded-md font-semibold cursor-pointer ${
-                mode === 'login' ? 'bg-emerald-600 text-white' : 'text-slate-400'
-              }`}
-            >
-              已有账号登录
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setError('');
-                onSwitchMode('register');
-              }}
-              className={`py-1.5 rounded-md font-semibold cursor-pointer ${
-                mode === 'register' ? 'bg-emerald-600 text-white' : 'text-slate-400'
-              }`}
-            >
-              免费注册账号
-            </button>
-          </div>
-        )}
-
-        {error && <div className="p-2.5 rounded bg-rose-950/70 border border-rose-500/40 text-rose-200">{error}</div>}
-
-        {mode === 'password' ? (
-          <>
-            <div>
-              <label className="block text-slate-400 mb-1">当前原密码（必填校验）</label>
-              <input
-                type="password"
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-slate-400 mb-1">自定义新用户名（选填，留空保持 {currentUser?.username}）</label>
-              <input
-                value={newUsername}
-                onChange={(e) => setNewUsername(e.target.value)}
-                placeholder={`留空保持 ${currentUser?.username}`}
-                className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700"
-              />
-            </div>
-            <div>
-              <label className="block text-slate-400 mb-1">自定义新密码（最少 6 位，留空保持原密码）</label>
-              <input
-                type="password"
-                minLength={6}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="至少 6 位字符"
-                className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700"
-              />
-            </div>
-          </>
-        ) : (
-          <>
-            <div>
-              <label className="block text-slate-400 mb-1">账号用户名（2~32 位字符）</label>
-              <input
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="如 Duelist_Yugi"
-                minLength={2}
-                maxLength={32}
-                className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-slate-400 mb-1">登录密码（最少 6 位字符）</label>
-              <input
-                type="password"
-                minLength={6}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="至少 6 位字符"
-                className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700"
-                required
-              />
-            </div>
-            {mode === 'register' && (
-              <div>
-                <label className="block text-slate-400 mb-1">确认密码</label>
-                <input
-                  type="password"
-                  minLength={6}
-                  value={confirmPw}
-                  onChange={(e) => setConfirmPw(e.target.value)}
-                  placeholder="再次输入密码"
-                  className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700"
-                  required
-                />
-              </div>
-            )}
-          </>
-        )}
-
-        <button
-          disabled={loading}
-          className="w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 font-semibold text-sm text-white cursor-pointer"
-        >
-          {loading ? '正在提交...' : mode === 'register' ? '立即注册并登录' : mode === 'login' ? '安全登录' : '保存账号设置'}
-        </button>
-      </form>
-    </div>
-  );
-}
-
-function StatBox({ title, value, sub }: { title: string; value: string; sub: string }) {
-  return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-1">
-      <div className="text-xs text-slate-400">{title}</div>
-      <div className="text-lg font-bold text-emerald-300 font-mono">{value}</div>
-      <div className="text-[11px] text-slate-500">{sub}</div>
-    </div>
-  );
-}
-
-function SmallCopy({ text, onCopied }: { text: string; onCopied?: () => void }) {
-  const [ok, setOk] = useState(false);
-  return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        navigator.clipboard?.writeText(text);
-        setOk(true);
-        onCopied?.();
-        setTimeout(() => setOk(false), 1200);
-      }}
-      className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
-      title="复制"
-    >
-      {ok ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-    </button>
   );
 }
