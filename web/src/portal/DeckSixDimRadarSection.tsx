@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Sparkles } from 'lucide-react';
 import { apiFetch } from '../api';
 import { QuickCopyPill } from '../RoomConfigurator';
+import { CodeMirrorEditor } from '../components/CodeMirrorEditor';
 
 const SIX_DIM_AXES: { key: string; label: string }[] = [
   { key: 'burst_power', label: '爆发强度' },
@@ -237,12 +238,15 @@ export function DeckSixDimRadarSection({
               ))}
             </select>
           ) : (
-            <textarea
-              rows={3}
+            <CodeMirrorEditor
               value={ydkInput}
-              onChange={(e) => setYdkInput(e.target.value)}
-              placeholder="#main&#10;89631143&#10;..."
-              className="w-full px-3.5 py-2 input-modern font-mono text-[11px]"
+              onChange={setYdkInput}
+              language="ydk"
+              accent={apiPrefix === '/api/v1' ? 'indigo' : 'emerald'}
+              placeholder={'#main\n89631143\n...'}
+              minHeight="104px"
+              maxHeight="220px"
+              compact
             />
           )}
         </div>

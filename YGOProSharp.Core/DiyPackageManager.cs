@@ -75,6 +75,20 @@ public sealed record DiyGlobalConflictReport(
     IReadOnlyDictionary<string, IReadOnlyList<int>> MissingImagesByPackage);
 
 /// <summary>
+/// 从 <c>.ypk</c> / <c>.zip</c> 扩展包原子解包导入的汇总结果。
+/// </summary>
+public sealed record DiyYpkImportResult(
+    string PackageId,
+    bool IsSuccess,
+    int ImportedCdbFiles,
+    int TotalCards,
+    int ImportedScripts,
+    int ImportedImages,
+    int ImportedDecks,
+    int ImportedConfFiles,
+    IReadOnlyList<string> Errors);
+
+/// <summary>
 /// 管理 <c>&lt;diyRoot&gt;/packages/&lt;package-id&gt;</c> 的目录规范、<c>Working Copy -&gt; 预检 -&gt; 原子替换</c>、
 /// Lua 静态安全审计、多包冲突分析与 <c>.trash</c> 回收站恢复。
 /// </summary>
@@ -124,6 +138,44 @@ public sealed partial class DiyPackageManager
             return false;
 
         return SafePackageIdRegex().IsMatch(packageId);
+    }
+
+    /// <summary>
+    /// 从上传的 <c>.ypk</c> / <c>.zip</c> 文件名推导符合安全规范的受管包 ID（支持中文/特殊字符文件名自动回退稳定短哈希）。
+    /// </summary>
+    public static string SanitizePackageIdFromFileName(string? fileName)
+    {
+        string rawName = Path.GetFileNameWithoutExtension(fileName ?? string.Empty).Trim();
+        if (IsValidPackageId(rawName))
+            return rawName;
+
+        StringBuilder sb = new();
+        bool prevDash = false;
+        foreach (char ch in rawName)
+        {
+            if (char.IsAsciiLetterOrDigit(ch) || ch is '.' or '_' or '-')
+            {
+                if (sb.Length == 0 && !char.IsAsciiLetterOrDigit(ch))
+                    continue;
+                sb.Append(char.ToLowerInvariant(ch));
+                prevDash = false;
+            }
+            else if (sb.Length > 0 && !prevDash)
+            {
+                sb.Append('-');
+                prevDash = true;
+            }
+        }
+
+        string candidate = sb.ToString().Trim('-', '.', '_');
+        if (candidate.Length > 48)
+            candidate = candidate[..48].TrimEnd('-', '.', '_');
+
+        if (IsValidPackageId(candidate))
+            return candidate;
+
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(string.IsNullOrEmpty(rawName) ? Guid.NewGuid().ToString("N") : rawName));
+        return "diy-pack-" + Convert.ToHexString(hash[..4]).ToLowerInvariant();
     }
 
     /// <summary>
@@ -699,6 +751,548 @@ public sealed partial class DiyPackageManager
         }
 
         return ms.ToArray();
+    }
+
+    /// <summary>
+    /// 将当前所有已启用（Enabled）的受管 DIY 包按优先级合并打包为单个全服整合 <c>.ypk</c> 字节数组。
+    /// </summary>
+    public byte[] ExportAllEnabledPackagesAsYpk()
+    {
+        IReadOnlyList<DiyPackageManifest> enabled = ListPackages(enabledOnly: true);
+        if (enabled.Count == 0)
+            throw new InvalidOperationException("No enabled DIY packages available to export.");
+
+        if (enabled.Count == 1)
+            return ExportPackageAsYpk(enabled[0].Id);
+
+        string stagingDir = Path.Combine(_diyRootPath, ".staging", "export_bundle_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(stagingDir);
+        try
+        {
+            string mergedCdbPath = Path.Combine(stagingDir, "cards.cdb");
+            bool hasAnyCard = false;
+            StringBuilder mergedStrings = new();
+            StringBuilder mergedLflist = new();
+            Dictionary<string, string> scriptFiles = new(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, string> picFiles = new(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, string> deckFiles = new(StringComparer.OrdinalIgnoreCase);
+
+            // ListPackages 按 Priority 升序排列，低优先级先写入，高优先级后覆盖
+            foreach (DiyPackageManifest pkg in enabled)
+            {
+                string pkgDir = GetPackageDirectory(pkg.Id);
+                if (!Directory.Exists(pkgDir))
+                    continue;
+
+                foreach (DiyCardSummary item in ListPackageCards(pkg.Id))
+                {
+                    CardDatabaseValidationResult res = _databaseManager.UpsertCard(mergedCdbPath, item.Card);
+                    if (res.IsValid)
+                        hasAnyCard = true;
+                }
+
+                string stringsPath = Path.Combine(pkgDir, "strings.conf");
+                if (File.Exists(stringsPath))
+                {
+                    string txt = File.ReadAllText(stringsPath, Encoding.UTF8).Trim();
+                    if (txt.Length > 0)
+                    {
+                        mergedStrings.AppendLine($"# --- {pkg.Id} ---");
+                        mergedStrings.AppendLine(txt);
+                    }
+                }
+
+                string lfPath = Path.Combine(pkgDir, "lflist.conf");
+                if (File.Exists(lfPath))
+                {
+                    string txt = File.ReadAllText(lfPath, Encoding.UTF8).Trim();
+                    if (txt.Length > 0)
+                    {
+                        mergedLflist.AppendLine(txt);
+                    }
+                }
+
+                string sDir = Path.Combine(pkgDir, "script");
+                if (Directory.Exists(sDir))
+                {
+                    foreach (string f in Directory.EnumerateFiles(sDir, "*.lua", SearchOption.AllDirectories))
+                    {
+                        string rel = "script/" + Path.GetRelativePath(sDir, f).Replace('\\', '/');
+                        scriptFiles[rel] = f;
+                    }
+                }
+
+                string pDir = Path.Combine(pkgDir, "pics");
+                if (Directory.Exists(pDir))
+                {
+                    foreach (string f in Directory.EnumerateFiles(pDir, "*.*", SearchOption.TopDirectoryOnly))
+                    {
+                        string ext = Path.GetExtension(f);
+                        if (ext.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+                            ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                            ext.Equals(".jpeg", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string baseId = Path.GetFileNameWithoutExtension(f);
+                            // 移除同名不同后缀的旧覆盖项
+                            picFiles.Remove($"pics/{baseId}.png");
+                            picFiles.Remove($"pics/{baseId}.jpg");
+                            picFiles.Remove($"pics/{baseId}.jpeg");
+                            picFiles[$"pics/{Path.GetFileName(f)}"] = f;
+                        }
+                    }
+                }
+
+                string dDir = Path.Combine(pkgDir, "decks");
+                if (Directory.Exists(dDir))
+                {
+                    foreach (string f in Directory.EnumerateFiles(dDir, "*.ydk", SearchOption.TopDirectoryOnly))
+                    {
+                        deckFiles[$"decks/{Path.GetFileName(f)}"] = f;
+                    }
+                }
+            }
+
+            using MemoryStream ms = new();
+            using (ZipArchive zip = new(ms, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                if (hasAnyCard && File.Exists(mergedCdbPath))
+                    AddFileToZip(zip, mergedCdbPath, "cards.cdb");
+
+                if (mergedStrings.Length > 0)
+                    AddBytesToZip(zip, Encoding.UTF8.GetBytes(mergedStrings.ToString()), "strings.conf");
+
+                if (mergedLflist.Length > 0)
+                    AddBytesToZip(zip, Encoding.UTF8.GetBytes(mergedLflist.ToString()), "lflist.conf");
+
+                foreach ((string entryName, string srcPath) in scriptFiles.OrderBy(static kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+                    AddFileToZip(zip, srcPath, entryName);
+
+                foreach ((string entryName, string srcPath) in picFiles.OrderBy(static kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+                    AddFileToZip(zip, srcPath, entryName);
+
+                foreach ((string entryName, string srcPath) in deckFiles.OrderBy(static kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+                    AddFileToZip(zip, srcPath, entryName);
+            }
+
+            return ms.ToArray();
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(stagingDir))
+                    Directory.Delete(stagingDir, recursive: true);
+            }
+            catch
+            {
+                // 忽略临时目录清理异常
+            }
+        }
+    }
+
+    /// <summary>
+    /// 遵循 <c>Working Copy -&gt; 预检 -&gt; 原子替换</c> 安全导入标准 <c>.ypk</c> / <c>.zip</c> 扩展包：
+    /// 校验路径穿越（ZIP Slip）、Lua 危险系统调用、SQLite <c>.cdb</c> 表结构、卡图 PNG/JPEG 魔数头与 <c>.ydk</c> 语法。
+    /// </summary>
+    public DiyYpkImportResult ImportPackageFromYpk(
+        string packageId,
+        Stream archiveStream,
+        string? displayName = null,
+        string? author = null,
+        bool mergeIntoExisting = true,
+        long maxUncompressedBytes = 64L * 1024 * 1024)
+    {
+        EnsureValidPackageId(packageId);
+        ArgumentNullException.ThrowIfNull(archiveStream);
+
+        if (archiveStream.CanSeek)
+            archiveStream.Position = 0;
+
+        IReadOnlyList<string> auditErrors;
+        try
+        {
+            auditErrors = AuditArchiveEntries(archiveStream, maxUncompressedBytes);
+        }
+        catch (InvalidDataException)
+        {
+            return new DiyYpkImportResult(packageId, false, 0, 0, 0, 0, 0, 0, ["Invalid or corrupted .ypk / ZIP archive."]);
+        }
+
+        if (auditErrors.Count > 0)
+            return new DiyYpkImportResult(packageId, false, 0, 0, 0, 0, 0, 0, auditErrors);
+
+        if (archiveStream.CanSeek)
+            archiveStream.Position = 0;
+
+        string pkgDir = GetPackageDirectory(packageId);
+        string stagingRoot = Path.Combine(_diyRootPath, ".staging");
+        Directory.CreateDirectory(stagingRoot);
+        string stagingDir = Path.Combine(stagingRoot, $"{packageId}_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stagingDir);
+
+        List<string> errors = new();
+        int importedCdbs = 0;
+        int importedScripts = 0;
+        int importedImages = 0;
+        int importedDecks = 0;
+        int importedConfs = 0;
+
+        try
+        {
+            DiyPackageManifest? existingManifest = null;
+            if (Directory.Exists(pkgDir))
+            {
+                existingManifest = ReadOrCreateDefaultManifest(packageId, pkgDir);
+                if (mergeIntoExisting)
+                    CopyDirectoryRecursively(pkgDir, stagingDir);
+            }
+
+            DiyPackageManifest? archiveManifest = null;
+            using (ZipArchive archive = new(archiveStream, ZipArchiveMode.Read, leaveOpen: true))
+            {
+                string? wrapperPrefix = DetectSingleWrapperFolderPrefix(archive);
+                string stagingMergedCdb = Path.Combine(stagingDir, "cards.cdb");
+
+                foreach (ZipArchiveEntry entry in archive.Entries)
+                {
+                    if (string.IsNullOrEmpty(entry.Name))
+                        continue;
+
+                    string relPath = entry.FullName.Replace('\\', '/').TrimStart('/');
+                    if (wrapperPrefix is not null && relPath.StartsWith(wrapperPrefix, StringComparison.OrdinalIgnoreCase))
+                        relPath = relPath[wrapperPrefix.Length..];
+
+                    if (string.IsNullOrWhiteSpace(relPath))
+                        continue;
+
+                    string[] segments = relPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                    if (segments.Length == 0)
+                        continue;
+
+                    string topSeg = segments[0];
+                    string fileName = Path.GetFileName(relPath);
+                    string ext = Path.GetExtension(fileName).ToLowerInvariant();
+                    byte[] bytes = ReadEntryBytes(entry);
+
+                    if (segments.Length == 1 && fileName.Equals("manifest.json", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try
+                        {
+                            archiveManifest = JsonSerializer.Deserialize<DiyPackageManifest>(bytes, JsonOptions);
+                        }
+                        catch
+                        {
+                            // 忽略非标准 manifest.json
+                        }
+                        continue;
+                    }
+
+                    if (ext == ".cdb" && (segments.Length == 1 || topSeg.Equals("cdb", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        string tempCdb = Path.Combine(stagingDir, $"__verify_{Guid.NewGuid():N}.cdb");
+                        try
+                        {
+                            File.WriteAllBytes(tempCdb, bytes);
+                            CardDatabaseValidationResult val = _databaseManager.ValidateDatabase(tempCdb);
+                            if (!val.IsValid)
+                            {
+                                errors.Add($"{entry.FullName}: {val.ErrorMessage ?? "Invalid SQLite card database."}");
+                                continue;
+                            }
+
+                            if (!File.Exists(stagingMergedCdb))
+                            {
+                                File.Move(tempCdb, stagingMergedCdb, overwrite: true);
+                            }
+                            else
+                            {
+                                foreach (DiyCardEntry card in _databaseManager.LoadEditableCards(tempCdb))
+                                {
+                                    CardDatabaseValidationResult upRes = _databaseManager.UpsertCard(stagingMergedCdb, card);
+                                    if (!upRes.IsValid)
+                                    {
+                                        errors.Add($"{entry.FullName} (c{card.Id}): {upRes.ErrorMessage}");
+                                        break;
+                                    }
+                                }
+                            }
+                            importedCdbs++;
+                        }
+                        finally
+                        {
+                            if (File.Exists(tempCdb))
+                            {
+                                try { File.Delete(tempCdb); } catch { }
+                            }
+                        }
+                    }
+                    else if (ext == ".lua" && (segments.Length == 1 || topSeg.Equals("script", StringComparison.OrdinalIgnoreCase) || topSeg.Equals("scripts", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        string scriptDir = Path.Combine(stagingDir, "script");
+                        string subRel = topSeg.Equals("script", StringComparison.OrdinalIgnoreCase) || topSeg.Equals("scripts", StringComparison.OrdinalIgnoreCase)
+                            ? string.Join('/', segments.Skip(1))
+                            : fileName;
+                        string destScript = EnsureSafeChildPath(scriptDir, subRel, ".lua");
+                        Directory.CreateDirectory(Path.GetDirectoryName(destScript)!);
+                        File.WriteAllBytes(destScript, bytes);
+                        importedScripts++;
+                    }
+                    else if (ext is ".png" or ".jpg" or ".jpeg" &&
+                             (segments.Length == 1 || topSeg.Equals("pics", StringComparison.OrdinalIgnoreCase) || topSeg.Equals("picture", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        // 跳过缩略图子目录（如 pics/thumbnail/*）以免低清图覆盖主卡图
+                        if (segments.Length >= 3 && segments[1].Equals("thumbnail", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        if (bytes.Length > 8 * 1024 * 1024)
+                        {
+                            errors.Add($"{entry.FullName}: Card image exceeds 8MB limit.");
+                            continue;
+                        }
+
+                        string? normalizedImgExt = DetectImageExtension(bytes);
+                        if (normalizedImgExt is null)
+                        {
+                            errors.Add($"{entry.FullName}: Invalid PNG/JPEG image header.");
+                            continue;
+                        }
+
+                        string baseName = Path.GetFileNameWithoutExtension(fileName);
+                        if (!int.TryParse(baseName, out int parsedCardId) || parsedCardId <= 0)
+                            continue;
+
+                        string picsDir = Path.Combine(stagingDir, "pics");
+                        Directory.CreateDirectory(picsDir);
+                        foreach (string oldExt in new[] { ".png", ".jpg", ".jpeg" })
+                        {
+                            string oldFile = Path.Combine(picsDir, $"{parsedCardId}{oldExt}");
+                            if (File.Exists(oldFile))
+                                File.Delete(oldFile);
+                        }
+
+                        string destPic = EnsureSafeChildPath(picsDir, $"{parsedCardId}{normalizedImgExt}", normalizedImgExt);
+                        File.WriteAllBytes(destPic, bytes);
+                        importedImages++;
+                    }
+                    else if (ext == ".ydk" &&
+                             (segments.Length == 1 || topSeg.Equals("deck", StringComparison.OrdinalIgnoreCase) || topSeg.Equals("decks", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        string ydkText = Encoding.UTF8.GetString(bytes);
+                        YdkDeckData parsedDeck = YdkSerializer.Parse(ydkText, Path.GetFileNameWithoutExtension(fileName));
+                        if (parsedDeck.Main.Count == 0 && parsedDeck.Extra.Count == 0)
+                            continue;
+
+                        string decksDir = Path.Combine(stagingDir, "decks");
+                        Directory.CreateDirectory(decksDir);
+                        string destDeck = EnsureSafeChildPath(decksDir, fileName, ".ydk");
+                        File.WriteAllBytes(destDeck, Encoding.UTF8.GetBytes(ydkText));
+                        importedDecks++;
+                    }
+                    else if (ext == ".conf" && segments.Length == 1 &&
+                             (fileName.Equals("strings.conf", StringComparison.OrdinalIgnoreCase) ||
+                              fileName.Equals("lflist.conf", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        string confText = Encoding.UTF8.GetString(bytes);
+                        if (fileName.Equals("lflist.conf", StringComparison.OrdinalIgnoreCase))
+                        {
+                            try
+                            {
+                                _ = BanlistManager.ParseText(confText);
+                            }
+                            catch (Exception ex)
+                            {
+                                errors.Add($"{entry.FullName}: Invalid lflist.conf ({ex.Message}).");
+                                continue;
+                            }
+                        }
+
+                        string canonicalConf = fileName.Equals("strings.conf", StringComparison.OrdinalIgnoreCase) ? "strings.conf" : "lflist.conf";
+                        string destConf = EnsureSafeChildPath(stagingDir, canonicalConf, ".conf");
+                        File.WriteAllBytes(destConf, Encoding.UTF8.GetBytes(confText));
+                        importedConfs++;
+                    }
+                }
+            }
+
+            if (errors.Count > 0)
+                return new DiyYpkImportResult(packageId, false, 0, 0, 0, 0, 0, 0, errors);
+
+            if (importedCdbs == 0 && importedScripts == 0 && importedImages == 0 && importedDecks == 0 && importedConfs == 0)
+            {
+                return new DiyYpkImportResult(
+                    packageId,
+                    false,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    ["Archive does not contain any recognizable YGOPro .ypk assets (.cdb, script/*.lua, pics/*, deck/*.ydk, strings.conf, lflist.conf)."]);
+            }
+
+            // 若原本存在多个零散 .cdb，在合并进 cards.cdb 后清理其他 .cdb 以保证单卡编辑器一致性
+            string finalMergedCdb = Path.Combine(stagingDir, "cards.cdb");
+            if (File.Exists(finalMergedCdb))
+            {
+                foreach (string extraCdb in Directory.EnumerateFiles(stagingDir, "*.cdb", SearchOption.TopDirectoryOnly))
+                {
+                    if (!string.Equals(Path.GetFileName(extraCdb), "cards.cdb", StringComparison.OrdinalIgnoreCase))
+                    {
+                        foreach (DiyCardEntry c in _databaseManager.LoadEditableCards(extraCdb))
+                            _databaseManager.UpsertCard(finalMergedCdb, c);
+                        File.Delete(extraCdb);
+                    }
+                }
+            }
+
+            DiyPackageManifest finalManifest = new()
+            {
+                Id = packageId,
+                Name = !string.IsNullOrWhiteSpace(displayName)
+                    ? displayName.Trim()
+                    : !string.IsNullOrWhiteSpace(archiveManifest?.Name)
+                        ? archiveManifest.Name.Trim()
+                        : existingManifest?.Name ?? packageId,
+                Version = !string.IsNullOrWhiteSpace(archiveManifest?.Version)
+                    ? archiveManifest.Version.Trim()
+                    : existingManifest?.Version ?? "1.0.0",
+                Author = !string.IsNullOrWhiteSpace(author)
+                    ? author.Trim()
+                    : !string.IsNullOrWhiteSpace(archiveManifest?.Author)
+                        ? archiveManifest.Author.Trim()
+                        : existingManifest?.Author ?? string.Empty,
+                Enabled = existingManifest?.Enabled ?? true,
+                Priority = existingManifest?.Priority ?? archiveManifest?.Priority ?? 100,
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            };
+
+            File.WriteAllBytes(
+                Path.Combine(stagingDir, "manifest.json"),
+                JsonSerializer.SerializeToUtf8Bytes(finalManifest, JsonOptions));
+
+            // 原子目录切换
+            Directory.CreateDirectory(PackagesDirectory);
+            string? backupDir = null;
+            if (Directory.Exists(pkgDir))
+            {
+                backupDir = Path.Combine(stagingRoot, $"{packageId}_bak_{Guid.NewGuid():N}");
+                Directory.Move(pkgDir, backupDir);
+            }
+
+            try
+            {
+                Directory.Move(stagingDir, pkgDir);
+            }
+            catch
+            {
+                if (backupDir is not null && Directory.Exists(backupDir) && !Directory.Exists(pkgDir))
+                {
+                    try { Directory.Move(backupDir, pkgDir); } catch { }
+                }
+                throw;
+            }
+            finally
+            {
+                if (backupDir is not null && Directory.Exists(backupDir))
+                {
+                    try { Directory.Delete(backupDir, recursive: true); } catch { }
+                }
+            }
+
+            int totalCards = ListPackageCards(packageId).Count;
+            return new DiyYpkImportResult(
+                packageId,
+                true,
+                importedCdbs,
+                totalCards,
+                importedScripts,
+                importedImages,
+                importedDecks,
+                importedConfs,
+                []);
+        }
+        finally
+        {
+            if (Directory.Exists(stagingDir))
+            {
+                try { Directory.Delete(stagingDir, recursive: true); } catch { }
+            }
+        }
+    }
+
+    private static void AddBytesToZip(ZipArchive zip, byte[] bytes, string entryName)
+    {
+        ZipArchiveEntry entry = zip.CreateEntry(entryName, CompressionLevel.Optimal);
+        using Stream entryStream = entry.Open();
+        entryStream.Write(bytes, 0, bytes.Length);
+    }
+
+    private static byte[] ReadEntryBytes(ZipArchiveEntry entry)
+    {
+        using Stream s = entry.Open();
+        using MemoryStream ms = new();
+        s.CopyTo(ms);
+        return ms.ToArray();
+    }
+
+    private static string? DetectImageExtension(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47)
+            return ".png";
+        if (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF)
+            return ".jpg";
+        return null;
+    }
+
+    private static string? DetectSingleWrapperFolderPrefix(ZipArchive archive)
+    {
+        string? commonFirstSeg = null;
+        foreach (ZipArchiveEntry entry in archive.Entries)
+        {
+            if (string.IsNullOrEmpty(entry.Name))
+                continue;
+
+            string rel = entry.FullName.Replace('\\', '/').TrimStart('/');
+            string[] parts = rel.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length <= 1)
+                return null;
+
+            string first = parts[0];
+            if (first.Equals("script", StringComparison.OrdinalIgnoreCase) ||
+                first.Equals("scripts", StringComparison.OrdinalIgnoreCase) ||
+                first.Equals("pics", StringComparison.OrdinalIgnoreCase) ||
+                first.Equals("picture", StringComparison.OrdinalIgnoreCase) ||
+                first.Equals("deck", StringComparison.OrdinalIgnoreCase) ||
+                first.Equals("decks", StringComparison.OrdinalIgnoreCase) ||
+                first.Equals("cdb", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            if (commonFirstSeg is null)
+                commonFirstSeg = first;
+            else if (!string.Equals(commonFirstSeg, first, StringComparison.OrdinalIgnoreCase))
+                return null;
+        }
+
+        return commonFirstSeg is not null ? commonFirstSeg + "/" : null;
+    }
+
+    private static void CopyDirectoryRecursively(string sourceDir, string destinationDir)
+    {
+        Directory.CreateDirectory(destinationDir);
+        foreach (string file in Directory.EnumerateFiles(sourceDir))
+        {
+            string destFile = Path.Combine(destinationDir, Path.GetFileName(file));
+            File.Copy(file, destFile, overwrite: true);
+        }
+
+        foreach (string subDir in Directory.EnumerateDirectories(sourceDir))
+        {
+            string destSub = Path.Combine(destinationDir, Path.GetFileName(subDir));
+            CopyDirectoryRecursively(subDir, destSub);
+        }
     }
 
     private static void AddFileToZip(ZipArchive zip, string sourceFilePath, string entryName)

@@ -127,7 +127,7 @@ public sealed class WebControlAndPortalTests
                 }
 
                 YGOClient humanClient = serverHost.ConnectLocalClient();
-                SendPlayerJoin(humanClient, "PlayerAlpha$secretpw", "ShowMatch1");
+                SendPlayerJoin(humanClient, "PlayerAlpha$secpw", "ShowMatch1");
                 DateTime joinDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
                 while (DateTime.UtcNow < joinDeadline)
                 {

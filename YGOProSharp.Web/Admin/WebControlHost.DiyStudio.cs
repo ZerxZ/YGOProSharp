@@ -114,17 +114,18 @@ public sealed partial class WebControlHost
                 else if (ext is ".ypk" or ".zip")
                 {
                     ms.Position = 0;
-                    IReadOnlyList<string> archiveErrs = DiyPackageManager.AuditArchiveEntries(ms);
-                    if (archiveErrs.Count > 0)
+                    DiyYpkImportResult ypkImport = _diyManager.ImportPackageFromYpk(
+                        id,
+                        ms,
+                        author: principal.Username,
+                        mergeIntoExisting: true);
+                    if (!ypkImport.IsSuccess)
                     {
-                        errors.AddRange(archiveErrs.Select(e => $"{fileName}: {e}"));
+                        errors.AddRange(ypkImport.Errors.Select(e => $"{fileName}: {e}"));
                     }
                     else
                     {
-                        string pkgDir = _diyManager.GetPackageDirectory(id);
-                        Directory.CreateDirectory(pkgDir);
-                        await File.WriteAllBytesAsync(Path.Combine(pkgDir, fileName), bytes, ct).ConfigureAwait(false);
-                        savedFiles.Add(fileName);
+                        savedFiles.Add($"{fileName} (cards:{ypkImport.TotalCards}, lua:{ypkImport.ImportedScripts}, pics:{ypkImport.ImportedImages}, ydk:{ypkImport.ImportedDecks})");
                     }
                 }
                 else if (ext == ".conf")
@@ -383,6 +384,123 @@ public sealed partial class WebControlHost
         return Results.Ok(new { success = true, stringsConf = summary });
     }
 
+    [HttpPost("/api/v1/diy/packages/import-ypk")]
+    [AdminAuth(RbacPermissions.DiyEdit, RbacPermissions.DiyUpload)]
+    private async Task<IResult> ImportDiyPackageYpkAsync(
+        AuthenticatedPrincipal principal,
+        HttpContext http,
+        CancellationToken ct)
+    {
+        if (!http.Request.HasFormContentType)
+            return Results.BadRequest(new { message = "请使用 multipart/form-data 上传 .ypk 或 .zip 扩展包。" });
+
+        IFormCollection form = await http.Request.ReadFormAsync(ct).ConfigureAwait(false);
+        if (form.Files.Count == 0)
+            return Results.BadRequest(new { message = "未检测到上传的 .ypk 文件。" });
+
+        IFormFile file = form.Files[0];
+        string ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+        if (ext is not (".ypk" or ".zip"))
+            return Results.BadRequest(new { message = "仅支持导入 .ypk 或标准 .zip 扩展包。" });
+
+        if (file.Length > 64L * 1024 * 1024)
+            return Results.BadRequest(new { message = "单个 .ypk 文件不能超过 64MB。" });
+
+        string? requestedId = form["packageId"].ToString().Trim();
+        string pkgId = !string.IsNullOrWhiteSpace(requestedId)
+            ? requestedId
+            : DiyPackageManager.SanitizePackageIdFromFileName(file.FileName);
+
+        if (!DiyPackageManager.IsValidPackageId(pkgId))
+            return Results.BadRequest(new { message = "包 ID 仅允许字母、数字、点、下划线和连字符（1~64 位）。" });
+
+        string? requestedName = form["name"].ToString().Trim();
+        string defaultName = Path.GetFileNameWithoutExtension(file.FileName).Trim();
+        string? displayName = !string.IsNullOrWhiteSpace(requestedName)
+            ? requestedName
+            : !string.IsNullOrWhiteSpace(defaultName)
+                ? defaultName
+                : null;
+
+        bool merge = !string.Equals(form["merge"].ToString(), "false", StringComparison.OrdinalIgnoreCase);
+        bool autoReload = !string.Equals(form["autoReload"].ToString(), "false", StringComparison.OrdinalIgnoreCase);
+
+        using MemoryStream ms = new();
+        await file.CopyToAsync(ms, ct).ConfigureAwait(false);
+        ms.Position = 0;
+
+        DiyYpkImportResult importRes = _diyManager.ImportPackageFromYpk(
+            pkgId,
+            ms,
+            displayName: displayName,
+            author: principal.Username,
+            mergeIntoExisting: merge);
+
+        if (!importRes.IsSuccess)
+        {
+            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "diy.import_ypk", RbacPermissions.DiyUpload, pkgId, http.GetRemoteIpNormalized(), "rejected", string.Join("; ", importRes.Errors), ct).ConfigureAwait(false);
+            return Results.BadRequest(new
+            {
+                success = false,
+                message = "导入 .ypk 安全预检未通过：" + string.Join("; ", importRes.Errors),
+                errors = importRes.Errors
+            });
+        }
+
+        ServerReloadResult? reload = null;
+        if (autoReload && principal.HasPermission(RbacPermissions.DiyReload))
+        {
+            reload = _serverHost.Server.ReloadAssets();
+            await _store.Cache.FlushNamespaceAsync("cards", ct).ConfigureAwait(false);
+            _eventHub.BroadcastEvent("diy.reloaded", reload, RbacPermissions.DashboardView);
+        }
+
+        DiyPackageValidationReport report = _diyManager.ValidatePackage(pkgId, _serverHost.Server.CardRepository);
+        DiyPackageManifest? manifest = _diyManager.ListPackages()
+            .FirstOrDefault(p => string.Equals(p.Id, pkgId, StringComparison.OrdinalIgnoreCase));
+
+        await _store.AppendAuditAsync(
+            "panel_user",
+            principal.UserId.ToString(),
+            principal.Username,
+            "diy.import_ypk",
+            RbacPermissions.DiyUpload,
+            pkgId,
+            http.GetRemoteIpNormalized(),
+            "ok",
+            JsonSerializer.Serialize(new { importRes.TotalCards, importRes.ImportedScripts, importRes.ImportedImages, importRes.ImportedDecks }),
+            ct).ConfigureAwait(false);
+
+        return Results.Ok(new
+        {
+            success = true,
+            packageId = pkgId,
+            manifest,
+            importResult = importRes,
+            validation = report,
+            reload
+        });
+    }
+
+    [HttpGet("/api/v1/diy/export-all.ypk")]
+    [AdminAuth(RbacPermissions.DiyView)]
+    private async Task<IResult> ExportAllDiyPackagesYpkAsync(
+        AuthenticatedPrincipal principal,
+        HttpContext http,
+        CancellationToken ct)
+    {
+        try
+        {
+            byte[] ypkBytes = _diyManager.ExportAllEnabledPackagesAsYpk();
+            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "diy.export_all_ypk", RbacPermissions.DiyView, "all-enabled", http.GetRemoteIpNormalized(), "ok", null, ct).ConfigureAwait(false);
+            return Results.File(ypkBytes, "application/zip", "ygoprosharp-all-diy.ypk");
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.NotFound(new { message = ex.Message });
+        }
+    }
+
     [HttpGet("/api/v1/diy/packages/{id}/export.ypk")]
     [AdminAuth(RbacPermissions.DiyView)]
     private async Task<IResult> ExportDiyPackageYpkAsync(
@@ -606,6 +724,36 @@ public sealed partial class WebControlHost
             }
         }
 
+        if (payload.Images is not null)
+        {
+            foreach (ProposedCardImageDto img in payload.Images)
+            {
+                if (img.CardId <= 0 || string.IsNullOrWhiteSpace(img.Base64Data))
+                {
+                    errors.Add("提案中的卡图必须包含正整数卡密与有效图像数据。");
+                    continue;
+                }
+
+                try
+                {
+                    byte[] raw = Convert.FromBase64String(img.Base64Data);
+                    if (raw.Length < 8 || raw.Length > 8 * 1024 * 1024)
+                    {
+                        errors.Add($"卡图 #{img.CardId} 体积超出限制（最大 8MB）。");
+                        continue;
+                    }
+                    bool isPng = raw[0] == 0x89 && raw[1] == 0x50 && raw[2] == 0x4E && raw[3] == 0x47;
+                    bool isJpg = raw[0] == 0xFF && raw[1] == 0xD8 && raw[2] == 0xFF;
+                    if (!isPng && !isJpg)
+                        errors.Add($"卡图 #{img.CardId} 仅支持标准 PNG 或 JPEG 格式。");
+                }
+                catch (FormatException)
+                {
+                    errors.Add($"卡图 #{img.CardId} Base64 数据损坏。");
+                }
+            }
+        }
+
         return errors;
     }
 
@@ -670,6 +818,15 @@ public sealed partial class WebControlHost
             {
                 foreach (ProposedDeckFileDto deck in payload.Decks)
                     _diyManager.SaveDeck(proposal.PackageId, deck.Name!, deck.YdkContent!);
+            }
+
+            if (payload.Images is not null)
+            {
+                foreach (ProposedCardImageDto img in payload.Images)
+                {
+                    byte[] raw = Convert.FromBase64String(img.Base64Data);
+                    _diyManager.SaveCardImage(proposal.PackageId, img.CardId, raw);
+                }
             }
 
             return (true, null);

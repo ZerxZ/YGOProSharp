@@ -36,6 +36,7 @@ import { PortalAiTokenCenter } from './portal/PortalAiTokenCenter';
 import { TagForceCommandPad } from './portal/TagForceCommandPad';
 import { ReplayReviewPanel } from './portal/ReplayReviewPanel';
 import { DeckSixDimRadarSection } from './portal/DeckSixDimRadarSection';
+import { CodeMirrorEditor } from './components/CodeMirrorEditor';
 
 export type { SurfaceInfo } from './portal/portalTypes';
 
@@ -215,6 +216,8 @@ export function UserPortalApp({
   const [tYdk, setTYdk] = useState('');
   const [tResultHash, setTResultHash] = useState('');
 
+  const [propMode, setPropMode] = useState<'single' | 'ypk'>('single');
+  const [propUploadingYpk, setPropUploadingYpk] = useState(false);
   const [propAuthor, setPropAuthor] = useState('');
   const [propPkg, setPropPkg] = useState('community-diy');
   const [propCardId, setPropCardId] = useState(99100001);
@@ -375,6 +378,10 @@ export function UserPortalApp({
 
   const submitTournamentDeck = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!tYdk.trim()) {
+      notify('请先粘贴或输入 .ydk 卡组文本内容', 'err');
+      return;
+    }
     try {
       const res = await apiFetch('/api/portal/tournament-decks', {
         method: 'POST',
@@ -415,6 +422,28 @@ export function UserPortalApp({
       notify(res.message);
     } catch (err) {
       notify(err instanceof Error ? err.message : '投稿失败', 'err');
+    }
+  };
+
+  const submitYpkProposal = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setPropUploadingYpk(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', files[0]);
+      if (propPkg.trim()) fd.append('packageId', propPkg.trim());
+      if ((propAuthor || portalUser?.username)?.trim()) {
+        fd.append('authorName', (propAuthor || portalUser?.username || '').trim());
+      }
+      const res = await apiFetch('/api/portal/diy/proposals/import-ypk', {
+        method: 'POST',
+        body: fd
+      });
+      notify(res.message || 'YPK 整包投稿成功！');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : '上传 .ypk 投稿失败', 'err');
+    } finally {
+      setPropUploadingYpk(false);
     }
   };
 
@@ -1151,12 +1180,26 @@ export function UserPortalApp({
             <DeckSixDimRadarSection chaosYdk={chaosDeck?.ydk} notify={notify} />
 
             <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-3.5">
-              <h2 className="text-sm sm:text-base font-bold flex items-center gap-2">
-                <Download className="w-4 h-4 text-emerald-400" /> 本服 DIY 扩展包一键下载
-              </h2>
-              <p className="text-[11px] text-slate-400 -mt-2">
-                下载 <code className="text-emerald-300 font-mono">.ypk</code> 文件放入客户端 <code className="text-slate-300 font-mono">expansions/</code> 目录即可完整显示 DIY 卡图与效果文本
-              </p>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <div>
+                  <h2 className="text-sm sm:text-base font-bold flex items-center gap-2">
+                    <Download className="w-4 h-4 text-emerald-400" /> 本服 DIY 扩展包 (.ypk) 导出下载
+                  </h2>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    下载 <code className="text-emerald-300 font-mono">.ypk</code> 文件放入客户端{' '}
+                    <code className="text-slate-300 font-mono">expansions/</code> 目录即可完整显示 DIY 卡图、字段与效果文本
+                  </p>
+                </div>
+                {diyPackages.length > 0 && (
+                  <a
+                    href="/api/portal/diy/export-all.ypk"
+                    download
+                    className="min-h-[38px] inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white text-xs font-semibold shadow-lg shadow-emerald-950/50 shrink-0"
+                  >
+                    <Download className="w-3.5 h-3.5" /> 一键导出全服整合包 (.ypk)
+                  </a>
+                )}
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {diyPackages.map((pkg) => (
                   <div key={pkg.id} className="glass-subcard rounded-2xl p-4 space-y-2.5 text-xs">
@@ -1316,13 +1359,15 @@ export function UserPortalApp({
                   required
                 />
               </div>
-              <textarea
-                rows={6}
+              <CodeMirrorEditor
                 value={tYdk}
-                onChange={(e) => setTYdk(e.target.value)}
-                placeholder="粘贴 .ydk 文件全部文本内容 (#main ...)"
-                className="w-full p-3 input-modern font-mono"
-                required
+                onChange={setTYdk}
+                language="ydk"
+                accent="emerald"
+                placeholder={'#created by ...\n#main\n89631143\n#extra\n!side'}
+                minHeight="145px"
+                maxHeight="240px"
+                compact
               />
               <button className="w-full min-h-[42px] py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold cursor-pointer">
                 提交比赛卡组并获取校验码
@@ -1335,7 +1380,29 @@ export function UserPortalApp({
             </form>
 
             <form onSubmit={submitDiyProposal} className="glass-card rounded-2xl p-5 space-y-3">
-              <h3 className="text-sm font-bold text-amber-300">3. 社区 DIY 新卡投稿</h3>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <h3 className="text-sm font-bold text-amber-300">3. 社区 DIY 投稿 / 导入 .ypk</h3>
+                <div className="inline-flex p-0.5 rounded-xl bg-slate-950 border border-slate-800 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setPropMode('single')}
+                    className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer ${
+                      propMode === 'single' ? 'bg-amber-500 text-slate-950 font-semibold' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    单卡编写
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPropMode('ypk')}
+                    className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer ${
+                      propMode === 'ypk' ? 'bg-amber-500 text-slate-950 font-semibold' : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    导入 .ypk 整包
+                  </button>
+                </div>
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 <input
                   value={propAuthor}
@@ -1346,45 +1413,85 @@ export function UserPortalApp({
                 <input
                   value={propPkg}
                   onChange={(e) => setPropPkg(e.target.value)}
-                  placeholder="目标包 ID"
+                  placeholder="目标包 ID (留空按包名)"
                   className="px-3 py-2 input-modern font-mono"
                 />
               </div>
-              <div className="grid grid-cols-3 gap-2">
-                <input
-                  type="number"
-                  value={propCardId}
-                  onChange={(e) => setPropCardId(Number(e.target.value))}
-                  placeholder="卡密"
-                  className="px-3 py-2 input-modern font-mono"
-                  required
-                />
-                <input
-                  value={propCardName}
-                  onChange={(e) => setPropCardName(e.target.value)}
-                  placeholder="新卡名称"
-                  className="col-span-2 px-3 py-2 input-modern"
-                  required
-                />
-              </div>
-              <textarea
-                rows={2}
-                value={propCardDesc}
-                onChange={(e) => setPropCardDesc(e.target.value)}
-                placeholder="卡片效果文本..."
-                className="w-full p-2.5 input-modern"
-                required
-              />
-              <textarea
-                rows={4}
-                value={propLua}
-                onChange={(e) => setPropLua(e.target.value)}
-                spellCheck={false}
-                className="w-full p-2.5 input-modern font-mono text-[11px] text-emerald-200"
-              />
-              <button className="w-full min-h-[42px] py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold flex items-center justify-center gap-1.5 cursor-pointer">
-                <Send className="w-3.5 h-3.5" /> 投递至管理后台待审队列
-              </button>
+
+              {propMode === 'single' ? (
+                <>
+                  <div className="grid grid-cols-3 gap-2">
+                    <input
+                      type="number"
+                      value={propCardId}
+                      onChange={(e) => setPropCardId(Number(e.target.value))}
+                      placeholder="卡密"
+                      className="px-3 py-2 input-modern font-mono"
+                      required
+                    />
+                    <input
+                      value={propCardName}
+                      onChange={(e) => setPropCardName(e.target.value)}
+                      placeholder="新卡名称"
+                      className="col-span-2 px-3 py-2 input-modern"
+                      required
+                    />
+                  </div>
+                  <textarea
+                    rows={2}
+                    value={propCardDesc}
+                    onChange={(e) => setPropCardDesc(e.target.value)}
+                    placeholder="卡片效果文本..."
+                    className="w-full p-2.5 input-modern"
+                    required
+                  />
+                  <CodeMirrorEditor
+                    value={propLua}
+                    onChange={setPropLua}
+                    language="lua"
+                    accent="emerald"
+                    title={`script/c${propCardId}.lua`}
+                    minHeight="135px"
+                    maxHeight="250px"
+                    compact
+                  />
+                  <button className="w-full min-h-[42px] py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold flex items-center justify-center gap-1.5 cursor-pointer">
+                    <Send className="w-3.5 h-3.5" /> 投递至管理后台待审队列
+                  </button>
+                </>
+              ) : (
+                <div className="space-y-3 pt-1">
+                  <div className="glass-subcard rounded-2xl p-4 border border-dashed border-amber-500/40 text-center space-y-2">
+                    <div className="text-slate-200 font-semibold">
+                      直接导入 DataEditorX / DataEditorY / YGOFabrica 导出的 <code className="text-amber-300 font-mono">.ypk</code>
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      自动解包校验包内 <code className="text-slate-300 font-mono">.cdb</code>、
+                      <code className="text-slate-300 font-mono">script/*.lua</code>、
+                      <code className="text-slate-300 font-mono">pics/*</code>、
+                      <code className="text-slate-300 font-mono">deck/*.ydk</code> 与{' '}
+                      <code className="text-slate-300 font-mono">strings.conf</code>，预检通过后送入后台审批队列。
+                    </p>
+                    <label
+                      className={`w-full min-h-[44px] mt-1 inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold cursor-pointer ${
+                        propUploadingYpk ? 'opacity-60 pointer-events-none' : ''
+                      }`}
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>{propUploadingYpk ? '正在上传并安全预检...' : '选择本地 .ypk / .zip 文件上传投稿'}</span>
+                      <input
+                        type="file"
+                        accept=".ypk,.zip"
+                        className="hidden"
+                        onChange={(e) => {
+                          submitYpkProposal(e.target.files);
+                          e.target.value = '';
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
             </form>
           </div>
         )}

@@ -109,6 +109,12 @@ remain with their respective authors.
     License: Apache License 2.0
     Copyright (c) .NET Foundation and Contributors
 
+15. CodeMirror 6 (codemirror, @codemirror/*, @lezer/*)
+    Source: https://github.com/codemirror/dev
+    Role: in-browser Lua script, .ydk deck, and strings.conf code editor in web/
+    License: MIT License
+    Copyright (c) 2018-2025 Marijn Haverbeke and contributors
+
 YGOProSharp is an experimental AI-assisted adaptation and refactoring project.
 It does not imply endorsement by the upstream projects and does not guarantee
 compatibility with upstream clients, scripts, databases, or runtime behavior.

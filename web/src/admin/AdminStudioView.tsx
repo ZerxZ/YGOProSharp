@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { Layers, Plus, RefreshCw, Sparkles } from 'lucide-react';
+import { Download, FolderUp, Layers, Plus, RefreshCw, Sparkles, Upload } from 'lucide-react';
 import { apiFetch, AuthUser, hasPerm } from '../api';
 import { DeckSixDimRadarSection } from '../portal/DeckSixDimRadarSection';
+import { CodeMirrorEditor } from '../components/CodeMirrorEditor';
 
 type StudioSubTab = 'card' | 'script' | 'image' | 'proposals';
 
@@ -70,6 +71,12 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
   const [cards, setCards] = useState<any[]>([]);
   const [newPkgId, setNewPkgId] = useState('');
   const [newPkgName, setNewPkgName] = useState('');
+  const [showYpkImporter, setShowYpkImporter] = useState(false);
+  const [ypkTargetId, setYpkTargetId] = useState('');
+  const [ypkTargetName, setYpkTargetName] = useState('');
+  const [ypkMergeMode, setYpkMergeMode] = useState(true);
+  const [ypkAutoReload, setYpkAutoReload] = useState(true);
+  const [ypkImporting, setYpkImporting] = useState(false);
 
   const loadPackageCards = useCallback(
     async (pkgId: string) => {
@@ -338,6 +345,40 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
     }
   };
 
+  const importYpkArchive = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setYpkImporting(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', files[0]);
+      if (ypkTargetId.trim()) fd.append('packageId', ypkTargetId.trim());
+      if (ypkTargetName.trim()) fd.append('name', ypkTargetName.trim());
+      fd.append('merge', String(ypkMergeMode));
+      fd.append('autoReload', String(ypkAutoReload));
+
+      const res = await apiFetch('/api/v1/diy/packages/import-ypk', {
+        method: 'POST',
+        body: fd
+      });
+      const r = res.importResult;
+      setSelectedPkgId(res.packageId);
+      setYpkTargetId('');
+      setYpkTargetName('');
+      setShowYpkImporter(false);
+      notify(
+        `YPK 导入成功 [${res.packageId}]：卡片 ${r.totalCards} 张 · 脚本 ${r.importedScripts} 个 · 卡图 ${r.importedImages} 张 · 卡组 ${r.importedDecks} 套${
+          res.reload ? `（已热重载至 Catalog v${res.reload.catalogVersion}）` : ''
+        }`
+      );
+      await loadAll();
+      await loadPackageCards(res.packageId);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : '导入 .ypk 失败', 'err');
+    } finally {
+      setYpkImporting(false);
+    }
+  };
+
   const runChaosPreview = async () => {
     try {
       const res = await apiFetch('/api/v1/decks/chaos-preview', {
@@ -404,16 +445,50 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
               <a
                 href={`/api/v1/diy/packages/${encodeURIComponent(selectedPkgId)}/export.ypk`}
                 download
-                className="min-h-[34px] inline-flex items-center px-3 py-1.5 rounded-xl bg-sky-600/20 border border-sky-500/40 text-sky-300 text-xs font-medium hover:bg-sky-600/30"
+                className="min-h-[34px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600/20 border border-sky-500/40 text-sky-300 text-xs font-medium hover:bg-sky-600/30"
               >
-                导出客户端 .ypk
+                <Download className="w-3.5 h-3.5" /> 导出当前包 .ypk
               </a>
             )}
 
+            {packages.some((p) => p.manifest?.enabled) && (
+              <a
+                href="/api/v1/diy/export-all.ypk"
+                download
+                className="min-h-[34px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 text-xs font-medium hover:bg-emerald-600/30"
+                title="将所有已启用 DIY 包按优先级合并打包为一个客户端整合 .ypk"
+              >
+                <Download className="w-3.5 h-3.5" /> 导出全服合集 .ypk
+              </a>
+            )}
+
+            {(hasPerm(user, 'diy:upload') || hasPerm(user, 'diy:edit')) && (
+              <button
+                type="button"
+                onClick={() => setShowYpkImporter((v) => !v)}
+                className={`min-h-[34px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer transition ${
+                  showYpkImporter
+                    ? 'bg-indigo-600 border-indigo-500 text-white'
+                    : 'bg-purple-600/20 border-purple-500/40 text-purple-200 hover:bg-purple-600/30'
+                }`}
+              >
+                <FolderUp className="w-3.5 h-3.5" /> 导入 .ypk 整包
+              </button>
+            )}
+
             {selectedPkgId && hasPerm(user, 'diy:upload') && (
-              <label className="min-h-[34px] inline-flex items-center px-3 py-1.5 rounded-xl bg-indigo-600/20 border border-indigo-500/40 text-indigo-300 text-xs font-medium cursor-pointer hover:bg-indigo-600/30">
-                批量导入 .cdb/.lua/.ydk
-                <input type="file" multiple className="hidden" onChange={(e) => uploadFiles(e.target.files)} />
+              <label className="min-h-[34px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600/20 border border-indigo-500/40 text-indigo-300 text-xs font-medium cursor-pointer hover:bg-indigo-600/30">
+                <Upload className="w-3.5 h-3.5" /> 传文件入当前包 (.cdb/.lua/.ydk/.ypk)
+                <input
+                  type="file"
+                  multiple
+                  accept=".cdb,.lua,.ydk,.ypk,.zip,.conf"
+                  className="hidden"
+                  onChange={(e) => {
+                    uploadFiles(e.target.files);
+                    e.target.value = '';
+                  }}
+                />
               </label>
             )}
 
@@ -469,6 +544,76 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
             )}
           </div>
         </div>
+
+        {showYpkImporter && (
+          <div className="glass-subcard rounded-2xl p-3.5 border border-purple-500/35 space-y-3 text-xs animate-fade-in">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="font-semibold text-purple-200 flex items-center gap-1.5">
+                <FolderUp className="w-4 h-4 text-purple-400" />
+                <span>标准客户端 .ypk / .zip 扩展包一键原子解包导入（自动校验 ZIP Slip、Lua 沙箱安全、SQLite .cdb 与卡图头）</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowYpkImporter(false)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                收起
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 items-center">
+              <input
+                value={ypkTargetId}
+                onChange={(e) => setYpkTargetId(e.target.value)}
+                placeholder="目标包 ID（留空自动按 .ypk 文件名创建）"
+                className="px-3 py-2 input-modern input-modern-indigo font-mono"
+              />
+              <input
+                value={ypkTargetName}
+                onChange={(e) => setYpkTargetName(e.target.value)}
+                placeholder="包显示名称（留空自动采用原包名）"
+                className="px-3 py-2 input-modern input-modern-indigo"
+              />
+              <div className="flex flex-wrap items-center gap-3 px-1">
+                <label className="inline-flex items-center gap-1.5 text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={ypkMergeMode}
+                    onChange={(e) => setYpkMergeMode(e.target.checked)}
+                    className="w-4 h-4 rounded accent-indigo-500"
+                  />
+                  同名包增量合并
+                </label>
+                <label className="inline-flex items-center gap-1.5 text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={ypkAutoReload}
+                    onChange={(e) => setYpkAutoReload(e.target.checked)}
+                    className="w-4 h-4 rounded accent-emerald-500"
+                  />
+                  导入后立即热重载
+                </label>
+              </div>
+              <label
+                className={`min-h-[38px] inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold shadow-md cursor-pointer ${
+                  ypkImporting ? 'opacity-60 pointer-events-none' : ''
+                }`}
+              >
+                <FolderUp className="w-4 h-4" />
+                <span>{ypkImporting ? '正在解包预检...' : '选择 .ypk / .zip 文件并导入'}</span>
+                <input
+                  type="file"
+                  accept=".ypk,.zip"
+                  className="hidden"
+                  onChange={(e) => {
+                    importYpkArchive(e.target.files);
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+            </div>
+          </div>
+        )}
 
         {conflicts?.conflicts?.length > 0 && (
           <div className="px-3 py-2 rounded-xl bg-amber-950/50 border border-amber-500/30 text-xs text-amber-200">
@@ -568,12 +713,15 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                   </button>
                 )}
               </div>
-              <textarea
+              <CodeMirrorEditor
                 value={stringsConfText}
-                onChange={(e) => setStringsConfText(e.target.value)}
-                rows={3}
+                onChange={setStringsConfText}
+                language="conf"
+                accent="indigo"
                 placeholder="!setname 0xa100 星辉试作"
-                className="w-full p-2.5 input-modern input-modern-indigo font-mono text-[11px]"
+                minHeight="84px"
+                maxHeight="160px"
+                compact
               />
             </div>
           )}
@@ -798,7 +946,31 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
           {subTab === 'script' && (
             <div className="space-y-3 text-xs">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-mono text-slate-400">script/c{editingCard.id}.lua</span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-slate-400">快捷骨架：</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLuaScript(
+                        `-- c${editingCard.id}.lua (怪兽 1回合1次起动效果)\nlocal s,id=GetID()\nfunction s.initial_effect(c)\n\tlocal e1=Effect.CreateEffect(c)\n\te1:SetDescription(aux.Stringid(id,0))\n\te1:SetCategory(CATEGORY_DRAW)\n\te1:SetType(EFFECT_TYPE_IGNITION)\n\te1:SetRange(LOCATION_MZONE)\n\te1:SetCountLimit(1,id)\n\te1:SetTarget(s.drtg)\n\te1:SetOperation(s.drop)\n\tc:RegisterEffect(e1)\nend\nfunction s.drtg(e,tp,eg,ep,ev,re,r,rp,chk)\n\tif chk==0 then return Duel.IsPlayerCanDraw(tp,1) end\n\tDuel.SetOperationInfo(0,CATEGORY_DRAW,nil,0,tp,1)\nend\nfunction s.drop(e,tp,eg,ep,ev,re,r,rp)\n\tDuel.Draw(tp,1,REASON_EFFECT)\nend\n`
+                      )
+                    }
+                    className="px-2 py-1 rounded-lg glass-subcard hover:border-indigo-500/40 text-[11px] text-slate-300 cursor-pointer"
+                  >
+                    起动抽卡模板
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLuaScript(
+                        `-- c${editingCard.id}.lua (二速诱发即时效果)\nlocal s,id=GetID()\nfunction s.initial_effect(c)\n\tlocal e1=Effect.CreateEffect(c)\n\te1:SetDescription(aux.Stringid(id,0))\n\te1:SetCategory(CATEGORY_NEGATE+CATEGORY_DESTROY)\n\te1:SetType(EFFECT_TYPE_QUICK_O)\n\te1:SetCode(EVENT_CHAINING)\n\te1:SetProperty(EFFECT_FLAG_DAMAGE_STEP+EFFECT_FLAG_DAMAGE_CAL)\n\te1:SetRange(LOCATION_MZONE)\n\te1:SetCountLimit(1,id)\n\te1:SetCondition(s.negcon)\n\te1:SetTarget(s.negtg)\n\te1:SetOperation(s.negop)\n\tc:RegisterEffect(e1)\nend\nfunction s.negcon(e,tp,eg,ep,ev,re,r,rp)\n\treturn ep==1-tp and Duel.IsChainNegatable(ev)\nend\nfunction s.negtg(e,tp,eg,ep,ev,re,r,rp,chk)\n\tif chk==0 then return true end\n\tDuel.SetOperationInfo(0,CATEGORY_NEGATE,eg,1,0,0)\nend\nfunction s.negop(e,tp,eg,ep,ev,re,r,rp)\n\tif Duel.NegateActivation(ev) and re:GetHandler():IsRelateToEffect(re) then\n\t\tDuel.Destroy(eg,REASON_EFFECT)\n\tend\nend\n`
+                      )
+                    }
+                    className="px-2 py-1 rounded-lg glass-subcard hover:border-indigo-500/40 text-[11px] text-slate-300 cursor-pointer"
+                  >
+                    二速康卡模板
+                  </button>
+                </div>
                 {hasPerm(user, 'diy:sandbox_test') && (
                   <button
                     onClick={runSandbox}
@@ -810,12 +982,14 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                 )}
               </div>
 
-              <textarea
-                rows={14}
+              <CodeMirrorEditor
                 value={luaScript}
-                onChange={(e) => setLuaScript(e.target.value)}
-                spellCheck={false}
-                className="w-full p-3 input-modern input-modern-indigo font-mono text-xs leading-relaxed text-emerald-200"
+                onChange={setLuaScript}
+                language="lua"
+                accent="indigo"
+                title={`script/c${editingCard.id}.lua`}
+                minHeight="320px"
+                maxHeight="520px"
               />
 
               {sandboxResult && (

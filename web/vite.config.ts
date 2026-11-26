@@ -7,7 +7,25 @@ export default defineConfig({
   build: {
     outDir: '../YGOProSharp.Web/wwwroot',
     emptyOutDir: true,
-    sourcemap: false
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom', 'lucide-react'],
+          'vendor-codemirror': [
+            'codemirror',
+            '@codemirror/state',
+            '@codemirror/view',
+            '@codemirror/language',
+            '@codemirror/commands',
+            '@codemirror/autocomplete',
+            '@codemirror/lint',
+            '@codemirror/legacy-modes/mode/lua',
+            '@codemirror/theme-one-dark'
+          ]
+        }
+      }
+    }
   },
   server: {
     port: 5173,

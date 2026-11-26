@@ -322,6 +322,57 @@ public sealed class DiyAndReloadableResourceTests
 
             AssertTrue(pkgMgr.DeleteCard("pack-one", 99000102));
             AssertTrue(pkgMgr.GetCardDetail("pack-one", 99000102) is null);
+
+            // 4. .ypk 整包原子解包导入回环、单层包裹目录自动剥离、恶意压缩包拦截与全服合集 .ypk 导出
+            pkgMgr.SaveDeck("pack-one", "StarlightSample", "#main\n99000101\n#extra\n!side\n");
+            byte[] fullYpk = pkgMgr.ExportPackageAsYpk("pack-one");
+            string sanitizedCnId = DiyPackageManager.SanitizePackageIdFromFileName("星辉扩展包 v2.0.ypk");
+            AssertTrue(DiyPackageManager.IsValidPackageId(sanitizedCnId));
+
+            using (MemoryStream importStream = new(fullYpk))
+            {
+                DiyYpkImportResult imp = pkgMgr.ImportPackageFromYpk(
+                    "pack-roundtrip",
+                    importStream,
+                    displayName: "Roundtrip Pack",
+                    author: "Importer",
+                    mergeIntoExisting: false);
+                AssertTrue(imp.IsSuccess);
+                AssertEqual(1, imp.TotalCards);
+                AssertTrue(imp.ImportedScripts >= 1);
+                AssertEqual(1, imp.ImportedImages);
+                AssertEqual(1, imp.ImportedDecks);
+                AssertEqual(1, imp.ImportedConfFiles);
+            }
+
+            DiyCardDetail? importedCard = pkgMgr.GetCardDetail("pack-roundtrip", 99000101);
+            AssertTrue(importedCard is not null && importedCard.HasImage && !string.IsNullOrEmpty(importedCard.ScriptContent));
+            AssertEqual("星辉灵摆魔导", importedCard!.Card.Name);
+            AssertEqual(1, pkgMgr.ReadStringsConf("pack-roundtrip").Setnames.Count);
+
+            // 校验带恶意 Lua 的 .ypk 导入被原子拦截且不残留包目录
+            using (MemoryStream badYpk = new())
+            {
+                using (ZipArchive badZip = new(badYpk, ZipArchiveMode.Create, leaveOpen: true))
+                {
+                    ZipArchiveEntry badEntry = badZip.CreateEntry("script/c99000999.lua");
+                    using StreamWriter sw = new(badEntry.Open(), new UTF8Encoding(false));
+                    sw.Write("os.execute('whoami')");
+                }
+                badYpk.Position = 0;
+                DiyYpkImportResult badImp = pkgMgr.ImportPackageFromYpk("pack-malicious", badYpk);
+                AssertFalse(badImp.IsSuccess);
+                AssertFalse(Directory.Exists(pkgMgr.GetPackageDirectory("pack-malicious")));
+            }
+
+            // 全服多启用包按优先级合并导出为一个 .ypk
+            byte[] bundleYpk = pkgMgr.ExportAllEnabledPackagesAsYpk();
+            using (MemoryStream bundleStream = new(bundleYpk))
+            {
+                DiyYpkImportResult bundleImp = pkgMgr.ImportPackageFromYpk("pack-bundle-verify", bundleStream, mergeIntoExisting: false);
+                AssertTrue(bundleImp.IsSuccess);
+                AssertTrue(bundleImp.TotalCards >= 1);
+            }
         }
         finally
         {

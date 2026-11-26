@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using YGOProSharp.Core;
@@ -110,6 +111,20 @@ public sealed partial class UserPortalHost
         });
 
         return Results.Ok(new { packages = items });
+    }
+
+    [HttpGet("/api/portal/diy/export-all.ypk", Group = "PortalCore")]
+    private IResult ExportPortalAllDiyYpk()
+    {
+        try
+        {
+            byte[] ypk = _diyManager.ExportAllEnabledPackagesAsYpk();
+            return Results.File(ypk, "application/zip", "ygoprosharp-all-diy.ypk");
+        }
+        catch (InvalidOperationException)
+        {
+            return Results.NotFound(new { message = "当前暂无已启用的 DIY 扩展包。" });
+        }
     }
 
     [HttpGet("/api/portal/diy/packages/{id}/export.ypk", Group = "PortalCore")]
@@ -354,6 +369,180 @@ public sealed partial class UserPortalHost
             status = created.Status,
             message = "投稿已进入待审队列，待服主在管理后台沙盒验证并批准后即可全服热重载生效！"
         });
+    }
+
+    [HttpPost("/api/portal/diy/proposals/import-ypk", Group = "PortalCore")]
+    [RateLimit(WebRateLimitPolicies.PortalDiyProposal)]
+    private async Task<IResult> SubmitPortalYpkProposalAsync(
+        HttpContext http,
+        CancellationToken ct)
+    {
+        if (!http.Request.HasFormContentType)
+            return Results.BadRequest(new { message = "请使用 multipart/form-data 上传 .ypk 扩展包文件。" });
+
+        IFormCollection form = await http.Request.ReadFormAsync(ct).ConfigureAwait(false);
+        if (form.Files.Count == 0)
+            return Results.BadRequest(new { message = "请选择要上传投稿的 .ypk 或 .zip 文件。" });
+
+        IFormFile file = form.Files[0];
+        string ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+        if (ext is not (".ypk" or ".zip"))
+            return Results.BadRequest(new { message = "仅支持上传标准 .ypk 或 .zip 扩展包。" });
+
+        if (file.Length > 24L * 1024 * 1024)
+            return Results.BadRequest(new { message = "社区单次投稿 .ypk 体积上限为 24MB。" });
+
+        string rawPkgId = form["packageId"].ToString().Trim();
+        string pkgId = !string.IsNullOrWhiteSpace(rawPkgId)
+            ? rawPkgId
+            : DiyPackageManager.SanitizePackageIdFromFileName(file.FileName);
+        if (!DiyPackageManager.IsValidPackageId(pkgId))
+            return Results.BadRequest(new { message = "目标包 ID 仅允许字母、数字、点、下划线和连字符。" });
+
+        string rawAuthor = form["authorName"].ToString().Trim();
+        string author = string.IsNullOrWhiteSpace(rawAuthor) ? "community_player" : rawAuthor;
+
+        string tempRoot = Path.Combine(Path.GetTempPath(), "ygp_portal_ypk_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            using MemoryStream ms = new();
+            await file.CopyToAsync(ms, ct).ConfigureAwait(false);
+            ms.Position = 0;
+
+            DiyPackageManager tempMgr = new(tempRoot, new SqliteCardDatabaseManager());
+            DiyYpkImportResult importRes = tempMgr.ImportPackageFromYpk(
+                pkgId,
+                ms,
+                author: author,
+                mergeIntoExisting: false,
+                maxUncompressedBytes: 24L * 1024 * 1024);
+
+            if (!importRes.IsSuccess)
+            {
+                return Results.BadRequest(new
+                {
+                    success = false,
+                    message = "YPK 扩展包未通过安全与结构预检：" + string.Join("; ", importRes.Errors),
+                    errors = importRes.Errors
+                });
+            }
+
+            IReadOnlyList<DiyCardSummary> summaries = tempMgr.ListPackageCards(pkgId);
+            if (summaries.Count > 200)
+                return Results.BadRequest(new { message = $"社区单次 .ypk 投稿最多支持 200 张卡片（当前包内共 {summaries.Count} 张），大包请联系管理员在后台直接导入。" });
+
+            HashSet<string> cardScriptNames = new(StringComparer.OrdinalIgnoreCase);
+            List<ProposedCardChangeDto> proposedCards = new(summaries.Count);
+            List<ProposedCardImageDto> proposedImages = new();
+
+            foreach (DiyCardSummary item in summaries)
+            {
+                DiyCardDetail? detail = tempMgr.GetCardDetail(pkgId, item.Card.Id);
+                if (detail is null)
+                    continue;
+
+                DiyCardEntry c = detail.Card;
+                if (!string.IsNullOrEmpty(detail.ScriptContent))
+                    cardScriptNames.Add($"c{c.Id}.lua");
+
+                proposedCards.Add(new ProposedCardChangeDto(
+                    new DiyCardEntryDto(
+                        c.Id,
+                        c.Ot,
+                        c.Alias,
+                        c.Setcode,
+                        $"0x{c.Setcode:x}",
+                        c.Type,
+                        c.Level,
+                        c.LScale,
+                        c.RScale,
+                        c.Race,
+                        c.Attribute,
+                        c.Attack,
+                        c.Defense,
+                        c.LinkMarker,
+                        c.Category,
+                        c.Name,
+                        c.Desc,
+                        c.Strings.ToArray()),
+                    detail.ScriptContent));
+
+                if (proposedImages.Count < 40)
+                {
+                    var img = tempMgr.TryReadCardImage(pkgId, c.Id);
+                    if (img is not null && img.Value.Bytes.Length <= 2 * 1024 * 1024)
+                        proposedImages.Add(new ProposedCardImageDto(c.Id, Convert.ToBase64String(img.Value.Bytes)));
+                }
+            }
+
+            string extractedDir = tempMgr.GetPackageDirectory(pkgId);
+            List<ProposedScriptFileDto> extraScripts = new();
+            string scriptDir = Path.Combine(extractedDir, "script");
+            if (Directory.Exists(scriptDir))
+            {
+                foreach (string luaPath in Directory.EnumerateFiles(scriptDir, "*.lua", SearchOption.TopDirectoryOnly))
+                {
+                    string fn = Path.GetFileName(luaPath);
+                    if (!cardScriptNames.Contains(fn))
+                        extraScripts.Add(new ProposedScriptFileDto(fn, File.ReadAllText(luaPath, Encoding.UTF8)));
+                }
+            }
+
+            List<ProposedDeckFileDto> decks = new();
+            string decksDir = Path.Combine(extractedDir, "decks");
+            if (Directory.Exists(decksDir))
+            {
+                foreach (string ydkPath in Directory.EnumerateFiles(decksDir, "*.ydk", SearchOption.TopDirectoryOnly))
+                    decks.Add(new ProposedDeckFileDto(Path.GetFileNameWithoutExtension(ydkPath), File.ReadAllText(ydkPath, Encoding.UTF8)));
+            }
+
+            StringsConfSummary stringsSummary = tempMgr.ReadStringsConf(pkgId);
+            string? stringsConf = string.IsNullOrWhiteSpace(stringsSummary.RawContent) ? null : stringsSummary.RawContent;
+
+            DiyProposalPayloadDto payload = new(
+                Cards: proposedCards.Count > 0 ? proposedCards.ToArray() : null,
+                Scripts: extraScripts.Count > 0 ? extraScripts.ToArray() : null,
+                Decks: decks.Count > 0 ? decks.ToArray() : null,
+                StringsConf: stringsConf,
+                Images: proposedImages.Count > 0 ? proposedImages.ToArray() : null);
+
+            string archiveTitle = Path.GetFileNameWithoutExtension(file.FileName);
+            DiyProposalEntity created = await _store.CreateDiyProposalAsync(
+                pkgId,
+                $"[YPK整包投稿:{author}] {archiveTitle} (卡:{proposedCards.Count} 脚本:{importRes.ImportedScripts} 图:{proposedImages.Count})",
+                JsonSerializer.Serialize(payload),
+                proposerTokenId: null,
+                proposerName: author,
+                actorType: "anonymous",
+                actorId: null,
+                ip: http.GetRemoteIpNormalized() ?? "unknown",
+                cancellationToken: ct).ConfigureAwait(false);
+
+            return Results.Ok(new
+            {
+                success = true,
+                proposalId = created.Id,
+                packageId = pkgId,
+                cardCount = proposedCards.Count,
+                scriptCount = importRes.ImportedScripts,
+                imageCount = proposedImages.Count,
+                deckCount = decks.Count,
+                message = $"已成功解析 {file.FileName}（{proposedCards.Count} 张卡、{importRes.ImportedScripts} 个脚本、{proposedImages.Count} 张卡图）并投递至后台待审队列！"
+            });
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(tempRoot))
+                    Directory.Delete(tempRoot, recursive: true);
+            }
+            catch
+            {
+                // 忽略临时目录清理异常
+            }
+        }
     }
 
     private PortalCardItemDto[] SearchPublicCards(string query, int limit, bool diyOnly)

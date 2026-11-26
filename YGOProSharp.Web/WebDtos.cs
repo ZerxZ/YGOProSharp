@@ -151,11 +151,16 @@ public sealed record ProposedDeckFileDto(
     string? Name,
     string? YdkContent);
 
+public sealed record ProposedCardImageDto(
+    int CardId,
+    string Base64Data);
+
 public sealed record DiyProposalPayloadDto(
     ProposedCardChangeDto[]? Cards,
     ProposedScriptFileDto[]? Scripts,
     ProposedDeckFileDto[]? Decks,
-    string? StringsConf);
+    string? StringsConf,
+    ProposedCardImageDto[]? Images = null);
 
 public sealed record SubmitDiyProposalRequestDto(
     string? PackageId,
