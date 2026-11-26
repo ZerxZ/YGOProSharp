@@ -88,6 +88,47 @@ public sealed record DiyYpkImportResult(
     int ImportedConfFiles,
     IReadOnlyList<string> Errors);
 
+public sealed record DiyArchiveFileEntry(
+    string Path,
+    string Name,
+    string Folder,
+    string Category,
+    long CompressedBytes,
+    long UncompressedBytes);
+
+public sealed record DiyDeckBrief(
+    string Name,
+    string Path,
+    int MainCount,
+    int ExtraCount,
+    int SideCount);
+
+public sealed record DiyCategoryStat(
+    string Category,
+    int FileCount,
+    long TotalBytes);
+
+/// <summary>
+/// <c>.ypk</c> 压缩包或已安装受管 DIY 包的完整内部文件清单与可视化结构报告。
+/// </summary>
+public sealed record DiyYpkInspectionReport(
+    string ArchiveName,
+    bool IsSafe,
+    long CompressedBytes,
+    long UncompressedBytes,
+    int TotalFiles,
+    int CardCount,
+    int ScriptCount,
+    int ImageCount,
+    int DeckCount,
+    int ConfCount,
+    IReadOnlyList<DiyCategoryStat> Categories,
+    IReadOnlyList<DiyArchiveFileEntry> Files,
+    IReadOnlyList<DiyCardSummary> Cards,
+    IReadOnlyList<DiyDeckBrief> Decks,
+    StringsConfSummary StringsConf,
+    IReadOnlyList<string> Errors);
+
 /// <summary>
 /// 管理 <c>&lt;diyRoot&gt;/packages/&lt;package-id&gt;</c> 的目录规范、<c>Working Copy -&gt; 预检 -&gt; 原子替换</c>、
 /// Lua 静态安全审计、多包冲突分析与 <c>.trash</c> 回收站恢复。
@@ -102,7 +143,16 @@ public sealed partial class DiyPackageManager
 
     private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".cdb", ".lua", ".ypk", ".zip", ".conf", ".ydk", ".jpg", ".jpeg", ".png", ".json"
+        ".cdb", ".lua", ".ypk", ".zip", ".conf", ".ydk",
+        ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif",
+        ".json", ".txt", ".md", ".ini", ".toml", ".yml", ".yaml", ".csv",
+        ".ogg", ".mp3", ".wav", ".otf", ".ttf", ""
+    };
+
+    private static readonly HashSet<string> ForbiddenExecutableExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".exe", ".dll", ".so", ".dylib", ".bat", ".cmd", ".ps1", ".vbs", ".wsf",
+        ".sh", ".bash", ".msi", ".scr", ".com", ".jar", ".py", ".php", ".rb", ".pl"
     };
 
     private readonly string _diyRootPath;
@@ -179,10 +229,13 @@ public sealed partial class DiyPackageManager
     }
 
     /// <summary>
-    /// 对 Lua 脚本源码执行 UTF-8 编码检查与危险系统库/反射调用静态拦截（自动跳过单行注释行以减少误报）。
+    /// 对 Lua 脚本源码执行编码兼容读取（支持 UTF-8 / UTF-8 BOM 及历史扩展包注释回退）与危险系统库/反射调用静态拦截。
     /// </summary>
     public static LuaScriptSecurityAudit AuditLuaScript(ReadOnlySpan<byte> utf8Bytes)
     {
+        if (utf8Bytes.Length >= 3 && utf8Bytes[0] == 0xEF && utf8Bytes[1] == 0xBB && utf8Bytes[2] == 0xBF)
+            utf8Bytes = utf8Bytes[3..];
+
         string source;
         try
         {
@@ -191,7 +244,8 @@ public sealed partial class DiyPackageManager
         }
         catch (DecoderFallbackException)
         {
-            return new LuaScriptSecurityAudit(false, ["Invalid UTF-8 byte sequence."]);
+            // 部分老旧社区 .ypk 的 Lua 中文注释使用 ANSI/GBK 编码，回退 Latin1 仍可精确审计全部 ASCII 危险 API 调用
+            source = Encoding.Latin1.GetString(utf8Bytes);
         }
 
         return AuditLuaScript(source);
@@ -201,8 +255,11 @@ public sealed partial class DiyPackageManager
     {
         ArgumentNullException.ThrowIfNull(luaSource);
 
+        // 先剔除多行注释 --[[ ... ]] 防止注释说明文字误触关键字拦截
+        string cleanedSource = Regex.Replace(luaSource, @"--\[(=*)\[[\s\S]*?\]\1\]", string.Empty, RegexOptions.CultureInvariant);
+
         List<string> violations = new();
-        string[] lines = luaSource.Split('\n');
+        string[] lines = cleanedSource.Split('\n');
         for (int i = 0; i < lines.Length; i++)
         {
             string trimmed = lines[i].Trim();
@@ -221,9 +278,9 @@ public sealed partial class DiyPackageManager
     }
 
     /// <summary>
-    /// 校验 <c>.ypk</c> / <c>.zip</c> 压缩包内所有条目路径与扩展名，防御路径穿越（ZIP Slip）与非法后缀。
+    /// 校验 <c>.ypk</c> / <c>.zip</c> 压缩包内所有条目路径与扩展名，防御路径穿越（ZIP Slip）与危险可执行后缀。
     /// </summary>
-    public static IReadOnlyList<string> AuditArchiveEntries(Stream archiveStream, long maxUncompressedBytes = 64L * 1024 * 1024)
+    public static IReadOnlyList<string> AuditArchiveEntries(Stream archiveStream, long maxUncompressedBytes = 512L * 1024 * 1024)
     {
         ArgumentNullException.ThrowIfNull(archiveStream);
 
@@ -246,13 +303,13 @@ public sealed partial class DiyPackageManager
                 continue;
 
             string ext = Path.GetExtension(entry.Name);
-            if (!AllowedExtensions.Contains(ext))
+            if (ForbiddenExecutableExtensions.Contains(ext) || !AllowedExtensions.Contains(ext))
                 errors.Add($"Disallowed file extension '{ext}' in archive entry '{entry.FullName}'.");
 
             totalBytes += Math.Max(0, entry.Length);
             if (totalBytes > maxUncompressedBytes)
             {
-                errors.Add($"Archive uncompressed size exceeds limit ({maxUncompressedBytes} bytes).");
+                errors.Add($"Archive uncompressed size exceeds limit ({maxUncompressedBytes / (1024 * 1024)} MB).");
                 break;
             }
 
@@ -900,7 +957,7 @@ public sealed partial class DiyPackageManager
         string? displayName = null,
         string? author = null,
         bool mergeIntoExisting = true,
-        long maxUncompressedBytes = 64L * 1024 * 1024)
+        long maxUncompressedBytes = 512L * 1024 * 1024)
     {
         EnsureValidPackageId(packageId);
         ArgumentNullException.ThrowIfNull(archiveStream);
@@ -1037,7 +1094,7 @@ public sealed partial class DiyPackageManager
                         File.WriteAllBytes(destScript, bytes);
                         importedScripts++;
                     }
-                    else if (ext is ".png" or ".jpg" or ".jpeg" &&
+                    else if (ext is ".png" or ".jpg" or ".jpeg" or ".webp" &&
                              (segments.Length == 1 || topSeg.Equals("pics", StringComparison.OrdinalIgnoreCase) || topSeg.Equals("picture", StringComparison.OrdinalIgnoreCase)))
                     {
                         // 跳过缩略图子目录（如 pics/thumbnail/*）以免低清图覆盖主卡图
@@ -1053,7 +1110,7 @@ public sealed partial class DiyPackageManager
                         string? normalizedImgExt = DetectImageExtension(bytes);
                         if (normalizedImgExt is null)
                         {
-                            errors.Add($"{entry.FullName}: Invalid PNG/JPEG image header.");
+                            errors.Add($"{entry.FullName}: Invalid PNG/JPEG/WEBP image header.");
                             continue;
                         }
 
@@ -1063,7 +1120,7 @@ public sealed partial class DiyPackageManager
 
                         string picsDir = Path.Combine(stagingDir, "pics");
                         Directory.CreateDirectory(picsDir);
-                        foreach (string oldExt in new[] { ".png", ".jpg", ".jpeg" })
+                        foreach (string oldExt in new[] { ".png", ".jpg", ".jpeg", ".webp" })
                         {
                             string oldFile = Path.Combine(picsDir, $"{parsedCardId}{oldExt}");
                             if (File.Exists(oldFile))
@@ -1242,7 +1299,533 @@ public sealed partial class DiyPackageManager
             return ".png";
         if (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF)
             return ".jpg";
+        if (bytes.Length >= 12 &&
+            bytes[0] == (byte)'R' && bytes[1] == (byte)'I' && bytes[2] == (byte)'F' && bytes[3] == (byte)'F' &&
+            bytes[8] == (byte)'W' && bytes[9] == (byte)'E' && bytes[10] == (byte)'B' && bytes[11] == (byte)'P')
+            return ".webp";
         return null;
+    }
+
+    private static string ClassifyFileCategory(string relativePath, string ext)
+    {
+        return ext.ToLowerInvariant() switch
+        {
+            ".cdb" => "cdb",
+            ".lua" => "lua",
+            ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".gif" => "image",
+            ".ydk" => "ydk",
+            ".conf" or ".ini" or ".toml" or ".yml" or ".yaml" or ".json" => "conf",
+            ".ogg" or ".mp3" or ".wav" => "audio",
+            ".txt" or ".md" or ".csv" => "doc",
+            _ => relativePath.Contains("README", StringComparison.OrdinalIgnoreCase) ||
+                 relativePath.Contains("LICENSE", StringComparison.OrdinalIgnoreCase)
+                ? "doc"
+                : "other"
+        };
+    }
+
+    private static bool IsTextPreviewableCategory(string category, string ext)
+    {
+        if (category is "lua" or "ydk" or "conf" or "doc")
+            return true;
+        return ext.ToLowerInvariant() is ".lua" or ".ydk" or ".conf" or ".ini" or ".json" or ".txt" or ".md" or ".toml" or ".yml" or ".yaml" or ".csv";
+    }
+
+    private static string DecodeTextTolerant(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+            bytes = bytes[3..];
+        try
+        {
+            return new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(bytes);
+        }
+        catch (DecoderFallbackException)
+        {
+            return Encoding.UTF8.GetString(bytes);
+        }
+    }
+
+    /// <summary>
+    /// 零副作用解析 <c>.ypk</c> / <c>.zip</c> 压缩包内部全部文件目录树、体积分布、卡片列表、卡组与安全状态。
+    /// </summary>
+    public DiyYpkInspectionReport InspectYpkArchive(
+        Stream archiveStream,
+        string archiveName,
+        long maxUncompressedBytes = 512L * 1024 * 1024)
+    {
+        ArgumentNullException.ThrowIfNull(archiveStream);
+        long compressedLen = archiveStream.CanSeek ? archiveStream.Length : 0;
+        if (archiveStream.CanSeek)
+            archiveStream.Position = 0;
+
+        IReadOnlyList<string> auditErrors;
+        try
+        {
+            auditErrors = AuditArchiveEntries(archiveStream, maxUncompressedBytes);
+        }
+        catch (InvalidDataException)
+        {
+            return new DiyYpkInspectionReport(
+                archiveName,
+                false,
+                compressedLen,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                [],
+                [],
+                [],
+                [],
+                ParseStringsConf(string.Empty),
+                ["无法识别的压缩包格式：请确认文件为标准 .ypk 或 .zip。"]);
+        }
+
+        if (archiveStream.CanSeek)
+            archiveStream.Position = 0;
+
+        List<string> errors = new(auditErrors);
+        List<DiyArchiveFileEntry> files = new();
+        Dictionary<int, DiyCardEntry> cardsById = new();
+        HashSet<int> scriptCardIds = new();
+        HashSet<int> imageCardIds = new();
+        List<DiyDeckBrief> decks = new();
+        StringBuilder stringsBuilder = new();
+        long totalUncompressed = 0;
+        int scriptCount = 0;
+        int imageCount = 0;
+        int deckCount = 0;
+        int confCount = 0;
+
+        string tempDir = Path.Combine(_diyRootPath, ".staging", "inspect_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+
+        try
+        {
+            using ZipArchive archive = new(archiveStream, ZipArchiveMode.Read, leaveOpen: true);
+            string? wrapperPrefix = DetectSingleWrapperFolderPrefix(archive);
+
+            foreach (ZipArchiveEntry entry in archive.Entries)
+            {
+                if (string.IsNullOrEmpty(entry.Name))
+                    continue;
+
+                string rawRel = entry.FullName.Replace('\\', '/').TrimStart('/');
+                if (rawRel.Split('/').Any(static s => s == "..") || rawRel.Contains(':', StringComparison.Ordinal))
+                    continue;
+
+                string logicalRel = wrapperPrefix is not null && rawRel.StartsWith(wrapperPrefix, StringComparison.OrdinalIgnoreCase)
+                    ? rawRel[wrapperPrefix.Length..]
+                    : rawRel;
+                if (string.IsNullOrWhiteSpace(logicalRel))
+                    logicalRel = rawRel;
+
+                string fileName = Path.GetFileName(logicalRel);
+                string folder = Path.GetDirectoryName(logicalRel)?.Replace('\\', '/') ?? string.Empty;
+                string ext = Path.GetExtension(fileName).ToLowerInvariant();
+                string category = ClassifyFileCategory(logicalRel, ext);
+                long uncomp = Math.Max(0, entry.Length);
+                long comp = Math.Max(0, entry.CompressedLength);
+                totalUncompressed += uncomp;
+
+                files.Add(new DiyArchiveFileEntry(logicalRel, fileName, folder, category, comp, uncomp));
+
+                if (category == "lua")
+                {
+                    scriptCount++;
+                    if (fileName.StartsWith('c') && int.TryParse(Path.GetFileNameWithoutExtension(fileName)[1..], out int scId) && scId > 0)
+                        scriptCardIds.Add(scId);
+                }
+                else if (category == "image")
+                {
+                    imageCount++;
+                    string[] segs = logicalRel.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                    bool isThumb = segs.Length >= 3 && segs[1].Equals("thumbnail", StringComparison.OrdinalIgnoreCase);
+                    if (!isThumb && int.TryParse(Path.GetFileNameWithoutExtension(fileName), out int imgId) && imgId > 0)
+                        imageCardIds.Add(imgId);
+                }
+                else if (category == "ydk" && entry.Length <= 512 * 1024)
+                {
+                    deckCount++;
+                    byte[] ydkBytes = ReadEntryBytes(entry);
+                    string ydkTxt = DecodeTextTolerant(ydkBytes);
+                    YdkDeckData parsed = YdkSerializer.Parse(ydkTxt, Path.GetFileNameWithoutExtension(fileName));
+                    decks.Add(new DiyDeckBrief(
+                        Path.GetFileNameWithoutExtension(fileName),
+                        logicalRel,
+                        parsed.Main.Count,
+                        parsed.Extra.Count,
+                        parsed.Side.Count));
+                }
+                else if (category == "conf" && entry.Length <= 2 * 1024 * 1024)
+                {
+                    confCount++;
+                    if (fileName.Equals("strings.conf", StringComparison.OrdinalIgnoreCase))
+                    {
+                        byte[] confBytes = ReadEntryBytes(entry);
+                        stringsBuilder.AppendLine(DecodeTextTolerant(confBytes));
+                    }
+                }
+                else if (category == "cdb" && entry.Length <= 64L * 1024 * 1024)
+                {
+                    string tempCdb = Path.Combine(tempDir, $"__insp_{Guid.NewGuid():N}.cdb");
+                    try
+                    {
+                        File.WriteAllBytes(tempCdb, ReadEntryBytes(entry));
+                        CardDatabaseValidationResult val = _databaseManager.ValidateDatabase(tempCdb);
+                        if (!val.IsValid)
+                        {
+                            errors.Add($"{logicalRel}: {val.ErrorMessage ?? "SQLite 卡表结构不合法"}");
+                        }
+                        else
+                        {
+                            foreach (DiyCardEntry c in _databaseManager.LoadEditableCards(tempCdb))
+                                cardsById[c.Id] = c;
+                        }
+                    }
+                    finally
+                    {
+                        if (File.Exists(tempCdb))
+                        {
+                            try { File.Delete(tempCdb); } catch { }
+                        }
+                    }
+                }
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                try { Directory.Delete(tempDir, recursive: true); } catch { }
+            }
+        }
+
+        DiyCardSummary[] cardList = cardsById.Values
+            .OrderBy(static c => c.Id)
+            .Take(800)
+            .Select(c => new DiyCardSummary(c, scriptCardIds.Contains(c.Id), imageCardIds.Contains(c.Id)))
+            .ToArray();
+
+        DiyCategoryStat[] categoryStats = files
+            .GroupBy(static f => f.Category, StringComparer.OrdinalIgnoreCase)
+            .Select(static g => new DiyCategoryStat(g.Key, g.Count(), g.Sum(static x => x.UncompressedBytes)))
+            .OrderByDescending(static s => s.TotalBytes)
+            .ToArray();
+
+        return new DiyYpkInspectionReport(
+            archiveName,
+            errors.Count == 0,
+            compressedLen,
+            totalUncompressed,
+            files.Count,
+            cardsById.Count,
+            scriptCount,
+            imageCount,
+            deckCount,
+            confCount,
+            categoryStats,
+            files.OrderBy(static f => f.Path, StringComparer.OrdinalIgnoreCase).ToArray(),
+            cardList,
+            decks,
+            ParseStringsConf(stringsBuilder.ToString()),
+            errors);
+    }
+
+    /// <summary>
+    /// 生成已安装受管 DIY 包的完整文件树与可视化结构报告（与 <see cref="InspectYpkArchive"/> 返回同构模型）。
+    /// </summary>
+    public DiyYpkInspectionReport InspectInstalledPackage(string packageId)
+    {
+        EnsureValidPackageId(packageId);
+        string pkgDir = GetPackageDirectory(packageId);
+        if (!Directory.Exists(pkgDir))
+            throw new DirectoryNotFoundException($"DIY package '{packageId}' does not exist.");
+
+        List<DiyArchiveFileEntry> files = new();
+        List<DiyDeckBrief> decks = new();
+        long totalBytes = 0;
+        int scriptCount = 0;
+        int imageCount = 0;
+        int deckCount = 0;
+        int confCount = 0;
+
+        foreach (string fullPath in Directory.EnumerateFiles(pkgDir, "*.*", SearchOption.AllDirectories))
+        {
+            string rel = Path.GetRelativePath(pkgDir, fullPath).Replace('\\', '/');
+            string fileName = Path.GetFileName(fullPath);
+            string folder = Path.GetDirectoryName(rel)?.Replace('\\', '/') ?? string.Empty;
+            string ext = Path.GetExtension(fileName).ToLowerInvariant();
+            string category = ClassifyFileCategory(rel, ext);
+            long len = new FileInfo(fullPath).Length;
+            totalBytes += len;
+
+            files.Add(new DiyArchiveFileEntry(rel, fileName, folder, category, len, len));
+            if (category == "lua") scriptCount++;
+            else if (category == "image") imageCount++;
+            else if (category == "conf") confCount++;
+            else if (category == "ydk" && len <= 512 * 1024)
+            {
+                deckCount++;
+                YdkDeckData parsed = YdkSerializer.Parse(File.ReadAllText(fullPath, Encoding.UTF8), Path.GetFileNameWithoutExtension(fileName));
+                decks.Add(new DiyDeckBrief(
+                    Path.GetFileNameWithoutExtension(fileName),
+                    rel,
+                    parsed.Main.Count,
+                    parsed.Extra.Count,
+                    parsed.Side.Count));
+            }
+        }
+
+        IReadOnlyList<DiyCardSummary> cards = ListPackageCards(packageId);
+        DiyPackageValidationReport val = ValidatePackage(packageId);
+        DiyCategoryStat[] categoryStats = files
+            .GroupBy(static f => f.Category, StringComparer.OrdinalIgnoreCase)
+            .Select(static g => new DiyCategoryStat(g.Key, g.Count(), g.Sum(static x => x.UncompressedBytes)))
+            .OrderByDescending(static s => s.TotalBytes)
+            .ToArray();
+
+        return new DiyYpkInspectionReport(
+            $"{packageId}.ypk",
+            val.IsValid,
+            totalBytes,
+            totalBytes,
+            files.Count,
+            cards.Count,
+            scriptCount,
+            imageCount,
+            deckCount,
+            confCount,
+            categoryStats,
+            files.OrderBy(static f => f.Path, StringComparer.OrdinalIgnoreCase).ToArray(),
+            cards,
+            decks,
+            ReadStringsConf(packageId),
+            val.Errors);
+    }
+
+    /// <summary>
+    /// 按路径或卡密按需安全读取 <c>.ypk</c> 压缩包内的单个文本或卡图条目（供前端在线可视化预览）。
+    /// </summary>
+    public static (byte[] Bytes, string ContentType, bool IsText, string TextContent, string ResolvedPath)? TryReadYpkArchiveEntry(
+        Stream archiveStream,
+        string? entryPath = null,
+        int? cardImageId = null)
+    {
+        ArgumentNullException.ThrowIfNull(archiveStream);
+        if (archiveStream.CanSeek)
+            archiveStream.Position = 0;
+
+        using ZipArchive archive = new(archiveStream, ZipArchiveMode.Read, leaveOpen: true);
+        string? wrapperPrefix = DetectSingleWrapperFolderPrefix(archive);
+
+        string normalizedTarget = (entryPath ?? string.Empty).Replace('\\', '/').TrimStart('/');
+        if (normalizedTarget.Contains("..", StringComparison.Ordinal) || normalizedTarget.Contains(':', StringComparison.Ordinal))
+            return null;
+
+        ZipArchiveEntry? matched = null;
+        string resolvedLogical = string.Empty;
+
+        foreach (ZipArchiveEntry entry in archive.Entries)
+        {
+            if (string.IsNullOrEmpty(entry.Name))
+                continue;
+
+            string rawRel = entry.FullName.Replace('\\', '/').TrimStart('/');
+            if (rawRel.Split('/').Any(static s => s == "..") || rawRel.Contains(':', StringComparison.Ordinal))
+                continue;
+
+            string logicalRel = wrapperPrefix is not null && rawRel.StartsWith(wrapperPrefix, StringComparison.OrdinalIgnoreCase)
+                ? rawRel[wrapperPrefix.Length..]
+                : rawRel;
+
+            if (cardImageId is > 0)
+            {
+                string[] segs = logicalRel.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                bool isThumb = segs.Length >= 3 && segs[1].Equals("thumbnail", StringComparison.OrdinalIgnoreCase);
+                string ext = Path.GetExtension(entry.Name).ToLowerInvariant();
+                if (!isThumb &&
+                    ext is ".png" or ".jpg" or ".jpeg" or ".webp" &&
+                    int.TryParse(Path.GetFileNameWithoutExtension(entry.Name), out int cid) &&
+                    cid == cardImageId.Value)
+                {
+                    matched = entry;
+                    resolvedLogical = logicalRel;
+                    break;
+                }
+            }
+            else if (!string.IsNullOrEmpty(normalizedTarget) &&
+                     (string.Equals(logicalRel, normalizedTarget, StringComparison.OrdinalIgnoreCase) ||
+                      string.Equals(rawRel, normalizedTarget, StringComparison.OrdinalIgnoreCase)))
+            {
+                matched = entry;
+                resolvedLogical = logicalRel;
+                break;
+            }
+        }
+
+        if (matched is null || matched.Length > 12 * 1024 * 1024)
+            return null;
+
+        byte[] bytes = ReadEntryBytes(matched);
+        string mExt = Path.GetExtension(matched.Name).ToLowerInvariant();
+        string cat = ClassifyFileCategory(resolvedLogical, mExt);
+        if (cat == "image")
+        {
+            string? detected = DetectImageExtension(bytes);
+            string mime = detected == ".png" ? "image/png" : detected == ".webp" ? "image/webp" : "image/jpeg";
+            return (bytes, mime, false, string.Empty, resolvedLogical);
+        }
+
+        if (IsTextPreviewableCategory(cat, mExt))
+        {
+            return (bytes, "text/plain; charset=utf-8", true, DecodeTextTolerant(bytes), resolvedLogical);
+        }
+
+        return null;
+    }
+
+    public (byte[] Bytes, string ContentType, bool IsText, string TextContent, string ResolvedPath)? TryReadInstalledPackageFile(
+        string packageId,
+        string relativePath)
+    {
+        EnsureValidPackageId(packageId);
+        if (string.IsNullOrWhiteSpace(relativePath))
+            return null;
+
+        string normalized = relativePath.Replace('/', Path.DirectorySeparatorChar).TrimStart(Path.DirectorySeparatorChar);
+        string pkgDir = GetPackageDirectory(packageId);
+        string safeFull = EnsureSafeDirectoryChild(pkgDir, normalized);
+        if (!File.Exists(safeFull))
+            return null;
+
+        FileInfo fi = new(safeFull);
+        if (fi.Length > 12 * 1024 * 1024)
+            return null;
+
+        byte[] bytes = File.ReadAllBytes(safeFull);
+        string ext = Path.GetExtension(safeFull).ToLowerInvariant();
+        string relSlash = Path.GetRelativePath(pkgDir, safeFull).Replace('\\', '/');
+        string cat = ClassifyFileCategory(relSlash, ext);
+
+        if (cat == "image")
+        {
+            string? detected = DetectImageExtension(bytes);
+            string mime = detected == ".png" ? "image/png" : detected == ".webp" ? "image/webp" : "image/jpeg";
+            return (bytes, mime, false, string.Empty, relSlash);
+        }
+
+        if (IsTextPreviewableCategory(cat, ext))
+        {
+            return (bytes, "text/plain; charset=utf-8", true, DecodeTextTolerant(bytes), relSlash);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 将上传预览的 <c>.ypk</c> 暂存至 <c>.staging/previews/&lt;token&gt;.ypk</c>（自动清理超过 30 分钟的临时预览文件），支持先在线可视化查看再零重传一键导入/投稿。
+    /// </summary>
+    public (string PreviewToken, DiyYpkInspectionReport Report) SavePreviewYpk(Stream archiveStream, string originalFileName)
+    {
+        ArgumentNullException.ThrowIfNull(archiveStream);
+        string previewsDir = Path.Combine(_diyRootPath, ".staging", "previews");
+        Directory.CreateDirectory(previewsDir);
+        CleanupExpiredPreviews(previewsDir, TimeSpan.FromMinutes(30));
+
+        string token = Guid.NewGuid().ToString("N");
+        string ypkPath = Path.Combine(previewsDir, token + ".ypk");
+        string metaPath = Path.Combine(previewsDir, token + ".name");
+
+        if (archiveStream.CanSeek)
+            archiveStream.Position = 0;
+
+        using (FileStream fs = new(ypkPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            archiveStream.CopyTo(fs);
+        }
+
+        string safeDisplayFile = Path.GetFileName(string.IsNullOrWhiteSpace(originalFileName) ? "upload.ypk" : originalFileName);
+        File.WriteAllText(metaPath, safeDisplayFile, Encoding.UTF8);
+
+        using FileStream readFs = new(ypkPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        DiyYpkInspectionReport report = InspectYpkArchive(readFs, safeDisplayFile);
+        return (token, report);
+    }
+
+    public bool TryGetPreviewYpkPath(string? previewToken, out string ypkPath, out string originalFileName)
+    {
+        ypkPath = string.Empty;
+        originalFileName = "package.ypk";
+        if (string.IsNullOrWhiteSpace(previewToken) || !Guid.TryParseExact(previewToken.Trim(), "N", out Guid parsed))
+            return false;
+
+        string previewsDir = Path.Combine(_diyRootPath, ".staging", "previews");
+        string normalizedToken = parsed.ToString("N");
+        string candidate = EnsureSafeChildPath(previewsDir, normalizedToken + ".ypk", ".ypk");
+        if (!File.Exists(candidate))
+            return false;
+
+        ypkPath = candidate;
+        string metaPath = Path.Combine(previewsDir, normalizedToken + ".name");
+        if (File.Exists(metaPath))
+        {
+            string savedName = File.ReadAllText(metaPath, Encoding.UTF8).Trim();
+            if (!string.IsNullOrEmpty(savedName))
+                originalFileName = savedName;
+        }
+        return true;
+    }
+
+    public string SaveStagedProposalYpk(string sourceYpkPath)
+    {
+        string proposalsDir = Path.Combine(_diyRootPath, ".proposals");
+        Directory.CreateDirectory(proposalsDir);
+        string fileName = $"prop_{Guid.NewGuid():N}.ypk";
+        string dest = EnsureSafeChildPath(proposalsDir, fileName, ".ypk");
+        File.Copy(sourceYpkPath, dest, overwrite: true);
+        return fileName;
+    }
+
+    public bool TryGetStagedProposalYpkPath(string? stagedFileName, out string fullPath)
+    {
+        fullPath = string.Empty;
+        if (string.IsNullOrWhiteSpace(stagedFileName) ||
+            stagedFileName.Contains("..", StringComparison.Ordinal) ||
+            stagedFileName.IndexOfAny(['/', '\\', ':']) >= 0)
+        {
+            return false;
+        }
+
+        string proposalsDir = Path.Combine(_diyRootPath, ".proposals");
+        string candidate = EnsureSafeChildPath(proposalsDir, stagedFileName.Trim(), ".ypk");
+        if (!File.Exists(candidate))
+            return false;
+
+        fullPath = candidate;
+        return true;
+    }
+
+    private static void CleanupExpiredPreviews(string previewsDir, TimeSpan ttl)
+    {
+        try
+        {
+            DateTime cutoff = DateTime.UtcNow - ttl;
+            foreach (string file in Directory.EnumerateFiles(previewsDir))
+            {
+                if (File.GetLastWriteTimeUtc(file) < cutoff)
+                {
+                    try { File.Delete(file); } catch { }
+                }
+            }
+        }
+        catch
+        {
+            // 忽略后台清理冲突
+        }
     }
 
     private static string? DetectSingleWrapperFolderPrefix(ZipArchive archive)

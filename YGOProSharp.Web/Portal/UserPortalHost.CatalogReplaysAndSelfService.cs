@@ -113,6 +113,98 @@ public sealed partial class UserPortalHost
         return Results.Ok(new { packages = items });
     }
 
+    [HttpGet("/api/portal/diy/packages/{id}/inspect", Group = "PortalCore")]
+    private IResult InspectPortalDiyPackage(string id)
+    {
+        if (!DiyPackageManager.IsValidPackageId(id))
+            return Results.BadRequest(new { message = "非法包 ID。" });
+
+        DiyPackageManifest? pkg = _diyManager.ListPackages(enabledOnly: true)
+            .FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase));
+        if (pkg is null)
+            return Results.NotFound(new { message = "未找到已启用的 DIY 扩展包。" });
+
+        return Results.Ok(new { packageId = pkg.Id, manifest = pkg, report = _diyManager.InspectInstalledPackage(pkg.Id) });
+    }
+
+    [HttpGet("/api/portal/diy/packages/{id}/file", Group = "PortalCore")]
+    private IResult GetPortalDiyPackageFile(string id, string? path)
+    {
+        if (!DiyPackageManager.IsValidPackageId(id) || string.IsNullOrWhiteSpace(path))
+            return Results.BadRequest(new { message = "参数无效。" });
+
+        DiyPackageManifest? pkg = _diyManager.ListPackages(enabledOnly: true)
+            .FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase));
+        if (pkg is null)
+            return Results.NotFound(new { message = "未找到已启用的 DIY 扩展包。" });
+
+        try
+        {
+            var file = _diyManager.TryReadInstalledPackageFile(pkg.Id, path);
+            if (file is null)
+                return Results.NotFound(new { message = "未找到对应文件或该类型不支持文本预览。" });
+
+            return file.Value.IsText
+                ? Results.Ok(new { path = file.Value.ResolvedPath, content = file.Value.TextContent })
+                : Results.Bytes(file.Value.Bytes, file.Value.ContentType);
+        }
+        catch (InvalidOperationException)
+        {
+            return Results.BadRequest(new { message = "非法文件路径。" });
+        }
+    }
+
+    [HttpPost("/api/portal/diy/inspect-ypk", Group = "PortalCore")]
+    private async Task<IResult> InspectPortalYpkAsync(HttpContext http, CancellationToken ct)
+    {
+        if (!http.Request.HasFormContentType)
+            return Results.BadRequest(new { message = "请使用 multipart/form-data 上传 .ypk 或 .zip 文件。" });
+
+        IFormCollection form = await http.Request.ReadFormAsync(ct).ConfigureAwait(false);
+        if (form.Files.Count == 0)
+            return Results.BadRequest(new { message = "请选择 .ypk 或 .zip 扩展包文件。" });
+
+        IFormFile file = form.Files[0];
+        string ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+        if (ext is not (".ypk" or ".zip"))
+            return Results.BadRequest(new { message = "仅支持 .ypk 或 .zip 格式。" });
+
+        if (file.Length > 256L * 1024 * 1024)
+            return Results.BadRequest(new { message = "单个 .ypk 文件不能超过 256MB。" });
+
+        await using Stream uploadStream = file.OpenReadStream();
+        (string previewToken, DiyYpkInspectionReport report) = _diyManager.SavePreviewYpk(uploadStream, file.FileName);
+
+        return Results.Ok(new
+        {
+            previewToken,
+            suggestedPackageId = DiyPackageManager.SanitizePackageIdFromFileName(file.FileName),
+            suggestedName = Path.GetFileNameWithoutExtension(file.FileName),
+            report
+        });
+    }
+
+    [HttpGet("/api/portal/diy/ypk-preview/{token}/entry", Group = "PortalCore")]
+    private IResult GetPortalYpkPreviewEntry(string token, string? path, int? cardId)
+    {
+        if (!_diyManager.TryGetPreviewYpkPath(token, out string ypkPath, out _))
+            return Results.NotFound(new { message = "预览会话已过期，请重新选择 .ypk 文件。" });
+
+        using FileStream fs = new(ypkPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var entry = DiyPackageManager.TryReadYpkArchiveEntry(fs, path, cardId);
+        if (entry is null)
+            return Results.NotFound(new { message = "未找到对应包内文件。" });
+
+        if (!entry.Value.IsText)
+            return Results.Bytes(entry.Value.Bytes, entry.Value.ContentType);
+
+        return Results.Ok(new
+        {
+            path = entry.Value.ResolvedPath,
+            content = entry.Value.TextContent
+        });
+    }
+
     [HttpGet("/api/portal/diy/export-all.ypk", Group = "PortalCore")]
     private IResult ExportPortalAllDiyYpk()
     {
@@ -344,11 +436,38 @@ public sealed partial class UserPortalHost
                 return Results.BadRequest(new { message = "Lua 脚本未通过安全预检：" + string.Join("; ", audit.Violations) });
         }
 
+        ProposedCardImageDto[]? images = null;
+        if (!string.IsNullOrWhiteSpace(body.ImageBase64))
+        {
+            string b64 = body.ImageBase64.Trim();
+            int commaIdx = b64.IndexOf(',');
+            if (commaIdx >= 0)
+                b64 = b64[(commaIdx + 1)..];
+
+            try
+            {
+                byte[] imgBytes = Convert.FromBase64String(b64);
+                if (imgBytes.Length < 8 || imgBytes.Length > 4 * 1024 * 1024)
+                    return Results.BadRequest(new { message = "投稿卡图体积不能超过 4MB。" });
+                bool isPng = imgBytes[0] == 0x89 && imgBytes[1] == 0x50 && imgBytes[2] == 0x4E && imgBytes[3] == 0x47;
+                bool isJpg = imgBytes[0] == 0xFF && imgBytes[1] == 0xD8 && imgBytes[2] == 0xFF;
+                if (!isPng && !isJpg)
+                    return Results.BadRequest(new { message = "投稿卡图仅支持标准 PNG 或 JPG 格式。" });
+
+                images = [new ProposedCardImageDto(body.Card.Id.Value, b64)];
+            }
+            catch (FormatException)
+            {
+                return Results.BadRequest(new { message = "投稿卡图编码格式无效。" });
+            }
+        }
+
         DiyProposalPayloadDto payload = new(
             Cards: [new ProposedCardChangeDto(body.Card, body.LuaScript)],
             Scripts: null,
             Decks: null,
-            StringsConf: null);
+            StringsConf: null,
+            Images: images);
 
         string author = string.IsNullOrWhiteSpace(body.AuthorName) ? "community_player" : body.AuthorName.Trim();
         DiyProposalEntity created = await _store.CreateDiyProposalAsync(
@@ -377,140 +496,128 @@ public sealed partial class UserPortalHost
         HttpContext http,
         CancellationToken ct)
     {
-        if (!http.Request.HasFormContentType)
-            return Results.BadRequest(new { message = "请使用 multipart/form-data 上传 .ypk 扩展包文件。" });
+        string? rawPkgId = null;
+        string? rawAuthor = null;
+        string? previewToken = null;
+        string sourceFileName = "community.ypk";
+        string? tempUploadedPath = null;
 
-        IFormCollection form = await http.Request.ReadFormAsync(ct).ConfigureAwait(false);
-        if (form.Files.Count == 0)
-            return Results.BadRequest(new { message = "请选择要上传投稿的 .ypk 或 .zip 文件。" });
-
-        IFormFile file = form.Files[0];
-        string ext = Path.GetExtension(file.FileName).ToLowerInvariant();
-        if (ext is not (".ypk" or ".zip"))
-            return Results.BadRequest(new { message = "仅支持上传标准 .ypk 或 .zip 扩展包。" });
-
-        if (file.Length > 24L * 1024 * 1024)
-            return Results.BadRequest(new { message = "社区单次投稿 .ypk 体积上限为 24MB。" });
-
-        string rawPkgId = form["packageId"].ToString().Trim();
-        string pkgId = !string.IsNullOrWhiteSpace(rawPkgId)
-            ? rawPkgId
-            : DiyPackageManager.SanitizePackageIdFromFileName(file.FileName);
-        if (!DiyPackageManager.IsValidPackageId(pkgId))
-            return Results.BadRequest(new { message = "目标包 ID 仅允许字母、数字、点、下划线和连字符。" });
-
-        string rawAuthor = form["authorName"].ToString().Trim();
-        string author = string.IsNullOrWhiteSpace(rawAuthor) ? "community_player" : rawAuthor;
-
-        string tempRoot = Path.Combine(Path.GetTempPath(), "ygp_portal_ypk_" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempRoot);
         try
         {
-            using MemoryStream ms = new();
-            await file.CopyToAsync(ms, ct).ConfigureAwait(false);
-            ms.Position = 0;
+            if (http.Request.HasFormContentType)
+            {
+                IFormCollection form = await http.Request.ReadFormAsync(ct).ConfigureAwait(false);
+                rawPkgId = form["packageId"].ToString().Trim();
+                rawAuthor = form["authorName"].ToString().Trim();
+                previewToken = form["previewToken"].ToString().Trim();
 
-            DiyPackageManager tempMgr = new(tempRoot, new SqliteCardDatabaseManager());
-            DiyYpkImportResult importRes = tempMgr.ImportPackageFromYpk(
-                pkgId,
-                ms,
-                author: author,
-                mergeIntoExisting: false,
-                maxUncompressedBytes: 24L * 1024 * 1024);
+                if (form.Files.Count > 0)
+                {
+                    IFormFile file = form.Files[0];
+                    string ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+                    if (ext is not (".ypk" or ".zip"))
+                        return Results.BadRequest(new { message = "仅支持上传标准 .ypk 或 .zip 扩展包。" });
 
-            if (!importRes.IsSuccess)
+                    if (file.Length > 256L * 1024 * 1024)
+                        return Results.BadRequest(new { message = "单个 .ypk 投稿体积上限为 256MB。" });
+
+                    sourceFileName = file.FileName;
+                    await using Stream up = file.OpenReadStream();
+                    (string savedToken, _) = _diyManager.SavePreviewYpk(up, file.FileName);
+                    previewToken = savedToken;
+                }
+            }
+            else
+            {
+                ConfirmYpkPreviewImportDto? dto = await http.Request.ReadFromJsonAsync<ConfirmYpkPreviewImportDto>(cancellationToken: ct).ConfigureAwait(false);
+                if (dto is not null)
+                {
+                    previewToken = dto.PreviewToken?.Trim();
+                    rawPkgId = dto.PackageId?.Trim();
+                    rawAuthor = dto.AuthorName?.Trim();
+                }
+            }
+
+            if (!_diyManager.TryGetPreviewYpkPath(previewToken, out string cachedYpkPath, out string cachedOrigName))
+                return Results.BadRequest(new { message = "未检测到有效 .ypk 文件或预览已过期，请重新选择文件。" });
+
+            tempUploadedPath = cachedYpkPath;
+            sourceFileName = cachedOrigName;
+
+            string pkgId = !string.IsNullOrWhiteSpace(rawPkgId)
+                ? rawPkgId
+                : DiyPackageManager.SanitizePackageIdFromFileName(sourceFileName);
+            if (!DiyPackageManager.IsValidPackageId(pkgId))
+                return Results.BadRequest(new { message = "目标包 ID 仅允许字母、数字、点、下划线和连字符。" });
+
+            string author = string.IsNullOrWhiteSpace(rawAuthor) ? "community_player" : rawAuthor;
+
+            DiyYpkInspectionReport report;
+            using (FileStream fs = new(tempUploadedPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                report = _diyManager.InspectYpkArchive(fs, sourceFileName);
+            }
+
+            if (!report.IsSafe)
             {
                 return Results.BadRequest(new
                 {
                     success = false,
-                    message = "YPK 扩展包未通过安全与结构预检：" + string.Join("; ", importRes.Errors),
-                    errors = importRes.Errors
+                    message = "YPK 扩展包未通过安全与结构预检：" + string.Join("; ", report.Errors),
+                    errors = report.Errors
                 });
             }
 
-            IReadOnlyList<DiyCardSummary> summaries = tempMgr.ListPackageCards(pkgId);
-            if (summaries.Count > 200)
-                return Results.BadRequest(new { message = $"社区单次 .ypk 投稿最多支持 200 张卡片（当前包内共 {summaries.Count} 张），大包请联系管理员在后台直接导入。" });
-
-            HashSet<string> cardScriptNames = new(StringComparer.OrdinalIgnoreCase);
-            List<ProposedCardChangeDto> proposedCards = new(summaries.Count);
-            List<ProposedCardImageDto> proposedImages = new();
-
-            foreach (DiyCardSummary item in summaries)
+            if (report.CardCount == 0 && report.ScriptCount == 0 && report.ImageCount == 0 && report.DeckCount == 0)
             {
-                DiyCardDetail? detail = tempMgr.GetCardDetail(pkgId, item.Card.Id);
-                if (detail is null)
-                    continue;
+                return Results.BadRequest(new { message = "该压缩包中未检测到任何可识别的 .cdb 卡表、script 脚本、pics 卡图或 .ydk 卡组。" });
+            }
 
-                DiyCardEntry c = detail.Card;
-                if (!string.IsNullOrEmpty(detail.ScriptContent))
-                    cardScriptNames.Add($"c{c.Id}.lua");
+            string stagedFileName = _diyManager.SaveStagedProposalYpk(tempUploadedPath);
 
-                proposedCards.Add(new ProposedCardChangeDto(
-                    new DiyCardEntryDto(
-                        c.Id,
-                        c.Ot,
-                        c.Alias,
-                        c.Setcode,
-                        $"0x{c.Setcode:x}",
-                        c.Type,
-                        c.Level,
-                        c.LScale,
-                        c.RScale,
-                        c.Race,
-                        c.Attribute,
-                        c.Attack,
-                        c.Defense,
-                        c.LinkMarker,
-                        c.Category,
-                        c.Name,
-                        c.Desc,
-                        c.Strings.ToArray()),
-                    detail.ScriptContent));
-
-                if (proposedImages.Count < 40)
+            // 在 DiffJson 中保留前 12 张代表卡摘要以供后台审批中心快速可视化展示，完整大体积包由 StagedYpkFileName 落盘承载
+            ProposedCardChangeDto[] sampleCards = report.Cards
+                .Take(12)
+                .Select(static s =>
                 {
-                    var img = tempMgr.TryReadCardImage(pkgId, c.Id);
-                    if (img is not null && img.Value.Bytes.Length <= 2 * 1024 * 1024)
-                        proposedImages.Add(new ProposedCardImageDto(c.Id, Convert.ToBase64String(img.Value.Bytes)));
-                }
-            }
-
-            string extractedDir = tempMgr.GetPackageDirectory(pkgId);
-            List<ProposedScriptFileDto> extraScripts = new();
-            string scriptDir = Path.Combine(extractedDir, "script");
-            if (Directory.Exists(scriptDir))
-            {
-                foreach (string luaPath in Directory.EnumerateFiles(scriptDir, "*.lua", SearchOption.TopDirectoryOnly))
-                {
-                    string fn = Path.GetFileName(luaPath);
-                    if (!cardScriptNames.Contains(fn))
-                        extraScripts.Add(new ProposedScriptFileDto(fn, File.ReadAllText(luaPath, Encoding.UTF8)));
-                }
-            }
-
-            List<ProposedDeckFileDto> decks = new();
-            string decksDir = Path.Combine(extractedDir, "decks");
-            if (Directory.Exists(decksDir))
-            {
-                foreach (string ydkPath in Directory.EnumerateFiles(decksDir, "*.ydk", SearchOption.TopDirectoryOnly))
-                    decks.Add(new ProposedDeckFileDto(Path.GetFileNameWithoutExtension(ydkPath), File.ReadAllText(ydkPath, Encoding.UTF8)));
-            }
-
-            StringsConfSummary stringsSummary = tempMgr.ReadStringsConf(pkgId);
-            string? stringsConf = string.IsNullOrWhiteSpace(stringsSummary.RawContent) ? null : stringsSummary.RawContent;
+                    DiyCardEntry c = s.Card;
+                    return new ProposedCardChangeDto(
+                        new DiyCardEntryDto(
+                            c.Id,
+                            c.Ot,
+                            c.Alias,
+                            c.Setcode,
+                            $"0x{c.Setcode:x}",
+                            c.Type,
+                            c.Level,
+                            c.LScale,
+                            c.RScale,
+                            c.Race,
+                            c.Attribute,
+                            c.Attack,
+                            c.Defense,
+                            c.LinkMarker,
+                            c.Category,
+                            c.Name,
+                            c.Desc,
+                            c.Strings.ToArray()),
+                        null);
+                })
+                .ToArray();
 
             DiyProposalPayloadDto payload = new(
-                Cards: proposedCards.Count > 0 ? proposedCards.ToArray() : null,
-                Scripts: extraScripts.Count > 0 ? extraScripts.ToArray() : null,
-                Decks: decks.Count > 0 ? decks.ToArray() : null,
-                StringsConf: stringsConf,
-                Images: proposedImages.Count > 0 ? proposedImages.ToArray() : null);
+                Cards: sampleCards.Length > 0 ? sampleCards : null,
+                Scripts: null,
+                Decks: null,
+                StringsConf: null,
+                Images: null,
+                StagedYpkFileName: stagedFileName,
+                AuthorName: author);
 
-            string archiveTitle = Path.GetFileNameWithoutExtension(file.FileName);
+            string archiveTitle = Path.GetFileNameWithoutExtension(sourceFileName);
             DiyProposalEntity created = await _store.CreateDiyProposalAsync(
                 pkgId,
-                $"[YPK整包投稿:{author}] {archiveTitle} (卡:{proposedCards.Count} 脚本:{importRes.ImportedScripts} 图:{proposedImages.Count})",
+                $"[YPK整包投稿:{author}] {archiveTitle} (卡:{report.CardCount} 脚本:{report.ScriptCount} 图:{report.ImageCount} 构筑:{report.DeckCount})",
                 JsonSerializer.Serialize(payload),
                 proposerTokenId: null,
                 proposerName: author,
@@ -524,24 +631,16 @@ public sealed partial class UserPortalHost
                 success = true,
                 proposalId = created.Id,
                 packageId = pkgId,
-                cardCount = proposedCards.Count,
-                scriptCount = importRes.ImportedScripts,
-                imageCount = proposedImages.Count,
-                deckCount = decks.Count,
-                message = $"已成功解析 {file.FileName}（{proposedCards.Count} 张卡、{importRes.ImportedScripts} 个脚本、{proposedImages.Count} 张卡图）并投递至后台待审队列！"
+                cardCount = report.CardCount,
+                scriptCount = report.ScriptCount,
+                imageCount = report.ImageCount,
+                deckCount = report.DeckCount,
+                message = $"已成功解析 {sourceFileName}（{report.CardCount} 张卡、{report.ScriptCount} 个脚本、{report.ImageCount} 张卡图、{report.DeckCount} 套卡组）并投递至后台审批中心！"
             });
         }
-        finally
+        catch (Exception ex)
         {
-            try
-            {
-                if (Directory.Exists(tempRoot))
-                    Directory.Delete(tempRoot, recursive: true);
-            }
-            catch
-            {
-                // 忽略临时目录清理异常
-            }
+            return Results.BadRequest(new { success = false, message = $"解析 .ypk 失败：{ex.Message}" });
         }
     }
 

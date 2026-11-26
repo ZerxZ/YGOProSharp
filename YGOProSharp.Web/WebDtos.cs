@@ -160,7 +160,17 @@ public sealed record DiyProposalPayloadDto(
     ProposedScriptFileDto[]? Scripts,
     ProposedDeckFileDto[]? Decks,
     string? StringsConf,
-    ProposedCardImageDto[]? Images = null);
+    ProposedCardImageDto[]? Images = null,
+    string? StagedYpkFileName = null,
+    string? AuthorName = null);
+
+public sealed record ConfirmYpkPreviewImportDto(
+    string? PreviewToken,
+    string? PackageId = null,
+    string? Name = null,
+    string? AuthorName = null,
+    bool? Merge = null,
+    bool? AutoReload = null);
 
 public sealed record SubmitDiyProposalRequestDto(
     string? PackageId,
@@ -177,7 +187,12 @@ public sealed record PortalRegisterRequestDto(string? Username, string? Password
 
 public sealed record PortalVpassRequestDto(string? PlayerName, string? Vpass);
 
-public sealed record PortalSubmitProposalDto(string? PackageId, string? AuthorName, DiyCardEntryDto? Card, string? LuaScript);
+public sealed record PortalSubmitProposalDto(
+    string? PackageId,
+    string? AuthorName,
+    DiyCardEntryDto? Card,
+    string? LuaScript,
+    string? ImageBase64 = null);
 
 public sealed record PortalPartnerTacticRequestDto(int? TeamId, string? Stance, string? Note);
 

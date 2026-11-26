@@ -46,11 +46,21 @@ export async function apiFetch<T = any>(path: string, init: RequestInit = {}): P
     headers.set('X-CSRF-Token', activeCsrf);
   }
 
-  const res = await fetch(path, {
-    ...init,
-    headers,
-    credentials: 'same-origin'
-  });
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      ...init,
+      headers,
+      credentials: 'same-origin'
+    });
+  } catch (networkErr) {
+    throw new ApiError(
+      '网络连接中断或服务端正在重启（若刚更新代码请重启 YGOProSharp.Cli 后重试）',
+      0,
+      'network_error',
+      networkErr
+    );
+  }
 
   const contentType = res.headers.get('content-type') || '';
   const payload = contentType.includes('application/json') ? await res.json() : await res.text();
@@ -68,6 +78,70 @@ export async function apiFetch<T = any>(path: string, init: RequestInit = {}): P
   }
 
   return payload as T;
+}
+
+export interface UploadProgressInfo {
+  loaded: number;
+  total: number;
+  percent: number;
+}
+
+export function apiUploadWithProgress<T = any>(
+  path: string,
+  formData: FormData,
+  onProgress?: (info: UploadProgressInfo) => void
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', path, true);
+    xhr.withCredentials = true;
+
+    const activeCsrf = path.startsWith('/api/portal') ? portalCsrfToken : adminCsrfToken;
+    if (activeCsrf) {
+      xhr.setRequestHeader('X-CSRF-Token', activeCsrf);
+    }
+
+    xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable && onProgress) {
+        const percent = ev.total > 0 ? Math.min(100, Math.round((ev.loaded / ev.total) * 100)) : 0;
+        onProgress({ loaded: ev.loaded, total: ev.total, percent });
+      }
+    };
+
+    xhr.onerror = () => {
+      reject(
+        new ApiError(
+          '上传连接被中断：请确认服务端在线且已重启应用最新大文件配置（上限 256MB）',
+          0,
+          'upload_network_error'
+        )
+      );
+    };
+
+    xhr.onload = () => {
+      const contentType = xhr.getResponseHeader('content-type') || '';
+      let payload: any = xhr.responseText;
+      if (contentType.includes('application/json')) {
+        try {
+          payload = JSON.parse(xhr.responseText);
+        } catch {
+          // keep text
+        }
+      }
+
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(payload as T);
+      } else {
+        const msg =
+          typeof payload === 'object' && payload !== null && 'message' in payload
+            ? String(payload.message)
+            : `上传失败 (HTTP ${xhr.status})`;
+        reject(new ApiError(msg, xhr.status, payload?.error, payload));
+      }
+    };
+
+    xhr.send(formData);
+  });
 }
 
 export function hasPerm(user: AuthUser | null, perm: string): boolean {

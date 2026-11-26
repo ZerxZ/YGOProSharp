@@ -4,9 +4,8 @@ import {
   Sparkles,
   Swords,
   Video,
-  Download,
+  Palette,
   ShieldCheck,
-  Send,
   Search,
   Eye,
   KeyRound,
@@ -36,11 +35,12 @@ import { PortalAiTokenCenter } from './portal/PortalAiTokenCenter';
 import { TagForceCommandPad } from './portal/TagForceCommandPad';
 import { ReplayReviewPanel } from './portal/ReplayReviewPanel';
 import { DeckSixDimRadarSection } from './portal/DeckSixDimRadarSection';
+import { PortalDiyWorkshop } from './portal/PortalDiyWorkshop';
 import { CodeMirrorEditor } from './components/CodeMirrorEditor';
 
 export type { SurfaceInfo } from './portal/portalTypes';
 
-type PortalTab = 'lobby' | 'ai_tokens' | 'replays' | 'catalog' | 'selfservice';
+type PortalTab = 'lobby' | 'ai_tokens' | 'replays' | 'diy_workshop' | 'catalog';
 type RoomFilter = 'all' | 'lobby' | 'duel' | 'tag' | 'random';
 
 function RoomDetailBody({
@@ -216,17 +216,6 @@ export function UserPortalApp({
   const [tYdk, setTYdk] = useState('');
   const [tResultHash, setTResultHash] = useState('');
 
-  const [propMode, setPropMode] = useState<'single' | 'ypk'>('single');
-  const [propUploadingYpk, setPropUploadingYpk] = useState(false);
-  const [propAuthor, setPropAuthor] = useState('');
-  const [propPkg, setPropPkg] = useState('community-diy');
-  const [propCardId, setPropCardId] = useState(99100001);
-  const [propCardName, setPropCardName] = useState('');
-  const [propCardDesc, setPropCardDesc] = useState('');
-  const [propLua, setPropLua] = useState(
-    `local s,id=GetID()\nfunction s.initial_effect(c)\n\t-- 在此编写卡片效果 Lua 脚本\nend\n`
-  );
-
   const notify = useCallback((text: string, kind: 'ok' | 'err' = 'ok') => {
     setToast({ text, kind });
     setTimeout(() => setToast((cur) => (cur?.text === text ? null : cur)), 3600);
@@ -394,59 +383,6 @@ export function UserPortalApp({
     }
   };
 
-  const submitDiyProposal = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const res = await apiFetch('/api/portal/diy/proposals', {
-        method: 'POST',
-        body: JSON.stringify({
-          packageId: propPkg,
-          authorName: propAuthor || portalUser?.username,
-          card: {
-            id: Number(propCardId),
-            ot: 4,
-            type: 0x21,
-            level: 4,
-            race: 1,
-            attribute: 1,
-            attack: 1800,
-            defense: 1200,
-            name: propCardName,
-            desc: propCardDesc
-          },
-          luaScript: propLua
-        })
-      });
-      setPropCardName('');
-      setPropCardDesc('');
-      notify(res.message);
-    } catch (err) {
-      notify(err instanceof Error ? err.message : '投稿失败', 'err');
-    }
-  };
-
-  const submitYpkProposal = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    setPropUploadingYpk(true);
-    try {
-      const fd = new FormData();
-      fd.append('file', files[0]);
-      if (propPkg.trim()) fd.append('packageId', propPkg.trim());
-      if ((propAuthor || portalUser?.username)?.trim()) {
-        fd.append('authorName', (propAuthor || portalUser?.username || '').trim());
-      }
-      const res = await apiFetch('/api/portal/diy/proposals/import-ypk', {
-        method: 'POST',
-        body: fd
-      });
-      notify(res.message || 'YPK 整包投稿成功！');
-    } catch (err) {
-      notify(err instanceof Error ? err.message : '上传 .ypk 投稿失败', 'err');
-    } finally {
-      setPropUploadingYpk(false);
-    }
-  };
-
   const filteredRooms = useMemo(() => {
     return rooms.filter((r) => {
       if (roomFilter === 'lobby' && r.state !== 'Lobby') return false;
@@ -482,8 +418,8 @@ export function UserPortalApp({
     { key: 'lobby', label: '实时大厅 & 建房', shortLabel: '大厅', icon: <Gamepad2 className="w-4 h-4" /> },
     { key: 'ai_tokens', label: '我的 AI 令牌', shortLabel: 'AI 令牌', icon: <KeyRound className="w-4 h-4" /> },
     { key: 'replays', label: '战报 & 复盘剧场', shortLabel: '战报', icon: <Video className="w-4 h-4" /> },
-    { key: 'catalog', label: '卡查 & 六维雷达', shortLabel: '卡查', icon: <Sparkles className="w-4 h-4" /> },
-    { key: 'selfservice', label: '玩家自助 & 投稿', shortLabel: '自助', icon: <ShieldCheck className="w-4 h-4" /> }
+    { key: 'diy_workshop', label: 'DIY 制卡工坊', shortLabel: 'DIY 工坊', icon: <Palette className="w-4 h-4" /> },
+    { key: 'catalog', label: '卡查 · 雷达 · 赛事', shortLabel: '卡查/赛事', icon: <Sparkles className="w-4 h-4" /> }
   ];
 
   return (
@@ -1175,57 +1111,13 @@ export function UserPortalApp({
           </div>
         )}
 
+        {tab === 'diy_workshop' && (
+          <PortalDiyWorkshop diyPackages={diyPackages} portalUser={portalUser} notify={notify} />
+        )}
+
         {tab === 'catalog' && (
           <div className="space-y-5 animate-fade-in">
             <DeckSixDimRadarSection chaosYdk={chaosDeck?.ydk} notify={notify} />
-
-            <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-3.5">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                <div>
-                  <h2 className="text-sm sm:text-base font-bold flex items-center gap-2">
-                    <Download className="w-4 h-4 text-emerald-400" /> 本服 DIY 扩展包 (.ypk) 导出下载
-                  </h2>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    下载 <code className="text-emerald-300 font-mono">.ypk</code> 文件放入客户端{' '}
-                    <code className="text-slate-300 font-mono">expansions/</code> 目录即可完整显示 DIY 卡图、字段与效果文本
-                  </p>
-                </div>
-                {diyPackages.length > 0 && (
-                  <a
-                    href="/api/portal/diy/export-all.ypk"
-                    download
-                    className="min-h-[38px] inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white text-xs font-semibold shadow-lg shadow-emerald-950/50 shrink-0"
-                  >
-                    <Download className="w-3.5 h-3.5" /> 一键导出全服整合包 (.ypk)
-                  </a>
-                )}
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {diyPackages.map((pkg) => (
-                  <div key={pkg.id} className="glass-subcard rounded-2xl p-4 space-y-2.5 text-xs">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-sm text-slate-100">{pkg.name}</span>
-                      <span className="px-2 py-0.5 rounded-full bg-slate-800 font-mono text-[10px] text-slate-300">
-                        v{pkg.version}
-                      </span>
-                    </div>
-                    <div className="text-slate-400">
-                      作者: {pkg.author || '服主'} · 收录卡片 <b className="text-emerald-300">{pkg.cardCount}</b> 张
-                    </div>
-                    <a
-                      href={`/api/portal/diy/packages/${encodeURIComponent(pkg.id)}/export.ypk`}
-                      download
-                      className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
-                    >
-                      <Download className="w-3.5 h-3.5" /> 下载 {pkg.id}.ypk
-                    </a>
-                  </div>
-                ))}
-                {diyPackages.length === 0 && (
-                  <div className="text-xs text-slate-500 py-4">当前暂无启用的自定义 DIY 扩展包</div>
-                )}
-              </div>
-            </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
               <div className="lg:col-span-2 glass-card rounded-2xl p-4 sm:p-5 space-y-3.5">
@@ -1305,194 +1197,82 @@ export function UserPortalApp({
                 )}
               </div>
             </div>
-          </div>
-        )}
 
-        {tab === 'selfservice' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs animate-fade-in">
-            <form onSubmit={submitVpass} className="glass-card rounded-2xl p-5 space-y-3.5">
-              <h3 className="text-sm font-bold text-emerald-300">1. 游戏昵称防冒用保护 ($vpass)</h3>
-              <p className="text-slate-400 leading-relaxed">
-                绑定专属口令后，客户端输入 <code className="text-emerald-300 font-mono">昵称$口令</code> 即可受保护登录，防止他人冒名顶替。
-              </p>
-              <input
-                value={vpassName}
-                onChange={(e) => setVpassName(e.target.value)}
-                placeholder="你的游戏昵称 (如 Kaiba)"
-                className="w-full px-3.5 py-2.5 input-modern"
-                required
-              />
-              <input
-                type="password"
-                value={vpassCode}
-                onChange={(e) => setVpassCode(e.target.value)}
-                placeholder="设置保护口令 (4~32位)"
-                className="w-full px-3.5 py-2.5 input-modern"
-                required
-              />
-              <button className="w-full min-h-[42px] py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer">
-                绑定 / 验证昵称口令
-              </button>
-              {vpassResult && (
-                <div className="p-3 rounded-xl glass-subcard border border-emerald-500/40 font-mono flex justify-between items-center gap-2">
-                  <span className="truncate">客户端填：{vpassResult}</span>
-                  <SmallCopy text={vpassResult} onCopied={() => notify('已复制登录格式')} />
-                </div>
-              )}
-            </form>
-
-            <form onSubmit={submitTournamentDeck} className="glass-card rounded-2xl p-5 space-y-3">
-              <h3 className="text-sm font-bold text-sky-300">2. 赛事选手自助交牌 (.ydk)</h3>
-              <div className="grid grid-cols-2 gap-2.5">
-                <input
-                  value={tTag}
-                  onChange={(e) => setTTag(e.target.value)}
-                  placeholder="赛事标识 (weekly)"
-                  className="px-3 py-2 input-modern"
-                  required
-                />
-                <input
-                  value={tPlayer}
-                  onChange={(e) => setTPlayer(e.target.value)}
-                  placeholder="参赛游戏昵称"
-                  className="px-3 py-2 input-modern"
-                  required
-                />
-              </div>
-              <CodeMirrorEditor
-                value={tYdk}
-                onChange={setTYdk}
-                language="ydk"
-                accent="emerald"
-                placeholder={'#created by ...\n#main\n89631143\n#extra\n!side'}
-                minHeight="145px"
-                maxHeight="240px"
-                compact
-              />
-              <button className="w-full min-h-[42px] py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold cursor-pointer">
-                提交比赛卡组并获取校验码
-              </button>
-              {tResultHash && (
-                <div className="p-2.5 rounded-xl glass-subcard border border-sky-500/40 font-mono text-[11px] break-all">
-                  SHA-256 凭证：{tResultHash}
-                </div>
-              )}
-            </form>
-
-            <form onSubmit={submitDiyProposal} className="glass-card rounded-2xl p-5 space-y-3">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <h3 className="text-sm font-bold text-amber-300">3. 社区 DIY 投稿 / 导入 .ypk</h3>
-                <div className="inline-flex p-0.5 rounded-xl bg-slate-950 border border-slate-800 text-[11px]">
-                  <button
-                    type="button"
-                    onClick={() => setPropMode('single')}
-                    className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer ${
-                      propMode === 'single' ? 'bg-amber-500 text-slate-950 font-semibold' : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    单卡编写
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPropMode('ypk')}
-                    className={`px-2.5 py-1 rounded-lg font-medium transition cursor-pointer ${
-                      propMode === 'ypk' ? 'bg-amber-500 text-slate-950 font-semibold' : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    导入 .ypk 整包
-                  </button>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  value={propAuthor}
-                  onChange={(e) => setPropAuthor(e.target.value)}
-                  placeholder={portalUser ? `署名 (${portalUser.username})` : '投稿人署名'}
-                  className="px-3 py-2 input-modern"
-                />
-                <input
-                  value={propPkg}
-                  onChange={(e) => setPropPkg(e.target.value)}
-                  placeholder="目标包 ID (留空按包名)"
-                  className="px-3 py-2 input-modern font-mono"
-                />
-              </div>
-
-              {propMode === 'single' ? (
-                <>
-                  <div className="grid grid-cols-3 gap-2">
-                    <input
-                      type="number"
-                      value={propCardId}
-                      onChange={(e) => setPropCardId(Number(e.target.value))}
-                      placeholder="卡密"
-                      className="px-3 py-2 input-modern font-mono"
-                      required
-                    />
-                    <input
-                      value={propCardName}
-                      onChange={(e) => setPropCardName(e.target.value)}
-                      placeholder="新卡名称"
-                      className="col-span-2 px-3 py-2 input-modern"
-                      required
-                    />
-                  </div>
-                  <textarea
-                    rows={2}
-                    value={propCardDesc}
-                    onChange={(e) => setPropCardDesc(e.target.value)}
-                    placeholder="卡片效果文本..."
-                    className="w-full p-2.5 input-modern"
+            {/* 玩家自助服务：昵称防冒用保护 ($vpass) + 赛事自助交牌 (.ydk) */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs">
+              <form onSubmit={submitVpass} className="glass-card rounded-2xl p-5 space-y-3.5">
+                <h3 className="text-sm font-bold text-emerald-300 flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4" /> 游戏昵称防冒用保护 ($vpass)
+                </h3>
+                <p className="text-slate-400 leading-relaxed">
+                  绑定专属口令后，客户端输入 <code className="text-emerald-300 font-mono">昵称$口令</code> 即可受保护登录，防止他人冒名顶替。
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <input
+                    value={vpassName}
+                    onChange={(e) => setVpassName(e.target.value)}
+                    placeholder="你的游戏昵称 (如 Kaiba)"
+                    className="w-full px-3.5 py-2.5 input-modern"
                     required
                   />
-                  <CodeMirrorEditor
-                    value={propLua}
-                    onChange={setPropLua}
-                    language="lua"
-                    accent="emerald"
-                    title={`script/c${propCardId}.lua`}
-                    minHeight="135px"
-                    maxHeight="250px"
-                    compact
+                  <input
+                    type="password"
+                    value={vpassCode}
+                    onChange={(e) => setVpassCode(e.target.value)}
+                    placeholder="设置保护口令 (4~32位)"
+                    className="w-full px-3.5 py-2.5 input-modern"
+                    required
                   />
-                  <button className="w-full min-h-[42px] py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold flex items-center justify-center gap-1.5 cursor-pointer">
-                    <Send className="w-3.5 h-3.5" /> 投递至管理后台待审队列
-                  </button>
-                </>
-              ) : (
-                <div className="space-y-3 pt-1">
-                  <div className="glass-subcard rounded-2xl p-4 border border-dashed border-amber-500/40 text-center space-y-2">
-                    <div className="text-slate-200 font-semibold">
-                      直接导入 DataEditorX / DataEditorY / YGOFabrica 导出的 <code className="text-amber-300 font-mono">.ypk</code>
-                    </div>
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      自动解包校验包内 <code className="text-slate-300 font-mono">.cdb</code>、
-                      <code className="text-slate-300 font-mono">script/*.lua</code>、
-                      <code className="text-slate-300 font-mono">pics/*</code>、
-                      <code className="text-slate-300 font-mono">deck/*.ydk</code> 与{' '}
-                      <code className="text-slate-300 font-mono">strings.conf</code>，预检通过后送入后台审批队列。
-                    </p>
-                    <label
-                      className={`w-full min-h-[44px] mt-1 inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold cursor-pointer ${
-                        propUploadingYpk ? 'opacity-60 pointer-events-none' : ''
-                      }`}
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>{propUploadingYpk ? '正在上传并安全预检...' : '选择本地 .ypk / .zip 文件上传投稿'}</span>
-                      <input
-                        type="file"
-                        accept=".ypk,.zip"
-                        className="hidden"
-                        onChange={(e) => {
-                          submitYpkProposal(e.target.files);
-                          e.target.value = '';
-                        }}
-                      />
-                    </label>
-                  </div>
                 </div>
-              )}
-            </form>
+                <button className="w-full min-h-[42px] py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer">
+                  绑定 / 验证昵称口令
+                </button>
+                {vpassResult && (
+                  <div className="p-3 rounded-xl glass-subcard border border-emerald-500/40 font-mono flex justify-between items-center gap-2">
+                    <span className="truncate">客户端填：{vpassResult}</span>
+                    <SmallCopy text={vpassResult} onCopied={() => notify('已复制登录格式')} />
+                  </div>
+                )}
+              </form>
+
+              <form onSubmit={submitTournamentDeck} className="glass-card rounded-2xl p-5 space-y-3">
+                <h3 className="text-sm font-bold text-sky-300">赛事选手自助交牌 (.ydk)</h3>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <input
+                    value={tTag}
+                    onChange={(e) => setTTag(e.target.value)}
+                    placeholder="赛事标识 (weekly)"
+                    className="px-3 py-2 input-modern"
+                    required
+                  />
+                  <input
+                    value={tPlayer}
+                    onChange={(e) => setTPlayer(e.target.value)}
+                    placeholder="参赛游戏昵称"
+                    className="px-3 py-2 input-modern"
+                    required
+                  />
+                </div>
+                <CodeMirrorEditor
+                  value={tYdk}
+                  onChange={setTYdk}
+                  language="ydk"
+                  accent="emerald"
+                  placeholder={'#created by ...\n#main\n89631143\n#extra\n!side'}
+                  minHeight="135px"
+                  maxHeight="220px"
+                  compact
+                />
+                <button className="w-full min-h-[42px] py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold cursor-pointer">
+                  提交比赛卡组并获取校验码
+                </button>
+                {tResultHash && (
+                  <div className="p-2.5 rounded-xl glass-subcard border border-sky-500/40 font-mono text-[11px] break-all">
+                    SHA-256 凭证：{tResultHash}
+                  </div>
+                )}
+              </form>
+            </div>
           </div>
         )}
       </main>

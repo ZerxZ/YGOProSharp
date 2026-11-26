@@ -85,10 +85,17 @@ public sealed partial class UserPortalHost : IAsyncDisposable, IDisposable
         string bindHost = string.IsNullOrWhiteSpace(_options.Host) ? "127.0.0.1" : _options.Host.Trim();
         builder.WebHost.UseKestrel(kestrel =>
         {
+            kestrel.Limits.MaxRequestBodySize = 256L * 1024 * 1024;
             if (IPAddress.TryParse(bindHost, out IPAddress? ip))
                 kestrel.Listen(ip, _options.Port);
             else
                 kestrel.ListenAnyIP(_options.Port);
+        });
+
+        builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(forms =>
+        {
+            forms.MultipartBodyLengthLimit = 256L * 1024 * 1024;
+            forms.ValueLengthLimit = 32 * 1024 * 1024;
         });
 
         builder.Services.ConfigureHttpJsonOptions(json =>
@@ -114,6 +121,34 @@ public sealed partial class UserPortalHost : IAsyncDisposable, IDisposable
         }
 
         app.UseYgoWebSecurityAndRateLimiting();
+        app.Use(async (ctx, next) =>
+        {
+            try
+            {
+                await next(ctx).ConfigureAwait(false);
+            }
+            catch (BadHttpRequestException badReq) when (!ctx.Response.HasStarted)
+            {
+                ctx.Response.StatusCode = badReq.StatusCode;
+                await ctx.Response.WriteAsJsonAsync(new
+                {
+                    error = "bad_http_request",
+                    message = badReq.StatusCode == StatusCodes.Status413PayloadTooLarge
+                        ? "上传文件超过服务器单次 256MB 体积上限。"
+                        : badReq.Message
+                }).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (!ctx.Response.HasStarted && !ctx.WebSockets.IsWebSocketRequest)
+            {
+                _logger.LogError(ex, "Unhandled portal exception on {Method} {Path}", ctx.Request.Method, ctx.Request.Path);
+                ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                await ctx.Response.WriteAsJsonAsync(new
+                {
+                    error = "internal_error",
+                    message = $"处理请求时发生异常：{ex.Message}"
+                }).ConfigureAwait(false);
+            }
+        });
 
         // 编译期源生成路由挂载（独立门户端口同时挂载独立探针与 PortalCore 分组）
         MapGeneratedEndpoints(app);

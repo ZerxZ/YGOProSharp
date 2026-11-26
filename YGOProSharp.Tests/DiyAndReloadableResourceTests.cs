@@ -373,6 +373,46 @@ public sealed class DiyAndReloadableResourceTests
                 AssertTrue(bundleImp.IsSuccess);
                 AssertTrue(bundleImp.TotalCards >= 1);
             }
+
+            // 5. .ypk 在线文件目录树透视、单文件/卡图按需安全提取、预览暂存与大体积提案落盘验证
+            using (MemoryStream previewStream = new(fullYpk))
+            {
+                (string previewToken, DiyYpkInspectionReport report) = pkgMgr.SavePreviewYpk(previewStream, "星辉测试包.ypk");
+                AssertTrue(!string.IsNullOrWhiteSpace(previewToken));
+                AssertTrue(report.IsSafe);
+                AssertTrue(report.TotalFiles >= 4);
+                AssertEqual(1, report.CardCount);
+                AssertTrue(report.ScriptCount >= 1);
+                AssertEqual(1, report.ImageCount);
+                AssertEqual(1, report.DeckCount);
+                AssertEqual(1, report.StringsConf.Setnames.Count);
+
+                AssertTrue(pkgMgr.TryGetPreviewYpkPath(previewToken, out string savedPreviewPath, out string savedOrigName));
+                AssertEqual("星辉测试包.ypk", savedOrigName);
+
+                using (FileStream entryFs = File.OpenRead(savedPreviewPath))
+                {
+                    var luaEntry = DiyPackageManager.TryReadYpkArchiveEntry(entryFs, entryPath: "script/c99000101.lua");
+                    AssertTrue(luaEntry is not null && luaEntry.Value.IsText && luaEntry.Value.TextContent.Contains("initial_effect", StringComparison.Ordinal));
+
+                    var imgEntry = DiyPackageManager.TryReadYpkArchiveEntry(entryFs, cardImageId: 99000101);
+                    AssertTrue(imgEntry is not null && !imgEntry.Value.IsText && imgEntry.Value.ContentType == "image/png" && imgEntry.Value.Bytes.Length > 0);
+
+                    // 路径穿越尝试必须返回 null
+                    AssertTrue(DiyPackageManager.TryReadYpkArchiveEntry(entryFs, entryPath: "../secrets.txt") is null);
+                }
+
+                string stagedProposalFile = pkgMgr.SaveStagedProposalYpk(savedPreviewPath);
+                AssertTrue(pkgMgr.TryGetStagedProposalYpkPath(stagedProposalFile, out string stagedFullPath) && File.Exists(stagedFullPath));
+                AssertFalse(pkgMgr.TryGetStagedProposalYpkPath("../evil.ypk", out _));
+            }
+
+            DiyYpkInspectionReport installedReport = pkgMgr.InspectInstalledPackage("pack-roundtrip");
+            AssertTrue(installedReport.IsSafe);
+            AssertEqual(1, installedReport.CardCount);
+            AssertTrue(installedReport.TotalFiles >= 4);
+            var installedConf = pkgMgr.TryReadInstalledPackageFile("pack-roundtrip", "strings.conf");
+            AssertTrue(installedConf is not null && installedConf.Value.IsText && installedConf.Value.TextContent.Contains("!setname", StringComparison.Ordinal));
         }
         finally
         {

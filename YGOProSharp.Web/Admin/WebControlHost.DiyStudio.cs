@@ -384,6 +384,96 @@ public sealed partial class WebControlHost
         return Results.Ok(new { success = true, stringsConf = summary });
     }
 
+    [HttpPost("/api/v1/diy/inspect-ypk")]
+    [AdminAuth(RbacPermissions.DiyView, RbacPermissions.DiyUpload, RbacPermissions.DiyEdit)]
+    private async Task<IResult> InspectAdminYpkAsync(HttpContext http, CancellationToken ct)
+    {
+        if (!http.Request.HasFormContentType)
+            return Results.BadRequest(new { message = "请使用 multipart/form-data 上传 .ypk 或 .zip 文件。" });
+
+        IFormCollection form = await http.Request.ReadFormAsync(ct).ConfigureAwait(false);
+        if (form.Files.Count == 0)
+            return Results.BadRequest(new { message = "未检测到上传文件。" });
+
+        IFormFile file = form.Files[0];
+        string ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+        if (ext is not (".ypk" or ".zip"))
+            return Results.BadRequest(new { message = "仅支持解析 .ypk 或 .zip 扩展包。" });
+
+        await using Stream uploadStream = file.OpenReadStream();
+        (string previewToken, DiyYpkInspectionReport report) = _diyManager.SavePreviewYpk(uploadStream, file.FileName);
+
+        return Results.Ok(new
+        {
+            previewToken,
+            suggestedPackageId = DiyPackageManager.SanitizePackageIdFromFileName(file.FileName),
+            suggestedName = Path.GetFileNameWithoutExtension(file.FileName),
+            report
+        });
+    }
+
+    [HttpGet("/api/v1/diy/ypk-preview/{token}/entry")]
+    [AdminAuth(RbacPermissions.DiyView, RbacPermissions.DiyUpload, RbacPermissions.DiyEdit)]
+    private IResult GetAdminYpkPreviewEntry(string token, string? path, int? cardId)
+    {
+        if (!_diyManager.TryGetPreviewYpkPath(token, out string ypkPath, out _))
+            return Results.NotFound(new { message = "预览会话已过期，请重新选择 .ypk 文件。" });
+
+        using FileStream fs = new(ypkPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var entry = DiyPackageManager.TryReadYpkArchiveEntry(fs, path, cardId);
+        if (entry is null)
+            return Results.NotFound(new { message = "未找到对应包内文件。" });
+
+        if (!entry.Value.IsText)
+            return Results.Bytes(entry.Value.Bytes, entry.Value.ContentType);
+
+        return Results.Ok(new
+        {
+            path = entry.Value.ResolvedPath,
+            content = entry.Value.TextContent
+        });
+    }
+
+    [HttpGet("/api/v1/diy/packages/{id}/inspect")]
+    [AdminAuth(RbacPermissions.DiyView)]
+    private IResult InspectAdminInstalledPackage(string id)
+    {
+        if (!DiyPackageManager.IsValidPackageId(id))
+            return Results.BadRequest(new { message = "非法包 ID。" });
+
+        try
+        {
+            return Results.Ok(new { packageId = id, report = _diyManager.InspectInstalledPackage(id) });
+        }
+        catch (DirectoryNotFoundException ex)
+        {
+            return Results.NotFound(new { message = ex.Message });
+        }
+    }
+
+    [HttpGet("/api/v1/diy/packages/{id}/file")]
+    [AdminAuth(RbacPermissions.DiyView)]
+    private IResult GetAdminInstalledPackageFile(string id, string? path)
+    {
+        if (!DiyPackageManager.IsValidPackageId(id) || string.IsNullOrWhiteSpace(path))
+            return Results.BadRequest(new { message = "参数无效。" });
+
+        try
+        {
+            var file = _diyManager.TryReadInstalledPackageFile(id, path);
+            if (file is null)
+                return Results.NotFound(new { message = "未找到对应文件或该二进制类型不支持直接文本预览。" });
+
+            return file.Value.IsText
+                ? Results.Ok(new { path = file.Value.ResolvedPath, content = file.Value.TextContent })
+                : Results.Bytes(file.Value.Bytes, file.Value.ContentType);
+        }
+        catch (InvalidOperationException)
+        {
+            return Results.BadRequest(new { message = "非法文件路径。" });
+        }
+    }
+
     [HttpPost("/api/v1/diy/packages/import-ypk")]
     [AdminAuth(RbacPermissions.DiyEdit, RbacPermissions.DiyUpload)]
     private async Task<IResult> ImportDiyPackageYpkAsync(
@@ -391,95 +481,142 @@ public sealed partial class WebControlHost
         HttpContext http,
         CancellationToken ct)
     {
-        if (!http.Request.HasFormContentType)
-            return Results.BadRequest(new { message = "请使用 multipart/form-data 上传 .ypk 或 .zip 扩展包。" });
+        string? requestedId = null;
+        string? requestedName = null;
+        string? previewToken = null;
+        bool merge = true;
+        bool autoReload = true;
+        string sourceFileName = "package.ypk";
+        Stream? directUploadStream = null;
 
-        IFormCollection form = await http.Request.ReadFormAsync(ct).ConfigureAwait(false);
-        if (form.Files.Count == 0)
-            return Results.BadRequest(new { message = "未检测到上传的 .ypk 文件。" });
-
-        IFormFile file = form.Files[0];
-        string ext = Path.GetExtension(file.FileName).ToLowerInvariant();
-        if (ext is not (".ypk" or ".zip"))
-            return Results.BadRequest(new { message = "仅支持导入 .ypk 或标准 .zip 扩展包。" });
-
-        if (file.Length > 64L * 1024 * 1024)
-            return Results.BadRequest(new { message = "单个 .ypk 文件不能超过 64MB。" });
-
-        string? requestedId = form["packageId"].ToString().Trim();
-        string pkgId = !string.IsNullOrWhiteSpace(requestedId)
-            ? requestedId
-            : DiyPackageManager.SanitizePackageIdFromFileName(file.FileName);
-
-        if (!DiyPackageManager.IsValidPackageId(pkgId))
-            return Results.BadRequest(new { message = "包 ID 仅允许字母、数字、点、下划线和连字符（1~64 位）。" });
-
-        string? requestedName = form["name"].ToString().Trim();
-        string defaultName = Path.GetFileNameWithoutExtension(file.FileName).Trim();
-        string? displayName = !string.IsNullOrWhiteSpace(requestedName)
-            ? requestedName
-            : !string.IsNullOrWhiteSpace(defaultName)
-                ? defaultName
-                : null;
-
-        bool merge = !string.Equals(form["merge"].ToString(), "false", StringComparison.OrdinalIgnoreCase);
-        bool autoReload = !string.Equals(form["autoReload"].ToString(), "false", StringComparison.OrdinalIgnoreCase);
-
-        using MemoryStream ms = new();
-        await file.CopyToAsync(ms, ct).ConfigureAwait(false);
-        ms.Position = 0;
-
-        DiyYpkImportResult importRes = _diyManager.ImportPackageFromYpk(
-            pkgId,
-            ms,
-            displayName: displayName,
-            author: principal.Username,
-            mergeIntoExisting: merge);
-
-        if (!importRes.IsSuccess)
+        if (http.Request.HasFormContentType)
         {
-            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "diy.import_ypk", RbacPermissions.DiyUpload, pkgId, http.GetRemoteIpNormalized(), "rejected", string.Join("; ", importRes.Errors), ct).ConfigureAwait(false);
-            return Results.BadRequest(new
+            IFormCollection form = await http.Request.ReadFormAsync(ct).ConfigureAwait(false);
+            requestedId = form["packageId"].ToString().Trim();
+            requestedName = form["name"].ToString().Trim();
+            previewToken = form["previewToken"].ToString().Trim();
+            merge = !string.Equals(form["merge"].ToString(), "false", StringComparison.OrdinalIgnoreCase);
+            autoReload = !string.Equals(form["autoReload"].ToString(), "false", StringComparison.OrdinalIgnoreCase);
+
+            if (form.Files.Count > 0)
             {
-                success = false,
-                message = "导入 .ypk 安全预检未通过：" + string.Join("; ", importRes.Errors),
-                errors = importRes.Errors
-            });
+                IFormFile file = form.Files[0];
+                string ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+                if (ext is not (".ypk" or ".zip"))
+                    return Results.BadRequest(new { message = "仅支持导入 .ypk 或标准 .zip 扩展包。" });
+                if (file.Length > 256L * 1024 * 1024)
+                    return Results.BadRequest(new { message = "单个 .ypk 文件不能超过 256MB。" });
+
+                sourceFileName = file.FileName;
+                directUploadStream = file.OpenReadStream();
+            }
+        }
+        else
+        {
+            ConfirmYpkPreviewImportDto? dto = await http.Request.ReadFromJsonAsync<ConfirmYpkPreviewImportDto>(cancellationToken: ct).ConfigureAwait(false);
+            if (dto is not null)
+            {
+                previewToken = dto.PreviewToken?.Trim();
+                requestedId = dto.PackageId?.Trim();
+                requestedName = dto.Name?.Trim();
+                merge = dto.Merge ?? true;
+                autoReload = dto.AutoReload ?? true;
+            }
         }
 
-        ServerReloadResult? reload = null;
-        if (autoReload && principal.HasPermission(RbacPermissions.DiyReload))
+        try
         {
-            reload = _serverHost.Server.ReloadAssets();
-            await _store.Cache.FlushNamespaceAsync("cards", ct).ConfigureAwait(false);
-            _eventHub.BroadcastEvent("diy.reloaded", reload, RbacPermissions.DashboardView);
+            Stream? ypkStreamToImport = directUploadStream;
+            FileStream? previewFs = null;
+
+            if (ypkStreamToImport is null)
+            {
+                if (!_diyManager.TryGetPreviewYpkPath(previewToken, out string cachedPath, out string origName))
+                    return Results.BadRequest(new { message = "未检测到上传文件或预览会话已过期，请重新选择 .ypk 文件。" });
+
+                sourceFileName = origName;
+                previewFs = new FileStream(cachedPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                ypkStreamToImport = previewFs;
+            }
+
+            try
+            {
+                string pkgId = !string.IsNullOrWhiteSpace(requestedId)
+                    ? requestedId
+                    : DiyPackageManager.SanitizePackageIdFromFileName(sourceFileName);
+
+                if (!DiyPackageManager.IsValidPackageId(pkgId))
+                    return Results.BadRequest(new { message = "包 ID 仅允许字母、数字、点、下划线和连字符（1~64 位）。" });
+
+                string defaultName = Path.GetFileNameWithoutExtension(sourceFileName).Trim();
+                string? displayName = !string.IsNullOrWhiteSpace(requestedName)
+                    ? requestedName
+                    : !string.IsNullOrWhiteSpace(defaultName)
+                        ? defaultName
+                        : null;
+
+                DiyYpkImportResult importRes = _diyManager.ImportPackageFromYpk(
+                    pkgId,
+                    ypkStreamToImport,
+                    displayName: displayName,
+                    author: principal.Username,
+                    mergeIntoExisting: merge);
+
+                if (!importRes.IsSuccess)
+                {
+                    await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "diy.import_ypk", RbacPermissions.DiyUpload, pkgId, http.GetRemoteIpNormalized(), "rejected", string.Join("; ", importRes.Errors), ct).ConfigureAwait(false);
+                    return Results.BadRequest(new
+                    {
+                        success = false,
+                        message = "导入 .ypk 安全预检未通过：" + string.Join("; ", importRes.Errors),
+                        errors = importRes.Errors
+                    });
+                }
+
+                ServerReloadResult? reload = null;
+                if (autoReload && principal.HasPermission(RbacPermissions.DiyReload))
+                {
+                    reload = _serverHost.Server.ReloadAssets();
+                    await _store.Cache.FlushNamespaceAsync("cards", ct).ConfigureAwait(false);
+                    _eventHub.BroadcastEvent("diy.reloaded", reload, RbacPermissions.DashboardView);
+                }
+
+                DiyPackageValidationReport report = _diyManager.ValidatePackage(pkgId, _serverHost.Server.CardRepository);
+                DiyPackageManifest? manifest = _diyManager.ListPackages()
+                    .FirstOrDefault(p => string.Equals(p.Id, pkgId, StringComparison.OrdinalIgnoreCase));
+
+                await _store.AppendAuditAsync(
+                    "panel_user",
+                    principal.UserId.ToString(),
+                    principal.Username,
+                    "diy.import_ypk",
+                    RbacPermissions.DiyUpload,
+                    pkgId,
+                    http.GetRemoteIpNormalized(),
+                    "ok",
+                    JsonSerializer.Serialize(new { importRes.TotalCards, importRes.ImportedScripts, importRes.ImportedImages, importRes.ImportedDecks }),
+                    ct).ConfigureAwait(false);
+
+                return Results.Ok(new
+                {
+                    success = true,
+                    packageId = pkgId,
+                    manifest,
+                    importResult = importRes,
+                    validation = report,
+                    reload
+                });
+            }
+            finally
+            {
+                previewFs?.Dispose();
+            }
         }
-
-        DiyPackageValidationReport report = _diyManager.ValidatePackage(pkgId, _serverHost.Server.CardRepository);
-        DiyPackageManifest? manifest = _diyManager.ListPackages()
-            .FirstOrDefault(p => string.Equals(p.Id, pkgId, StringComparison.OrdinalIgnoreCase));
-
-        await _store.AppendAuditAsync(
-            "panel_user",
-            principal.UserId.ToString(),
-            principal.Username,
-            "diy.import_ypk",
-            RbacPermissions.DiyUpload,
-            pkgId,
-            http.GetRemoteIpNormalized(),
-            "ok",
-            JsonSerializer.Serialize(new { importRes.TotalCards, importRes.ImportedScripts, importRes.ImportedImages, importRes.ImportedDecks }),
-            ct).ConfigureAwait(false);
-
-        return Results.Ok(new
+        finally
         {
-            success = true,
-            packageId = pkgId,
-            manifest,
-            importResult = importRes,
-            validation = report,
-            reload
-        });
+            if (directUploadStream is not null)
+                await directUploadStream.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [HttpGet("/api/v1/diy/export-all.ypk")]
@@ -560,6 +697,61 @@ public sealed partial class WebControlHost
     {
         IReadOnlyList<DiyProposalEntity> proposals = await _store.ListDiyProposalsAsync(status, packageId, limit ?? 80, ct).ConfigureAwait(false);
         return Results.Ok(new { proposals });
+    }
+
+    [HttpGet("/api/v1/diy/proposals/{proposalId:guid}/inspect-ypk")]
+    [AdminAuth(RbacPermissions.DiyView)]
+    private async Task<IResult> InspectProposalStagedYpkAsync(Guid proposalId, CancellationToken ct)
+    {
+        IReadOnlyList<DiyProposalEntity> list = await _store.ListDiyProposalsAsync(null, null, 200, ct).ConfigureAwait(false);
+        DiyProposalEntity? found = list.FirstOrDefault(p => p.Id == proposalId);
+        if (found is null)
+            return Results.NotFound(new { message = "未找到该提案。" });
+
+        DiyProposalPayloadDto? payload = JsonSerializer.Deserialize<DiyProposalPayloadDto>(
+            found.DiffJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        if (payload is null || string.IsNullOrWhiteSpace(payload.StagedYpkFileName) ||
+            !_diyManager.TryGetStagedProposalYpkPath(payload.StagedYpkFileName, out string stagedPath))
+        {
+            return Results.NotFound(new { message = "该提案未关联暂存 .ypk 整包文件。" });
+        }
+
+        using FileStream fs = new(stagedPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        return Results.Ok(new
+        {
+            proposalId,
+            packageId = found.PackageId,
+            report = _diyManager.InspectYpkArchive(fs, $"{found.PackageId}.ypk")
+        });
+    }
+
+    [HttpGet("/api/v1/diy/proposals/{proposalId:guid}/ypk-entry")]
+    [AdminAuth(RbacPermissions.DiyView)]
+    private async Task<IResult> GetProposalStagedYpkEntryAsync(Guid proposalId, string? path, int? cardId, CancellationToken ct)
+    {
+        IReadOnlyList<DiyProposalEntity> list = await _store.ListDiyProposalsAsync(null, null, 200, ct).ConfigureAwait(false);
+        DiyProposalEntity? found = list.FirstOrDefault(p => p.Id == proposalId);
+        if (found is null)
+            return Results.NotFound(new { message = "未找到该提案。" });
+
+        DiyProposalPayloadDto? payload = JsonSerializer.Deserialize<DiyProposalPayloadDto>(
+            found.DiffJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        if (payload is null || string.IsNullOrWhiteSpace(payload.StagedYpkFileName) ||
+            !_diyManager.TryGetStagedProposalYpkPath(payload.StagedYpkFileName, out string stagedPath))
+        {
+            return Results.NotFound(new { message = "未找到暂存 .ypk 文件。" });
+        }
+
+        using FileStream fs = new(stagedPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var entry = DiyPackageManager.TryReadYpkArchiveEntry(fs, path, cardId);
+        if (entry is null)
+            return Results.NotFound(new { message = "未找到对应包内文件。" });
+
+        return entry.Value.IsText
+            ? Results.Ok(new { path = entry.Value.ResolvedPath, content = entry.Value.TextContent })
+            : Results.Bytes(entry.Value.Bytes, entry.Value.ContentType);
     }
 
     [HttpPost("/api/v1/diy/proposals")]
@@ -774,6 +966,22 @@ public sealed partial class WebControlHost
             List<string> auditErrors = PreAuditProposalPayload(payload);
             if (auditErrors.Count > 0)
                 return (false, string.Join("; ", auditErrors));
+
+            if (!string.IsNullOrWhiteSpace(payload.StagedYpkFileName))
+            {
+                if (!_diyManager.TryGetStagedProposalYpkPath(payload.StagedYpkFileName, out string stagedPath))
+                    return (false, $"未找到待审暂存的扩展包文件 '{payload.StagedYpkFileName}'。");
+
+                using FileStream ypkFs = new(stagedPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                DiyYpkImportResult imp = _diyManager.ImportPackageFromYpk(
+                    proposal.PackageId,
+                    ypkFs,
+                    author: payload.AuthorName,
+                    mergeIntoExisting: true);
+                return imp.IsSuccess
+                    ? (true, null)
+                    : (false, string.Join("; ", imp.Errors));
+            }
 
             string pkgDir = _diyManager.GetPackageDirectory(proposal.PackageId);
             if (!Directory.Exists(pkgDir) || !File.Exists(Path.Combine(pkgDir, "manifest.json")))
