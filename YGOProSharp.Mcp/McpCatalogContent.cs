@@ -29,7 +29,7 @@ internal static class McpCatalogContent
             {
                 Uri = "ygopro://guide/duelist-protocol",
                 Name = "YGOProSharp 外部 AI 决斗操作指南",
-                Description = "1v1 / 2v2 双打、盲盒随机房与合法动作编号提交流程说明",
+                Description = "1v1 / 2v2 双打、盲盒随机房、快路径与合法动作编号提交流程说明",
                 MimeType = "text/markdown"
             },
             new()
@@ -38,18 +38,63 @@ internal static class McpCatalogContent
                 Name = "公开活动房间实时快照",
                 Description = "当前服务器上所有活动房间与席位概览（不含暗牌与玩家 IP）",
                 MimeType = "application/json"
+            },
+            new()
+            {
+                Uri = "ygopro://replays/recent",
+                Name = "近期已完结对局归档列表 (R#<id>)",
+                Description = "供赛后教练 AI 检索可复盘的已完结战报摘要（严禁进行中对局，不含 IP）",
+                MimeType = "application/json"
+            },
+            new()
+            {
+                Uri = "ygopro://decks/evaluations",
+                Name = "全服最新卡组 0~100 六维雷达评分榜单",
+                Description = "近期已由外部 AI 完成六维量化评测与套路提炼的卡组列表",
+                MimeType = "application/json"
             }
         ];
 
         if (caller.McpRole is McpRoleCodes.DiyCreator or McpRoleCodes.Admin)
         {
-            resources.Add(new Resource
-            {
-                Uri = "ygopro://guide/windbot-lua-dsl",
-                Name = "WindBot xmake 风格 Lua AI 四层决策规范",
-                Description = "deck(...) 作用域、0-based 列表、EmitThought 与 AskExternalAgent 双脑接口说明",
-                MimeType = "text/markdown"
-            });
+            resources.AddRange(
+            [
+                new Resource
+                {
+                    Uri = "ygopro://guide/windbot-lua-dsl",
+                    Name = "WindBot xmake 风格 Lua AI 四层决策规范",
+                    Description = "deck(...) 作用域、0-based 列表、EmitThought 与 AskExternalAgent 双脑接口说明",
+                    MimeType = "text/markdown"
+                },
+                new Resource
+                {
+                    Uri = "ygopro://guide/diy-effect-patterns",
+                    Name = "OCGCore 实卡级 DIY 效果四槽编写模式",
+                    Description = "Condition / Cost / Target / Operation 四槽对齐、CountLimit 与 aux.Stringid 规范",
+                    MimeType = "text/markdown"
+                },
+                new Resource
+                {
+                    Uri = "ygopro://api/ocgcore-lua",
+                    Name = "OCGCore Lua API 声明参考 (ygopro-core.lua)",
+                    Description = "真实 Duel.* / Card.* / Effect.* / Group.* 签名声明，防止 DIY 脚本幻觉",
+                    MimeType = "text/x-lua"
+                },
+                new Resource
+                {
+                    Uri = "ygopro://api/windbot-lua",
+                    Name = "WindBot Lua API 声明参考 (windbot-deck & dialog)",
+                    Description = "WindBot 卡组执行器与对话脚本 API 签名及 60+ DefaultRuleName 列表",
+                    MimeType = "text/x-lua"
+                },
+                new Resource
+                {
+                    Uri = "ygopro://examples/windbot-lua-deck",
+                    Name = "WindBot Lua 标准范本 (ExampleBlueEyes.lua)",
+                    Description = "xmake 风格 WindBot Lua 青眼卡组完整参考实现",
+                    MimeType = "text/x-lua"
+                }
+            ]);
         }
 
         return new ListResourcesResult { Resources = resources };
@@ -83,6 +128,42 @@ internal static class McpCatalogContent
                 text = JsonSerializer.Serialize(deps.ServerHost.GetRooms(), PrettyJsonOpts);
                 break;
 
+            case "ygopro://replays/recent":
+            {
+                mime = "application/json";
+                var recs = deps.Store.ListDuelRecordsAsync(15).GetAwaiter().GetResult();
+                var safeList = recs.Select(static r => new
+                {
+                    duelId = r.Id,
+                    replayCode = $"R#{r.Id}",
+                    r.RoomName,
+                    r.Mode,
+                    isTag2v2 = r.Mode == 2,
+                    r.RandomDeckMode,
+                    r.TurnCount,
+                    r.WinnerTeam,
+                    r.EndedAt,
+                    players = r.Players.OrderBy(static p => p.SeatIndex).Select(static p => new
+                    {
+                        p.SeatIndex,
+                        p.TeamId,
+                        p.PlayerName,
+                        p.SeatType,
+                        p.IsWinner
+                    })
+                });
+                text = JsonSerializer.Serialize(safeList, PrettyJsonOpts);
+                break;
+            }
+
+            case "ygopro://decks/evaluations":
+            {
+                mime = "application/json";
+                var evals = deps.Store.ListDeckEvaluationsAsync(15).GetAwaiter().GetResult();
+                text = JsonSerializer.Serialize(evals.Select(Services.DeckAndReplayAppService.FormatDeckEvaluationDto), PrettyJsonOpts);
+                break;
+            }
+
             case "ygopro://guide/windbot-lua-dsl" when caller.McpRole is McpRoleCodes.DiyCreator or McpRoleCodes.Admin:
                 text = """
                     # WindBot Lua AI 编写速查
@@ -91,6 +172,44 @@ internal static class McpCatalogContent
                     - 注意：`Bot.Hand`、`Cards` 等 CLR 列表在 Lua 中为 **0-based 下标**（`0 .. Count - 1`）。
                     - 可调用 `emit_thought("先攻展开：检索核心本家")` 输出思考轨迹，或在关键节点调用 `ask_external_agent("是否交灰流丽", {"交康", "放行"})`。
                     """;
+                break;
+
+            case "ygopro://guide/diy-effect-patterns" when caller.McpRole is McpRoleCodes.DiyCreator or McpRoleCodes.Admin:
+                text = """
+                    # OCGCore DIY 卡片脚本四槽编写规范
+                    1. 顶部固定声明 `local s,id=GetID()` 与 `function s.initial_effect(c)`。
+                    2. 卡名一回合一次统一使用 `e1:SetCountLimit(1,id)`（第二个效果用 `{id,1}`），切勿混用旧版硬编码偏移。
+                    3. 四槽严格对齐：
+                       - `SetCondition(s.con)`：纯无副作用布尔判定；
+                       - `SetCost(s.cost)`：`if chk==0 then return ... end` 检查代价，处理分支执行解放/丢弃/支付 LP；
+                       - `SetTarget(s.tg)`：`if chk==0 then return ... end` 检查合法性并调用 `Duel.SetOperationInfo(...)` 声明动作类别；
+                       - `SetOperation(s.op)`：再次核验对象在场/有效后执行结算。
+                    4. 特殊召唤限制怪兽务必同时在卡片数据 `type` 置位 `TYPE_SPSUMMON` 并在脚本调用 `c:EnableReviveLimit()`。
+                    """;
+                break;
+
+            case "ygopro://api/ocgcore-lua" when caller.McpRole is McpRoleCodes.DiyCreator or McpRoleCodes.Admin:
+                mime = "text/x-lua";
+                text = ReadRepoTextOrFallback(
+                    deps.ServerHost.Server.Options.RootPath,
+                    Path.Combine("YGOProSharp.Native", "lua-api", "ygopro-core.lua"),
+                    "-- ygopro-core.lua quick stub\n---@class Duel\n---@class Card\n---@class Effect\n---@class Group\n");
+                break;
+
+            case "ygopro://api/windbot-lua" when caller.McpRole is McpRoleCodes.DiyCreator or McpRoleCodes.Admin:
+                mime = "text/x-lua";
+                text = ReadRepoTextOrFallback(
+                    deps.ServerHost.Server.Options.RootPath,
+                    Path.Combine("YGOProSharp.WindBot", "lua-api", "windbot-deck.lua"),
+                    "-- windbot-deck.lua quick stub\nfunction deck(name) end\nfunction deck_end() end\n");
+                break;
+
+            case "ygopro://examples/windbot-lua-deck" when caller.McpRole is McpRoleCodes.DiyCreator or McpRoleCodes.Admin:
+                mime = "text/x-lua";
+                text = ReadRepoTextOrFallback(
+                    deps.ServerHost.Server.Options.RootPath,
+                    Path.Combine("YGOProSharp.WindBot", "Decks", "Lua", "ExampleBlueEyes.lua"),
+                    "deck(\"ExampleBlueEyes\")\n  set_deckfile(\"Blue-Eyes\")\ndeck_end()\n");
                 break;
 
             default:
@@ -240,6 +359,30 @@ internal static class McpCatalogContent
         }
 
         return null;
+    }
+
+    private static string ReadRepoTextOrFallback(string rootPath, string relativePath, string fallback)
+    {
+        string[] candidates =
+        [
+            Path.Combine(Path.GetFullPath(rootPath), relativePath),
+            Path.Combine(AppContext.BaseDirectory, relativePath),
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", relativePath))
+        ];
+
+        foreach (string candidate in candidates)
+        {
+            try
+            {
+                if (File.Exists(candidate))
+                    return File.ReadAllText(candidate);
+            }
+            catch
+            {
+            }
+        }
+
+        return fallback;
     }
 
     private static GetPromptResult BuildSingleUserPrompt(string description, string text) =>

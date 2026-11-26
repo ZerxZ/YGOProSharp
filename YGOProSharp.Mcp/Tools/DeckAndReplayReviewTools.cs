@@ -99,6 +99,10 @@ public sealed class DeckAndReplayReviewTools(McpRuntimeDependencies deps, DeckAn
         string? deckName = null,
         [Description("识别出的卡组流派标题")] string? archetypeTitle = null,
         [Description("核心展开/配合套路列表")] string[]? coreRoutines = null,
+        [Description("起手初动点列表 (Starters)")] string[]? starters = null,
+        [Description("标准目标终场阻抗 (Target Endboard)")] string[]? targetEndboard = null,
+        [Description("长盘续航与资源回收轴 (Grind Loop)")] string[]? grindLoop = null,
+        [Description("怕吃手坑/阻抗的关键弱点 (Chokepoints)")] string[]? chokepoints = null,
         [Description("构筑优势")] string[]? strengths = null,
         [Description("构筑短板与怕吃的针对卡")] string[]? weaknesses = null,
         [Description("改构建议")] string[]? upgradeSuggestions = null,
@@ -148,6 +152,10 @@ public sealed class DeckAndReplayReviewTools(McpRuntimeDependencies deps, DeckAn
         string routinesJson = JsonSerializer.Serialize(new
         {
             coreRoutines = CleanStringArray(coreRoutines),
+            starters = CleanStringArray(starters),
+            targetEndboard = CleanStringArray(targetEndboard),
+            grindLoop = CleanStringArray(grindLoop),
+            chokepoints = CleanStringArray(chokepoints),
             strengths = CleanStringArray(strengths),
             weaknesses = CleanStringArray(weaknesses),
             upgradeSuggestions = CleanStringArray(upgradeSuggestions)
@@ -220,6 +228,55 @@ public sealed class DeckAndReplayReviewTools(McpRuntimeDependencies deps, DeckAn
         {
             count = list.Count,
             evaluations = list.Select(DeckAndReplayAppService.FormatDeckEvaluationDto).ToArray()
+        });
+    }
+
+    [McpServerTool(Name = "duel_list_replays")]
+    [McpRoles(McpRoleCodes.Spectator, McpRoleCodes.Player, McpRoleCodes.DiyCreator, McpRoleCodes.Admin)]
+    [Description("列出服务器上已完结并归档的历史对局列表（R#<id>），供赛后教练 AI 挑选未复盘比赛调用 duel_get_replay_timeline 与 duel_submit_review（严格仅含已结束对局且零 IP 信息）。")]
+    public async Task<ToolOutcome> DuelListReplaysAsync(
+        [Description("返回条数 (1~50，默认 15)")] int limit = 15,
+        [Description("可选：按选手昵称过滤")] string? player = null,
+        CancellationToken ct = default)
+    {
+        int clamped = Math.Clamp(limit, 1, 50);
+        IReadOnlyList<DuelRecordEntity> list = await deps.Store.ListDuelRecordsAsync(
+            clamped,
+            beforeId: null,
+            playerFilter: player,
+            cancellationToken: ct).ConfigureAwait(false);
+
+        List<object> items = new(list.Count);
+        foreach (DuelRecordEntity r in list)
+        {
+            IReadOnlyList<DuelReviewEntity> revs = await deps.Store.ListDuelReviewsAsync(r.Id, ct).ConfigureAwait(false);
+            items.Add(new
+            {
+                duelId = r.Id,
+                replayCode = $"R#{r.Id}",
+                r.RoomName,
+                r.Mode,
+                isTag2v2 = r.Mode == 2,
+                r.RandomDeckMode,
+                r.TurnCount,
+                r.WinnerTeam,
+                r.EndedAt,
+                reviewCount = revs.Count,
+                players = r.Players.OrderBy(static p => p.SeatIndex).Select(static p => new
+                {
+                    p.SeatIndex,
+                    p.TeamId,
+                    p.PlayerName,
+                    p.SeatType,
+                    p.IsWinner
+                }).ToArray()
+            });
+        }
+
+        return ToolOutcome.Ok(new
+        {
+            count = items.Count,
+            replays = items
         });
     }
 

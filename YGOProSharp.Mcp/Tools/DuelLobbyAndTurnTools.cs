@@ -142,12 +142,15 @@ public sealed class DuelLobbyAndTurnTools(McpRuntimeDependencies deps, DeckAndRe
 
         session.PersonaStyle = caller.PersonaStyle;
 
+        string? opponentKeyword = null;
         if (deps.ServerHost.Server.TryGetRoom(session.RoomName, out Game? game) && game is not null)
         {
             foreach (Player? p in game.Players)
             {
                 if (p is not null && string.Equals(p.Name, session.PlayerName, StringComparison.Ordinal))
                     p.SeatOrigin = "mcp_ai";
+                else if (p is not null && !string.IsNullOrWhiteSpace(p.Name) && opponentKeyword is null)
+                    opponentKeyword = p.Name;
             }
             foreach (Player? obs in game.Observers)
             {
@@ -155,6 +158,10 @@ public sealed class DuelLobbyAndTurnTools(McpRuntimeDependencies deps, DeckAndRe
                     obs.SeatOrigin = "mcp_ai";
             }
         }
+
+        var recalledMemories = await deps.Store.QueryAiDuelistMemoriesAsync(caller.TokenId, null, opponentKeyword, 3, ct).ConfigureAwait(false);
+        if (recalledMemories.Count == 0 && opponentKeyword is not null)
+            recalledMemories = await deps.Store.QueryAiDuelistMemoriesAsync(caller.TokenId, null, null, 3, ct).ConfigureAwait(false);
 
         await deps.Store.AppendAuditAsync(
             "mcp_token",
@@ -174,7 +181,18 @@ public sealed class DuelLobbyAndTurnTools(McpRuntimeDependencies deps, DeckAndRe
             message = msg,
             sessionId = session.SessionId,
             playerName = session.PlayerName,
+            personaStyle = session.PersonaStyle,
             roomName = session.RoomName,
+            recentMemories = recalledMemories.Select(static m => new
+            {
+                m.Id,
+                m.DeckHash,
+                m.OpponentArchetype,
+                m.OpponentName,
+                m.Result,
+                m.StrategicNote,
+                m.CreatedAt
+            }).ToArray(),
             observation = session.GetObservation(obsDetail)
         });
     }

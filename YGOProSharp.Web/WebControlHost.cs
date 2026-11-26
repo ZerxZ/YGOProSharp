@@ -20,14 +20,14 @@ using YGOProSharp.Persistence.Caching;
 using YGOProSharp.Persistence.Security;
 using YGOProSharp.Server;
 using YGOProSharp.Web.Logging;
+using YGOProSharp.Web.Routing;
 using YGOProSharp.Web.Security;
 using YGOProSharp.Web.Services;
 
 namespace YGOProSharp.Web;
 
 /// <summary>
-/// ASP.NET Core 控制面宿主（已按单一职责拆分为宿主生命周期与分域路由 `Admin/WebControlHost.*.cs`）：
-/// 统一通过标准 <see cref="PanelSessionAuthenticationHandler"/>、CSRF 端点门禁与 RBAC 策略保护后台接口。
+/// ASP.NET Core 控制面宿主：所有业务端点均通过声明式特性由 Roslyn 增量源生成器（<c>WebControlHost.Endpoints.g.cs</c>）在编译期完成零反射映射。
 /// </summary>
 public sealed partial class WebControlHost : IAsyncDisposable, IDisposable
 {
@@ -144,7 +144,38 @@ public sealed partial class WebControlHost : IAsyncDisposable, IDisposable
         }
 
         app.UseYgoWebSecurityAndRateLimiting();
-        MapEndpoints(app, staticRoot);
+
+        // 编译期源生成路由挂载（零反射）
+        MapGeneratedEndpoints(app);
+        _embeddedPortal?.MapGeneratedPortalCoreEndpoints(app);
+        app.MapMcpStreamableHttp(_mcpEngine, _store);
+
+        if (staticRoot is not null)
+        {
+            string indexHtmlPath = Path.Combine(staticRoot, "index.html");
+            app.MapFallback(async (HttpContext http) =>
+            {
+                PathString path = http.Request.Path;
+                if (path.StartsWithSegments("/api") ||
+                    path.StartsWithSegments("/ws") ||
+                    path.StartsWithSegments("/mcp") ||
+                    path.StartsWithSegments("/healthz"))
+                {
+                    http.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
+                }
+
+                if (File.Exists(indexHtmlPath))
+                {
+                    http.Response.ContentType = "text/html; charset=utf-8";
+                    await http.Response.SendFileAsync(indexHtmlPath, http.RequestAborted).ConfigureAwait(false);
+                }
+                else
+                {
+                    http.Response.StatusCode = StatusCodes.Status404NotFound;
+                }
+            });
+        }
 
         await app.StartAsync(cancellationToken).ConfigureAwait(false);
         _app = app;
@@ -175,9 +206,9 @@ public sealed partial class WebControlHost : IAsyncDisposable, IDisposable
         }
     }
 
-    private void MapEndpoints(WebApplication app, string? staticRoot)
-    {
-        app.MapGet("/api/surface", () => Results.Ok(new
+    [HttpGet("/api/surface")]
+    private IResult GetAdminSurface() =>
+        Results.Ok(new
         {
             surface = "admin",
             unifiedPortal = _options.EnableUnifiedPortal,
@@ -187,103 +218,69 @@ public sealed partial class WebControlHost : IAsyncDisposable, IDisposable
             publicGameHost = _options.PublicGameHost,
             adminPort = _options.Port,
             portalPort = _options.PortalPort ?? (_options.EnableUnifiedPortal ? _options.Port : null)
-        }));
-
-        app.MapGet("/healthz", async (CancellationToken ct) =>
-        {
-            DatabaseHealthSnapshot dbHealth = await _store.Database.CheckHealthAsync(ct).ConfigureAwait(false);
-            CacheStatsSnapshot cacheStats = _store.Cache.GetStats();
-            bool serverOk = _serverHost.IsRunning;
-            bool healthy = serverOk && dbHealth.IsHealthy;
-
-            return Results.Json(new
-            {
-                status = healthy ? "healthy" : "degraded",
-                uptimeSeconds = (long)(DateTime.UtcNow - _startedAtUtc).TotalSeconds,
-                gameServerRunning = serverOk,
-                gameServerListening = _serverHost.IsListening,
-                maintenanceMode = _serverHost.Server.IsMaintenanceMode,
-                database = new
-                {
-                    provider = dbHealth.Provider,
-                    healthy = dbHealth.IsHealthy,
-                    isHealthy = dbHealth.IsHealthy,
-                    latencyMs = dbHealth.LatencyMs,
-                    journalMode = dbHealth.JournalMode,
-                    activeUserCount = dbHealth.ActiveUserCount,
-                    activeBanCount = dbHealth.ActiveBanCount,
-                    totalDuelRecords = dbHealth.TotalDuelRecords,
-                    error = dbHealth.ErrorMessage
-                },
-                cache = new
-                {
-                    redisConfigured = cacheStats.RedisConfigured,
-                    redisConnected = cacheStats.RedisConnected,
-                    hitRatioPercent = cacheStats.HitRatioPercent
-                }
-            }, statusCode: healthy ? StatusCodes.Status200OK : StatusCodes.Status503ServiceUnavailable);
         });
 
-        MapAdminAuthAndUserEndpoints(app);
-        MapAdminServerAndRoomEndpoints(app);
-        MapAdminModerationAndDeckEndpoints(app);
-        MapAdminDiyStudioEndpoints(app);
+    [HttpGet("/healthz")]
+    private async Task<IResult> GetAdminHealthzAsync(CancellationToken ct)
+    {
+        DatabaseHealthSnapshot dbHealth = await _store.Database.CheckHealthAsync(ct).ConfigureAwait(false);
+        CacheStatsSnapshot cacheStats = _store.Cache.GetStats();
+        bool serverOk = _serverHost.IsRunning;
+        bool healthy = serverOk && dbHealth.IsHealthy;
 
-        _embeddedPortal?.MapPortalCoreRoutes(app);
-        app.MapMcpStreamableHttp(_mcpEngine, _store);
-
-        app.Map("/ws/events", async (HttpContext http, CancellationToken ct) =>
+        return Results.Json(new
         {
-            if (!http.WebSockets.IsWebSocketRequest)
-                return Results.BadRequest(new { message = "Expected WebSocket upgrade request." });
-
-            AuthenticatedPrincipal? principal = null;
-            if (http.Request.Query.TryGetValue("ticket", out var ticketVals) && !string.IsNullOrWhiteSpace(ticketVals.ToString()))
+            status = healthy ? "healthy" : "degraded",
+            uptimeSeconds = (long)(DateTime.UtcNow - _startedAtUtc).TotalSeconds,
+            gameServerRunning = serverOk,
+            gameServerListening = _serverHost.IsListening,
+            maintenanceMode = _serverHost.Server.IsMaintenanceMode,
+            database = new
             {
-                string? rawSessionFromTicket = await _store.Cache.ConsumeOneTimeTicketAsync("ws", ticketVals.ToString(), ct).ConfigureAwait(false);
-                if (!string.IsNullOrWhiteSpace(rawSessionFromTicket))
-                    principal = await _store.ValidateSessionAsync(rawSessionFromTicket, ct).ConfigureAwait(false);
-            }
-            else
+                provider = dbHealth.Provider,
+                healthy = dbHealth.IsHealthy,
+                isHealthy = dbHealth.IsHealthy,
+                latencyMs = dbHealth.LatencyMs,
+                journalMode = dbHealth.JournalMode,
+                activeUserCount = dbHealth.ActiveUserCount,
+                activeBanCount = dbHealth.ActiveBanCount,
+                totalDuelRecords = dbHealth.TotalDuelRecords,
+                error = dbHealth.ErrorMessage
+            },
+            cache = new
             {
-                (string? rawToken, _) = WebSecurityExtensions.ExtractSessionToken(http, _options.SessionCookieName);
-                principal = await _store.ValidateSessionAsync(rawToken, ct).ConfigureAwait(false);
+                redisConfigured = cacheStats.RedisConfigured,
+                redisConnected = cacheStats.RedisConnected,
+                hitRatioPercent = cacheStats.HitRatioPercent
             }
+        }, statusCode: healthy ? StatusCodes.Status200OK : StatusCodes.Status503ServiceUnavailable);
+    }
 
-            if (principal is null || principal.MustChangePassword)
-                return Results.Unauthorized();
+    [MapEndpoint("/ws/events")]
+    private async Task<IResult> HandleAdminEventsWebSocketAsync(HttpContext http, CancellationToken ct)
+    {
+        if (!http.WebSockets.IsWebSocketRequest)
+            return Results.BadRequest(new { message = "Expected WebSocket upgrade request." });
 
-            using WebSocket ws = await http.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
-            await _eventHub.HandleConnectionAsync(ws, principal, ct).ConfigureAwait(false);
-            return Results.Empty;
-        });
-
-        if (staticRoot is not null)
+        AuthenticatedPrincipal? principal = null;
+        if (http.Request.Query.TryGetValue("ticket", out var ticketVals) && !string.IsNullOrWhiteSpace(ticketVals.ToString()))
         {
-            string indexHtmlPath = Path.Combine(staticRoot, "index.html");
-            app.MapFallback(async (HttpContext http) =>
-            {
-                PathString path = http.Request.Path;
-                if (path.StartsWithSegments("/api") ||
-                    path.StartsWithSegments("/ws") ||
-                    path.StartsWithSegments("/mcp") ||
-                    path.StartsWithSegments("/healthz"))
-                {
-                    http.Response.StatusCode = StatusCodes.Status404NotFound;
-                    return;
-                }
-
-                if (File.Exists(indexHtmlPath))
-                {
-                    http.Response.ContentType = "text/html; charset=utf-8";
-                    await http.Response.SendFileAsync(indexHtmlPath, http.RequestAborted).ConfigureAwait(false);
-                }
-                else
-                {
-                    http.Response.StatusCode = StatusCodes.Status404NotFound;
-                }
-            });
+            string? rawSessionFromTicket = await _store.Cache.ConsumeOneTimeTicketAsync("ws", ticketVals.ToString(), ct).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(rawSessionFromTicket))
+                principal = await _store.ValidateSessionAsync(rawSessionFromTicket, ct).ConfigureAwait(false);
         }
+        else
+        {
+            (string? rawToken, _) = WebSecurityExtensions.ExtractSessionToken(http, _options.SessionCookieName);
+            principal = await _store.ValidateSessionAsync(rawToken, ct).ConfigureAwait(false);
+        }
+
+        if (principal is null || principal.MustChangePassword)
+            return Results.Unauthorized();
+
+        using WebSocket ws = await http.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
+        await _eventHub.HandleConnectionAsync(ws, principal, ct).ConfigureAwait(false);
+        return Results.Empty;
     }
 
     private void HandleCoordinatorEvent(string eventType, object payload)

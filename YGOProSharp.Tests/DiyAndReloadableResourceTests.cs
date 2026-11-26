@@ -97,6 +97,7 @@ public sealed class DiyAndReloadableResourceTests
         }
         finally
         {
+            BanlistManager.Banlists.Clear();
             try { Directory.Delete(tempDir, recursive: true); } catch { }
         }
     }
@@ -220,6 +221,7 @@ public sealed class DiyAndReloadableResourceTests
         }
         finally
         {
+            BanlistManager.Banlists.Clear();
             try { Directory.Delete(tempDir, recursive: true); } catch { }
         }
     }

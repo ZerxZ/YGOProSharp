@@ -176,6 +176,12 @@ public static class WebSecurityExtensions
         params string[] anyOfPermissions) =>
         RequireSchemeAuthCore(builder, WebAuthSchemes.AdminPanel, isPortalSurface: false, allowWhenMustChangePassword: false, anyOfPermissions);
 
+    public static RouteHandlerBuilder RequireAdminAuth(
+        this RouteHandlerBuilder builder,
+        bool allowWhenMustChangePassword,
+        params string[] anyOfPermissions) =>
+        RequireSchemeAuthCore(builder, WebAuthSchemes.AdminPanel, isPortalSurface: false, allowWhenMustChangePassword, anyOfPermissions);
+
     public static RouteHandlerBuilder RequireAdminAuthAllowMustChange(this RouteHandlerBuilder builder) =>
         RequireSchemeAuthCore(builder, WebAuthSchemes.AdminPanel, isPortalSurface: false, allowWhenMustChangePassword: true, []);
 

@@ -350,16 +350,18 @@ public sealed partial class AgentDuelSession
                     }
                     _partnerTactic = new AgentPartnerTactic(stance, body, sender, DateTime.UtcNow, handoff);
                     AddEventLocked($"[2v2 搭档战术] {body}");
+                    PulseSignalLocked();
                     return;
                 }
             }
         }
 
         (string speakerName, string relation, int? seat) = ResolveChatSpeakerInfo(senderCode);
+        string? tacticalHint = relation == "teammate" ? DetectNaturalLanguageTacticalHint(trimmed) : null;
         long cSeq = ++_chatSeqCounter;
         if (_chatHistory.Count >= ChatHistoryCap)
             _chatHistory.RemoveAt(0);
-        _chatHistory.Add(new AgentChatEntry(cSeq, speakerName, relation, seat, trimmed));
+        _chatHistory.Add(new AgentChatEntry(cSeq, speakerName, relation, seat, trimmed, tacticalHint));
 
         string relLabel = relation switch
         {
@@ -370,6 +372,24 @@ public sealed partial class AgentDuelSession
             _ => "观众"
         };
         AddEventLocked($"[聊天·{relLabel}:{speakerName}] {trimmed}");
+    }
+
+    private static string? DetectNaturalLanguageTacticalHint(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+        string lower = text.ToLowerInvariant();
+        if (lower.Contains("otk", StringComparison.Ordinal) || text.Contains("斩杀", StringComparison.Ordinal) || text.Contains("总攻", StringComparison.Ordinal) || text.Contains("带走", StringComparison.Ordinal))
+            return "all_in_otk";
+        if (text.Contains("激进", StringComparison.Ordinal) || text.Contains("强攻", StringComparison.Ordinal) || text.Contains("抢血", StringComparison.Ordinal) || text.Contains("铺场", StringComparison.Ordinal))
+            return "aggressive";
+        if (text.Contains("留格", StringComparison.Ordinal) || text.Contains("留场", StringComparison.Ordinal) || text.Contains("铺垫", StringComparison.Ordinal) || text.Contains("留素材", StringComparison.Ordinal))
+            return "setup_partner";
+        if (text.Contains("稳住", StringComparison.Ordinal) || text.Contains("稳健", StringComparison.Ordinal) || text.Contains("留康", StringComparison.Ordinal) || text.Contains("护航", StringComparison.Ordinal))
+            return "control";
+        if (text.Contains("防守", StringComparison.Ordinal) || text.Contains("保命", StringComparison.Ordinal) || text.Contains("挡刀", StringComparison.Ordinal))
+            return "defensive";
+        return null;
     }
 
     private void HandleGameMessageLocked(GameMessage gm, BinaryReader packet)

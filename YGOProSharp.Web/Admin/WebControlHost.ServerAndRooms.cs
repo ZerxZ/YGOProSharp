@@ -1,4 +1,3 @@
-using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using YGOProSharp.Core;
 using YGOProSharp.Persistence;
@@ -7,6 +6,7 @@ using YGOProSharp.Persistence.Security;
 using YGOProSharp.Protocol.Enums;
 using YGOProSharp.Server;
 using YGOProSharp.Web.Logging;
+using YGOProSharp.Web.Routing;
 using YGOProSharp.Web.Security;
 using YGOProSharp.Web.Services;
 
@@ -14,380 +14,443 @@ namespace YGOProSharp.Web;
 
 public sealed partial class WebControlHost
 {
-    private void MapAdminServerAndRoomEndpoints(WebApplication app)
+    [HttpGet("/api/v1/system/cache/stats")]
+    [AdminAuth(RbacPermissions.DashboardView)]
+    private async Task<IResult> GetSystemCacheStatsAsync(CancellationToken ct)
     {
-        app.MapGet("/api/v1/system/cache/stats", async (CancellationToken ct) =>
+        DatabaseHealthSnapshot dbHealth = await _store.Database.CheckHealthAsync(ct).ConfigureAwait(false);
+        CacheStatsSnapshot stats = _store.Cache.GetStats();
+        return Results.Ok(new
         {
-            DatabaseHealthSnapshot dbHealth = await _store.Database.CheckHealthAsync(ct).ConfigureAwait(false);
-            CacheStatsSnapshot stats = _store.Cache.GetStats();
-            return Results.Ok(new
+            database = new
             {
-                database = new
+                provider = dbHealth.Provider,
+                healthy = dbHealth.IsHealthy,
+                isHealthy = dbHealth.IsHealthy,
+                latencyMs = dbHealth.LatencyMs,
+                journalMode = dbHealth.JournalMode,
+                activeUserCount = dbHealth.ActiveUserCount,
+                activeBanCount = dbHealth.ActiveBanCount,
+                totalDuelRecords = dbHealth.TotalDuelRecords,
+                error = dbHealth.ErrorMessage
+            },
+            cache = stats
+        });
+    }
+
+    [HttpPost("/api/v1/system/cache/flush")]
+    [AdminAuth(RbacPermissions.SystemCacheFlush)]
+    private async Task<IResult> FlushSystemCacheAsync(
+        AuthenticatedPrincipal principal,
+        HttpContext http,
+        FlushCacheRequestDto? body,
+        CancellationToken ct)
+    {
+        string? ns = body?.Namespace;
+        long generation = string.IsNullOrWhiteSpace(ns)
+            ? await _store.Cache.FlushAllAsync(ct).ConfigureAwait(false)
+            : await _store.Cache.FlushNamespaceAsync(ns, ct).ConfigureAwait(false);
+
+        await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "system.cache_flush", RbacPermissions.SystemCacheFlush, ns ?? "all", http.GetRemoteIpNormalized(), "ok", null, ct).ConfigureAwait(false);
+        _eventHub.BroadcastEvent("cache.stats", _store.Cache.GetStats(), RbacPermissions.DashboardView);
+        return Results.Ok(new { success = true, @namespace = ns ?? "all", generation });
+    }
+
+    [HttpGet("/api/v1/system/logs")]
+    [AdminAuth(RbacPermissions.DashboardView)]
+    private IResult GetSystemLogs(
+        AuthenticatedPrincipal principal,
+        int? limit,
+        string? level,
+        string? search)
+    {
+        if (principal.IsStreamerOnly)
+            return Results.Ok(new { entries = Array.Empty<BufferedLogEntry>(), redactedForStreamer = true });
+
+        IReadOnlyList<BufferedLogEntry> entries = _logBuffer.GetRecent(limit ?? 150, level, search);
+        return Results.Ok(new { entries, redactedForStreamer = false });
+    }
+
+    [HttpGet("/api/v1/server/status")]
+    [AdminAuth(RbacPermissions.DashboardView)]
+    private async Task<IResult> GetServerStatusAsync(CancellationToken ct)
+    {
+        CoreServer srv = _serverHost.Server;
+        DatabaseHealthSnapshot dbHealth = await _store.Database.CheckHealthAsync(ct).ConfigureAwait(false);
+        CacheStatsSnapshot cache = _store.Cache.GetStats();
+        IReadOnlyList<DiyPackageManifest> diyPackages = _diyManager.ListPackages();
+
+        return Results.Ok(new
+        {
+            uptimeSeconds = (long)(DateTime.UtcNow - _startedAtUtc).TotalSeconds,
+            isRunning = srv.IsRunning,
+            isListening = srv.IsListening,
+            port = srv.Options.Port,
+            multiRoom = srv.IsMultiRoom,
+            maintenanceMode = srv.IsMaintenanceMode,
+            maintenanceReason = srv.MaintenanceReason,
+            clientCount = srv.ClientCount,
+            roomCount = srv.RoomCount,
+            wsSubscribers = _eventHub.SubscriberCount,
+            catalogVersion = srv.ReloadableCards.CatalogVersion,
+            banlistCount = BanlistManager.Banlists.Count,
+            presetDeckCount = srv.PresetDecks.Count,
+            diyPackageCount = diyPackages.Count,
+            enabledDiyPackageCount = diyPackages.Count(static p => p.Enabled),
+            database = new
+            {
+                provider = dbHealth.Provider,
+                healthy = dbHealth.IsHealthy,
+                isHealthy = dbHealth.IsHealthy,
+                latencyMs = dbHealth.LatencyMs,
+                journalMode = dbHealth.JournalMode,
+                activeUserCount = dbHealth.ActiveUserCount,
+                activeBanCount = dbHealth.ActiveBanCount,
+                totalDuelRecords = dbHealth.TotalDuelRecords,
+                error = dbHealth.ErrorMessage
+            },
+            cache
+        });
+    }
+
+    [HttpPost("/api/v1/server/maintenance")]
+    [AdminAuth(RbacPermissions.ServerStop)]
+    private async Task<IResult> SetMaintenanceModeAsync(
+        AuthenticatedPrincipal principal,
+        HttpContext http,
+        MaintenanceRequestDto body,
+        CancellationToken ct)
+    {
+        _serverHost.Server.SetMaintenanceMode(body.Enabled, body.Reason);
+        await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "server.maintenance", RbacPermissions.ServerStop, body.Enabled ? "enable" : "disable", http.GetRemoteIpNormalized(), "ok", body.Reason, ct).ConfigureAwait(false);
+        _eventHub.BroadcastEvent("server.maintenance", new { enabled = body.Enabled, reason = _serverHost.Server.MaintenanceReason }, RbacPermissions.DashboardView);
+        return Results.Ok(new { success = true, maintenanceMode = _serverHost.Server.IsMaintenanceMode, reason = _serverHost.Server.MaintenanceReason });
+    }
+
+    [HttpPost("/api/v1/server/broadcast")]
+    [AdminAuth(RbacPermissions.RoomShout)]
+    private async Task<IResult> BroadcastServerMessageAsync(
+        AuthenticatedPrincipal principal,
+        HttpContext http,
+        MessageRequestDto body,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(body.Message))
+            return Results.BadRequest(new { success = false, message = "广播内容不能为空。" });
+
+        string formatted = $"[公告/{principal.DisplayName}] {body.Message.Trim()}";
+        _serverHost.Server.BroadcastSystemMessage(formatted);
+        await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "server.broadcast", RbacPermissions.RoomShout, "all_rooms", http.GetRemoteIpNormalized(), "ok", body.Message.Trim(), ct).ConfigureAwait(false);
+        return Results.Ok(new { success = true });
+    }
+
+    [HttpGet("/api/v1/rooms")]
+    [AdminAuth(RbacPermissions.RoomView)]
+    private async Task<IResult> ListRoomsAsync(AuthenticatedPrincipal principal, CancellationToken ct)
+    {
+        RawRoomSummaryDto[] rawRooms = await _store.Cache.GetOrCreateAsync(
+            "rooms",
+            "public_list",
+            _ => ValueTask.FromResult(BuildRawRoomSummaries()),
+            ttl: TimeSpan.FromMilliseconds(500),
+            l1Ttl: TimeSpan.FromMilliseconds(500),
+            cancellationToken: ct).ConfigureAwait(false);
+
+        object[] sanitized = rawRooms.Select(r => SanitizeRoomSummary(r, principal)).ToArray();
+        return Results.Ok(new
+        {
+            rooms = sanitized,
+            banlists = BanlistManager.Banlists.Select(static (b, idx) => new { index = idx, b.Name, b.WhitelistOnly }).ToArray(),
+            availableBotDecks = _options.AvailableBotDecksProvider?.Invoke() ?? []
+        });
+    }
+
+    [HttpPost("/api/v1/rooms")]
+    [AdminAuth(RbacPermissions.RoomCreate, RbacPermissions.RoomCreateOwn)]
+    private async Task<IResult> CreateRoomAsync(
+        AuthenticatedPrincipal principal,
+        HttpContext http,
+        CreateRoomRequestDto body,
+        CancellationToken ct)
+    {
+        if (!_serverHost.Server.IsMultiRoom)
+            return Results.BadRequest(new { success = false, message = "当前服务端未开启 EnableMultiRoom，无法动态新建独立房间。" });
+
+        string roomName = string.IsNullOrWhiteSpace(body.RoomName)
+            ? $"Arena-{TokenCrypto.GenerateShortCode(5)}"
+            : body.RoomName.Trim();
+
+        GameOptions roomOptions = RoomConfigHelper.ResolveCreateRoomOptions(
+            _serverHost.Server.Options.Game,
+            _serverHost.Server.PasswordParser,
+            roomName,
+            body,
+            out string canonicalFullHostPassword);
+
+        if (!_serverHost.Server.TryCreateRoom(roomName, out Game? createdRoom, roomOptions) || createdRoom is null)
+            return Results.Conflict(new { success = false, message = $"无法创建房间 '{roomName}'（可能房名已存在、处于维护模式或已达上限）。" });
+
+        RoomActivityState state = _coordinator.GetOrCreateRoomState(createdRoom.RoomName);
+        state.OwnerUserId = principal.UserId;
+        state.OwnerUsername = principal.Username;
+        state.RawJoinPassword = canonicalFullHostPassword;
+
+        List<object> issuedTokens = new();
+        if (body.IssuePlayerTokens && RbacPolicyEvaluator.CanIssueMcpRole(principal.RoleCodes, principal.EffectivePermissions, McpRoleCodes.Player))
+        {
+            int defaultCount = createdRoom.IsTag ? 4 : 2;
+            int count = Math.Clamp(body.AiTokenCount ?? defaultCount, 1, 4);
+            for (int i = 0; i < count; i++)
+            {
+                string? customNickname = body.AiPlayerNames is not null && i < body.AiPlayerNames.Length
+                    ? body.AiPlayerNames[i]?.Trim()
+                    : null;
+                if (string.IsNullOrWhiteSpace(customNickname))
+                    customNickname = null;
+
+                string label = customNickname ?? $"待AI自取名 ({createdRoom.RoomName})";
+                (bool issuedOk, string issueErr, IssuedMcpTokenResult? issued) = await _store.IssueMcpTokenAsync(
+                    principal,
+                    name: label,
+                    mcpRole: McpRoleCodes.Player,
+                    allowedRooms: [createdRoom.RoomName],
+                    maxSessions: 1,
+                    requireApproval: true,
+                    expiresInHours: 12,
+                    ip: http.GetRemoteIpNormalized(),
+                    cancellationToken: ct,
+                    preferredPlayerName: customNickname).ConfigureAwait(false);
+
+                if (!issuedOk && customNickname is not null)
+                    return Results.BadRequest(new { success = false, message = issueErr });
+
+                if (issuedOk && issued is not null)
                 {
-                    provider = dbHealth.Provider,
-                    healthy = dbHealth.IsHealthy,
-                    isHealthy = dbHealth.IsHealthy,
-                    latencyMs = dbHealth.LatencyMs,
-                    journalMode = dbHealth.JournalMode,
-                    activeUserCount = dbHealth.ActiveUserCount,
-                    activeBanCount = dbHealth.ActiveBanCount,
-                    totalDuelRecords = dbHealth.TotalDuelRecords,
-                    error = dbHealth.ErrorMessage
-                },
-                cache = stats
-            });
-        }).RequireAdminAuth(RbacPermissions.DashboardView);
-
-        app.MapPost("/api/v1/system/cache/flush", async (HttpContext http, FlushCacheRequestDto? body, CancellationToken ct) =>
-        {
-            AuthenticatedPrincipal principal = http.GetRequiredPrincipal();
-            string? ns = body?.Namespace;
-            long generation = string.IsNullOrWhiteSpace(ns)
-                ? await _store.Cache.FlushAllAsync(ct).ConfigureAwait(false)
-                : await _store.Cache.FlushNamespaceAsync(ns, ct).ConfigureAwait(false);
-
-            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "system.cache_flush", RbacPermissions.SystemCacheFlush, ns ?? "all", http.GetRemoteIpNormalized(), "ok", null, ct).ConfigureAwait(false);
-            _eventHub.BroadcastEvent("cache.stats", _store.Cache.GetStats(), RbacPermissions.DashboardView);
-            return Results.Ok(new { success = true, @namespace = ns ?? "all", generation });
-        }).RequireAdminAuth(RbacPermissions.SystemCacheFlush);
-
-        app.MapGet("/api/v1/system/logs", (HttpContext http, int? limit, string? level, string? search) =>
-        {
-            AuthenticatedPrincipal principal = http.GetRequiredPrincipal();
-            if (principal.IsStreamerOnly)
-                return Results.Ok(new { entries = Array.Empty<BufferedLogEntry>(), redactedForStreamer = true });
-
-            IReadOnlyList<BufferedLogEntry> entries = _logBuffer.GetRecent(limit ?? 150, level, search);
-            return Results.Ok(new { entries, redactedForStreamer = false });
-        }).RequireAdminAuth(RbacPermissions.DashboardView);
-
-        app.MapGet("/api/v1/server/status", async (CancellationToken ct) =>
-        {
-            CoreServer srv = _serverHost.Server;
-            DatabaseHealthSnapshot dbHealth = await _store.Database.CheckHealthAsync(ct).ConfigureAwait(false);
-            CacheStatsSnapshot cache = _store.Cache.GetStats();
-            IReadOnlyList<DiyPackageManifest> diyPackages = _diyManager.ListPackages();
-
-            return Results.Ok(new
-            {
-                uptimeSeconds = (long)(DateTime.UtcNow - _startedAtUtc).TotalSeconds,
-                isRunning = srv.IsRunning,
-                isListening = srv.IsListening,
-                port = srv.Options.Port,
-                multiRoom = srv.IsMultiRoom,
-                maintenanceMode = srv.IsMaintenanceMode,
-                maintenanceReason = srv.MaintenanceReason,
-                clientCount = srv.ClientCount,
-                roomCount = srv.RoomCount,
-                wsSubscribers = _eventHub.SubscriberCount,
-                catalogVersion = srv.ReloadableCards.CatalogVersion,
-                banlistCount = BanlistManager.Banlists.Count,
-                presetDeckCount = srv.PresetDecks.Count,
-                diyPackageCount = diyPackages.Count,
-                enabledDiyPackageCount = diyPackages.Count(static p => p.Enabled),
-                database = new
-                {
-                    provider = dbHealth.Provider,
-                    healthy = dbHealth.IsHealthy,
-                    isHealthy = dbHealth.IsHealthy,
-                    latencyMs = dbHealth.LatencyMs,
-                    journalMode = dbHealth.JournalMode,
-                    activeUserCount = dbHealth.ActiveUserCount,
-                    activeBanCount = dbHealth.ActiveBanCount,
-                    totalDuelRecords = dbHealth.TotalDuelRecords,
-                    error = dbHealth.ErrorMessage
-                },
-                cache
-            });
-        }).RequireAdminAuth(RbacPermissions.DashboardView);
-
-        app.MapPost("/api/v1/server/maintenance", async (HttpContext http, MaintenanceRequestDto body, CancellationToken ct) =>
-        {
-            AuthenticatedPrincipal principal = http.GetRequiredPrincipal();
-            _serverHost.Server.SetMaintenanceMode(body.Enabled, body.Reason);
-            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "server.maintenance", RbacPermissions.ServerStop, body.Enabled ? "enable" : "disable", http.GetRemoteIpNormalized(), "ok", body.Reason, ct).ConfigureAwait(false);
-            _eventHub.BroadcastEvent("server.maintenance", new { enabled = body.Enabled, reason = _serverHost.Server.MaintenanceReason }, RbacPermissions.DashboardView);
-            return Results.Ok(new { success = true, maintenanceMode = _serverHost.Server.IsMaintenanceMode, reason = _serverHost.Server.MaintenanceReason });
-        }).RequireAdminAuth(RbacPermissions.ServerStop);
-
-        app.MapPost("/api/v1/server/broadcast", async (HttpContext http, MessageRequestDto body, CancellationToken ct) =>
-        {
-            AuthenticatedPrincipal principal = http.GetRequiredPrincipal();
-            if (string.IsNullOrWhiteSpace(body.Message))
-                return Results.BadRequest(new { success = false, message = "广播内容不能为空。" });
-
-            string formatted = $"[公告/{principal.DisplayName}] {body.Message.Trim()}";
-            _serverHost.Server.BroadcastSystemMessage(formatted);
-            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "server.broadcast", RbacPermissions.RoomShout, "all_rooms", http.GetRemoteIpNormalized(), "ok", body.Message.Trim(), ct).ConfigureAwait(false);
-            return Results.Ok(new { success = true });
-        }).RequireAdminAuth(RbacPermissions.RoomShout);
-
-        app.MapGet("/api/v1/rooms", async (HttpContext http, CancellationToken ct) =>
-        {
-            AuthenticatedPrincipal principal = http.GetRequiredPrincipal();
-            RawRoomSummaryDto[] rawRooms = await _store.Cache.GetOrCreateAsync(
-                "rooms",
-                "public_list",
-                _ => ValueTask.FromResult(BuildRawRoomSummaries()),
-                ttl: TimeSpan.FromMilliseconds(500),
-                l1Ttl: TimeSpan.FromMilliseconds(500),
-                cancellationToken: ct).ConfigureAwait(false);
-
-            object[] sanitized = rawRooms.Select(r => SanitizeRoomSummary(r, principal)).ToArray();
-            return Results.Ok(new
-            {
-                rooms = sanitized,
-                banlists = BanlistManager.Banlists.Select(static (b, idx) => new { index = idx, b.Name, b.WhitelistOnly }).ToArray(),
-                availableBotDecks = _options.AvailableBotDecksProvider?.Invoke() ?? []
-            });
-        }).RequireAdminAuth(RbacPermissions.RoomView);
-
-        app.MapPost("/api/v1/rooms", async (HttpContext http, CreateRoomRequestDto body, CancellationToken ct) =>
-        {
-            AuthenticatedPrincipal principal = http.GetRequiredPrincipal();
-            if (!_serverHost.Server.IsMultiRoom)
-                return Results.BadRequest(new { success = false, message = "当前服务端未开启 EnableMultiRoom，无法动态新建独立房间。" });
-
-            string roomName = string.IsNullOrWhiteSpace(body.RoomName)
-                ? $"Arena-{TokenCrypto.GenerateShortCode(5)}"
-                : body.RoomName.Trim();
-
-            GameOptions roomOptions = RoomConfigHelper.ResolveCreateRoomOptions(
-                _serverHost.Server.Options.Game,
-                _serverHost.Server.PasswordParser,
-                roomName,
-                body,
-                out string canonicalFullHostPassword);
-
-            if (!_serverHost.Server.TryCreateRoom(roomName, out Game? createdRoom, roomOptions) || createdRoom is null)
-                return Results.Conflict(new { success = false, message = $"无法创建房间 '{roomName}'（可能房名已存在、处于维护模式或已达上限）。" });
-
-            RoomActivityState state = _coordinator.GetOrCreateRoomState(createdRoom.RoomName);
-            state.OwnerUserId = principal.UserId;
-            state.OwnerUsername = principal.Username;
-            state.RawJoinPassword = canonicalFullHostPassword;
-
-            List<object> issuedTokens = new();
-            if (body.IssuePlayerTokens && RbacPolicyEvaluator.CanIssueMcpRole(principal.RoleCodes, principal.EffectivePermissions, McpRoleCodes.Player))
-            {
-                int defaultCount = createdRoom.IsTag ? 4 : 2;
-                int count = Math.Clamp(body.AiTokenCount ?? defaultCount, 1, 4);
-                for (int i = 0; i < count; i++)
-                {
-                    string? customNickname = body.AiPlayerNames is not null && i < body.AiPlayerNames.Length
-                        ? body.AiPlayerNames[i]?.Trim()
-                        : null;
-                    if (string.IsNullOrWhiteSpace(customNickname))
-                        customNickname = null;
-
-                    string label = customNickname ?? $"待AI自取名 ({createdRoom.RoomName})";
-                    (bool issuedOk, string issueErr, IssuedMcpTokenResult? issued) = await _store.IssueMcpTokenAsync(
-                        principal,
-                        name: label,
-                        mcpRole: McpRoleCodes.Player,
-                        allowedRooms: [createdRoom.RoomName],
-                        maxSessions: 1,
-                        requireApproval: true,
-                        expiresInHours: 12,
-                        ip: http.GetRemoteIpNormalized(),
-                        cancellationToken: ct,
-                        preferredPlayerName: customNickname).ConfigureAwait(false);
-
-                    if (!issuedOk && customNickname is not null)
-                        return Results.BadRequest(new { success = false, message = issueErr });
-
-                    if (issuedOk && issued is not null)
+                    issuedTokens.Add(new
                     {
-                        issuedTokens.Add(new
-                        {
-                            seat = i,
-                            name = issued.Entity.Name,
-                            preferredPlayerName = issued.Entity.PreferredPlayerName,
-                            mcpRole = issued.Entity.McpRole,
-                            rawToken = issued.RawToken
-                        });
-                    }
+                        seat = i,
+                        name = issued.Entity.Name,
+                        preferredPlayerName = issued.Entity.PreferredPlayerName,
+                        mcpRole = issued.Entity.McpRole,
+                        rawToken = issued.RawToken
+                    });
                 }
             }
+        }
 
-            await _store.Cache.FlushNamespaceAsync("rooms", ct).ConfigureAwait(false);
-            await _store.Cache.FlushNamespaceAsync("portal", ct).ConfigureAwait(false);
-            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.create", RbacPermissions.RoomCreate, createdRoom.RoomName, http.GetRemoteIpNormalized(), "ok", null, ct).ConfigureAwait(false);
+        await _store.Cache.FlushNamespaceAsync("rooms", ct).ConfigureAwait(false);
+        await _store.Cache.FlushNamespaceAsync("portal", ct).ConfigureAwait(false);
+        await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.create", RbacPermissions.RoomCreate, createdRoom.RoomName, http.GetRemoteIpNormalized(), "ok", null, ct).ConfigureAwait(false);
 
-            return Results.Ok(new
-            {
-                success = true,
-                hostPassword = principal.IsStreamerOnly ? null : createdRoom.RoomName,
-                fullHostPassword = principal.IsStreamerOnly ? null : canonicalFullHostPassword,
-                room = SanitizeRoomSummary(BuildSingleRawRoomSummary(createdRoom), principal),
-                issuedPlayerTokens = issuedTokens
-            });
-        }).RequireAdminAuth(RbacPermissions.RoomCreate, RbacPermissions.RoomCreateOwn);
-
-        app.MapGet("/api/v1/rooms/{roomName}", (HttpContext http, string roomName) =>
+        return Results.Ok(new
         {
-            AuthenticatedPrincipal principal = http.GetRequiredPrincipal();
-            if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
-                return Results.NotFound(new { message = $"房间 '{roomName}' 不存在或已结束。" });
+            success = true,
+            hostPassword = principal.IsStreamerOnly ? null : createdRoom.RoomName,
+            fullHostPassword = principal.IsStreamerOnly ? null : canonicalFullHostPassword,
+            room = SanitizeRoomSummary(BuildSingleRawRoomSummary(createdRoom), principal),
+            issuedPlayerTokens = issuedTokens
+        });
+    }
 
-            RoomActivityState? activity = _coordinator.TryGetRoomState(game.RoomName);
-            return Results.Ok(new { room = SanitizeRoomDetail(game, activity, principal) });
-        }).RequireAdminAuth(RbacPermissions.RoomView);
+    [HttpGet("/api/v1/rooms/{roomName}")]
+    [AdminAuth(RbacPermissions.RoomView)]
+    private IResult GetRoomDetail(AuthenticatedPrincipal principal, string roomName)
+    {
+        if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
+            return Results.NotFound(new { message = $"房间 '{roomName}' 不存在或已结束。" });
 
-        app.MapPatch("/api/v1/rooms/{roomName}/rules", async (HttpContext http, string roomName, UpdateRoomRulesRequestDto body, CancellationToken ct) =>
+        RoomActivityState? activity = _coordinator.TryGetRoomState(game.RoomName);
+        return Results.Ok(new { room = SanitizeRoomDetail(game, activity, principal) });
+    }
+
+    [HttpPatch("/api/v1/rooms/{roomName}/rules")]
+    [AdminAuth(RbacPermissions.RoomEditRules, RbacPermissions.RoomCreateOwn)]
+    private async Task<IResult> UpdateRoomRulesAsync(
+        AuthenticatedPrincipal principal,
+        HttpContext http,
+        string roomName,
+        UpdateRoomRulesRequestDto body,
+        CancellationToken ct)
+    {
+        if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
+            return Results.NotFound(new { message = $"房间 '{roomName}' 不存在。" });
+
+        if (!CanManageRoom(principal, game.RoomName, RbacPermissions.RoomEditRules))
+            return Results.Json(new { message = "仅房管或房间创建者可修改该房间规则。" }, statusCode: StatusCodes.Status403Forbidden);
+
+        RoomRuleOverrides overrides = new();
+        if (!string.IsNullOrWhiteSpace(body.PresetRuleString))
         {
-            AuthenticatedPrincipal principal = http.GetRequiredPrincipal();
-            if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
-                return Results.NotFound(new { message = $"房间 '{roomName}' 不存在。" });
+            string spec = body.PresetRuleString.Contains('#') ? body.PresetRuleString : body.PresetRuleString + "#";
+            overrides = _serverHost.Server.PasswordParser.Parse(spec).Overrides;
+        }
 
-            if (!CanManageRoom(principal, game.RoomName, RbacPermissions.RoomEditRules))
-                return Results.Json(new { message = "仅房管或房间创建者可修改该房间规则。" }, statusCode: StatusCodes.Status403Forbidden);
-
-            RoomRuleOverrides overrides = new();
-            if (!string.IsNullOrWhiteSpace(body.PresetRuleString))
-            {
-                string spec = body.PresetRuleString.Contains('#') ? body.PresetRuleString : body.PresetRuleString + "#";
-                overrides = _serverHost.Server.PasswordParser.Parse(spec).Overrides;
-            }
-
-            if (body.Mode.HasValue) overrides.Mode = body.Mode.Value;
-            if (body.Region.HasValue) overrides.Region = body.Region.Value;
-            if (body.MasterRule.HasValue) overrides.MasterRule = Math.Clamp(body.MasterRule.Value, 1, 5);
-            if (body.StartLp.HasValue) overrides.StartLp = Math.Clamp(body.StartLp.Value, 1, 999999);
-            if (body.StartHand.HasValue) overrides.StartHand = Math.Clamp(body.StartHand.Value, 0, 40);
-            if (body.DrawCount.HasValue) overrides.DrawCount = Math.Clamp(body.DrawCount.Value, 0, 35);
-            if (body.GameTimer.HasValue) overrides.GameTimer = Math.Clamp(body.GameTimer.Value, 0, 9999);
-            if (body.NoCheckDeck.HasValue) overrides.NoCheckDeck = body.NoCheckDeck.Value;
-            if (body.NoShuffleDeck.HasValue) overrides.NoShuffleDeck = body.NoShuffleDeck.Value;
-            if (body.BanlistIndex.HasValue)
-            {
-                if (body.BanlistIndex.Value < 0) overrides.NoBanlist = true;
-                else overrides.BanlistIndex = body.BanlistIndex.Value;
-            }
-            if (!string.IsNullOrWhiteSpace(body.RandomDeckMode) &&
-                Enum.TryParse(body.RandomDeckMode.Trim(), ignoreCase: true, out RandomDeckMode parsedRand))
-            {
-                overrides.RandomDeck = parsedRand;
-            }
-
-            if (!game.ApplyLobbyRuleOverrides(overrides))
-                return Results.BadRequest(new { success = false, message = "当前房间已离开大厅阶段或 Tag 席位不兼容，无法修改规则。" });
-
-            await _store.Cache.FlushNamespaceAsync("rooms", ct).ConfigureAwait(false);
-            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.edit_rules", RbacPermissions.RoomEditRules, game.RoomName, http.GetRemoteIpNormalized(), "ok", null, ct).ConfigureAwait(false);
-            _eventHub.BroadcastEvent("room.updated", new { roomName = game.RoomName, reason = "rules.changed" }, RbacPermissions.RoomView);
-            return Results.Ok(new { success = true, room = SanitizeRoomDetail(game, _coordinator.TryGetRoomState(game.RoomName), principal) });
-        }).RequireAdminAuth(RbacPermissions.RoomEditRules, RbacPermissions.RoomCreateOwn);
-
-        app.MapPost("/api/v1/rooms/{roomName}/death", async (HttpContext http, string roomName, SuddenDeathRequestDto body, CancellationToken ct) =>
+        if (body.Mode.HasValue) overrides.Mode = body.Mode.Value;
+        if (body.Region.HasValue) overrides.Region = body.Region.Value;
+        if (body.MasterRule.HasValue) overrides.MasterRule = Math.Clamp(body.MasterRule.Value, 1, 5);
+        if (body.StartLp.HasValue) overrides.StartLp = Math.Clamp(body.StartLp.Value, 1, 999999);
+        if (body.StartHand.HasValue) overrides.StartHand = Math.Clamp(body.StartHand.Value, 0, 40);
+        if (body.DrawCount.HasValue) overrides.DrawCount = Math.Clamp(body.DrawCount.Value, 0, 35);
+        if (body.GameTimer.HasValue) overrides.GameTimer = Math.Clamp(body.GameTimer.Value, 0, 9999);
+        if (body.NoCheckDeck.HasValue) overrides.NoCheckDeck = body.NoCheckDeck.Value;
+        if (body.NoShuffleDeck.HasValue) overrides.NoShuffleDeck = body.NoShuffleDeck.Value;
+        if (body.BanlistIndex.HasValue)
         {
-            AuthenticatedPrincipal principal = http.GetRequiredPrincipal();
-            if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
-                return Results.NotFound(new { message = $"房间 '{roomName}' 不存在。" });
-
-            bool ok;
-            if (body.Enabled)
-            {
-                ok = game.StartSuddenDeath(body.ExtraTurns ?? 4);
-                if (ok) game.BroadcastSystemMessage($"[Judge] 裁判 {principal.DisplayName} 已开启额外回合猝死规则（ED）。");
-            }
-            else
-            {
-                game.CancelSuddenDeath();
-                ok = true;
-                game.BroadcastSystemMessage($"[Judge] 裁判 {principal.DisplayName} 已取消额外回合猝死规则。");
-            }
-
-            await _store.Cache.FlushNamespaceAsync("rooms", ct).ConfigureAwait(false);
-            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.sudden_death", RbacPermissions.RoomStartDeath, game.RoomName, http.GetRemoteIpNormalized(), ok ? "ok" : "error", null, ct).ConfigureAwait(false);
-            return Results.Ok(new { success = ok, isSuddenDeath = game.IsSuddenDeath, targetTurn = game.SuddenDeathTargetTurn });
-        }).RequireAdminAuth(RbacPermissions.RoomStartDeath);
-
-        app.MapPost("/api/v1/rooms/{roomName}/chat", async (HttpContext http, string roomName, MessageRequestDto body, CancellationToken ct) =>
+            if (body.BanlistIndex.Value < 0) overrides.NoBanlist = true;
+            else overrides.BanlistIndex = body.BanlistIndex.Value;
+        }
+        if (!string.IsNullOrWhiteSpace(body.RandomDeckMode) &&
+            Enum.TryParse(body.RandomDeckMode.Trim(), ignoreCase: true, out RandomDeckMode parsedRand))
         {
-            AuthenticatedPrincipal principal = http.GetRequiredPrincipal();
-            if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
-                return Results.NotFound(new { message = $"房间 '{roomName}' 不存在。" });
-            if (string.IsNullOrWhiteSpace(body.Message))
-                return Results.BadRequest(new { message = "消息内容不能为空。" });
+            overrides.RandomDeck = parsedRand;
+        }
 
-            string text = $"[裁判/{principal.DisplayName}] {body.Message.Trim()}";
-            game.BroadcastSystemMessage(text);
-            _coordinator.GetOrCreateRoomState(game.RoomName).AddChat($"[裁判/{principal.DisplayName}]", (int)PlayerType.Yellow, body.Message.Trim());
-            _eventHub.BroadcastEvent("room.chat", new { roomName = game.RoomName, sender = $"[裁判/{principal.DisplayName}]", senderType = (int)PlayerType.Yellow, message = body.Message.Trim(), timestampUtc = DateTime.UtcNow }, RbacPermissions.RoomView);
-            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.shout", RbacPermissions.RoomShout, game.RoomName, http.GetRemoteIpNormalized(), "ok", body.Message.Trim(), ct).ConfigureAwait(false);
-            return Results.Ok(new { success = true });
-        }).RequireAdminAuth(RbacPermissions.RoomShout);
+        if (!game.ApplyLobbyRuleOverrides(overrides))
+            return Results.BadRequest(new { success = false, message = "当前房间已离开大厅阶段或 Tag 席位不兼容，无法修改规则。" });
 
-        app.MapPost("/api/v1/rooms/{roomName}/bots", async (HttpContext http, string roomName, SpawnBotRequestDto body, CancellationToken ct) =>
+        await _store.Cache.FlushNamespaceAsync("rooms", ct).ConfigureAwait(false);
+        await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.edit_rules", RbacPermissions.RoomEditRules, game.RoomName, http.GetRemoteIpNormalized(), "ok", null, ct).ConfigureAwait(false);
+        _eventHub.BroadcastEvent("room.updated", new { roomName = game.RoomName, reason = "rules.changed" }, RbacPermissions.RoomView);
+        return Results.Ok(new { success = true, room = SanitizeRoomDetail(game, _coordinator.TryGetRoomState(game.RoomName), principal) });
+    }
+
+    [HttpPost("/api/v1/rooms/{roomName}/death")]
+    [AdminAuth(RbacPermissions.RoomStartDeath)]
+    private async Task<IResult> ToggleSuddenDeathAsync(
+        AuthenticatedPrincipal principal,
+        HttpContext http,
+        string roomName,
+        SuddenDeathRequestDto body,
+        CancellationToken ct)
+    {
+        if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
+            return Results.NotFound(new { message = $"房间 '{roomName}' 不存在。" });
+
+        bool ok;
+        if (body.Enabled)
         {
-            AuthenticatedPrincipal principal = http.GetRequiredPrincipal();
-            if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
-                return Results.NotFound(new { message = $"房间 '{roomName}' 不存在。" });
-            if (game.State != GameState.Lobby)
-                return Results.BadRequest(new { message = "仅可在大厅阶段召唤内置 WindBot。" });
-            if (_options.WindBotSpawner is null)
-                return Results.BadRequest(new { message = "当前宿主未挂载内置 WindBot 召唤器。" });
-
-            int emptySlots = game.Players.Count(static p => p is null);
-            if (emptySlots == 0)
-                return Results.BadRequest(new { message = "当前房间决斗席位已满。" });
-
-            int count = body.FillAll ? emptySlots : Math.Clamp(body.Count ?? 1, 1, emptySlots);
-            IReadOnlyList<string> spawned = _options.WindBotSpawner(game, body.Deck, body.Dialog, count);
-            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.spawn_bot", RbacPermissions.BotSpawn, game.RoomName, http.GetRemoteIpNormalized(), "ok", string.Join(",", spawned), ct).ConfigureAwait(false);
-            return Results.Ok(new { success = true, spawned });
-        }).RequireAdminAuth(RbacPermissions.BotSpawn);
-
-        app.MapPost("/api/v1/rooms/{roomName}/kick", async (HttpContext http, string roomName, KickPlayerRequestDto body, CancellationToken ct) =>
+            ok = game.StartSuddenDeath(body.ExtraTurns ?? 4);
+            if (ok) game.BroadcastSystemMessage($"[Judge] 裁判 {principal.DisplayName} 已开启额外回合猝死规则（ED）。");
+        }
+        else
         {
-            AuthenticatedPrincipal principal = http.GetRequiredPrincipal();
-            if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
-                return Results.NotFound(new { message = $"房间 '{roomName}' 不存在。" });
+            game.CancelSuddenDeath();
+            ok = true;
+            game.BroadcastSystemMessage($"[Judge] 裁判 {principal.DisplayName} 已取消额外回合猝死规则。");
+        }
 
-            Player? target = null;
-            if (body.SlotIndex.HasValue && body.SlotIndex.Value >= 0 && body.SlotIndex.Value < game.Players.Length)
-                target = game.Players[body.SlotIndex.Value];
-            else if (!string.IsNullOrWhiteSpace(body.PlayerName))
-            {
-                string trimmedName = body.PlayerName.Trim();
-                target = game.Players.FirstOrDefault(p => p is not null && string.Equals(p.Name, trimmedName, StringComparison.OrdinalIgnoreCase))
-                         ?? RoomConfigHelper.SnapshotObservers(game).FirstOrDefault(o => string.Equals(o.Name, trimmedName, StringComparison.OrdinalIgnoreCase));
-            }
+        await _store.Cache.FlushNamespaceAsync("rooms", ct).ConfigureAwait(false);
+        await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.sudden_death", RbacPermissions.RoomStartDeath, game.RoomName, http.GetRemoteIpNormalized(), ok ? "ok" : "error", null, ct).ConfigureAwait(false);
+        return Results.Ok(new { success = ok, isSuddenDeath = game.IsSuddenDeath, targetTurn = game.SuddenDeathTargetTurn });
+    }
 
-            if (target is null)
-                return Results.NotFound(new { message = "未找到目标玩家。" });
+    [HttpPost("/api/v1/rooms/{roomName}/chat")]
+    [AdminAuth(RbacPermissions.RoomShout)]
+    private async Task<IResult> SendRoomRefereeChatAsync(
+        AuthenticatedPrincipal principal,
+        HttpContext http,
+        string roomName,
+        MessageRequestDto body,
+        CancellationToken ct)
+    {
+        if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
+            return Results.NotFound(new { message = $"房间 '{roomName}' 不存在。" });
+        if (string.IsNullOrWhiteSpace(body.Message))
+            return Results.BadRequest(new { message = "消息内容不能为空。" });
 
-            string kickedName = target.Name ?? "Player";
-            game.RemovePlayer(target);
-            target.Disconnect();
-            await _store.Cache.FlushNamespaceAsync("rooms", ct).ConfigureAwait(false);
-            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.kick", RbacPermissions.RoomKick, $"{game.RoomName}:{kickedName}", http.GetRemoteIpNormalized(), "ok", null, ct).ConfigureAwait(false);
-            return Results.Ok(new { success = true, kicked = kickedName });
-        }).RequireAdminAuth(RbacPermissions.RoomKick);
+        string text = $"[裁判/{principal.DisplayName}] {body.Message.Trim()}";
+        game.BroadcastSystemMessage(text);
+        _coordinator.GetOrCreateRoomState(game.RoomName).AddChat($"[裁判/{principal.DisplayName}]", (int)PlayerType.Yellow, body.Message.Trim());
+        _eventHub.BroadcastEvent("room.chat", new { roomName = game.RoomName, sender = $"[裁判/{principal.DisplayName}]", senderType = (int)PlayerType.Yellow, message = body.Message.Trim(), timestampUtc = DateTime.UtcNow }, RbacPermissions.RoomView);
+        await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.shout", RbacPermissions.RoomShout, game.RoomName, http.GetRemoteIpNormalized(), "ok", body.Message.Trim(), ct).ConfigureAwait(false);
+        return Results.Ok(new { success = true });
+    }
 
-        app.MapDelete("/api/v1/rooms/{roomName}", async (HttpContext http, string roomName, CancellationToken ct) =>
+    [HttpPost("/api/v1/rooms/{roomName}/bots")]
+    [AdminAuth(RbacPermissions.BotSpawn)]
+    private async Task<IResult> SpawnRoomBotsAsync(
+        AuthenticatedPrincipal principal,
+        HttpContext http,
+        string roomName,
+        SpawnBotRequestDto body,
+        CancellationToken ct)
+    {
+        if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
+            return Results.NotFound(new { message = $"房间 '{roomName}' 不存在。" });
+        if (game.State != GameState.Lobby)
+            return Results.BadRequest(new { message = "仅可在大厅阶段召唤内置 WindBot。" });
+        if (_options.WindBotSpawner is null)
+            return Results.BadRequest(new { message = "当前宿主未挂载内置 WindBot 召唤器。" });
+
+        int emptySlots = game.Players.Count(static p => p is null);
+        if (emptySlots == 0)
+            return Results.BadRequest(new { message = "当前房间决斗席位已满。" });
+
+        int count = body.FillAll ? emptySlots : Math.Clamp(body.Count ?? 1, 1, emptySlots);
+        IReadOnlyList<string> spawned = _options.WindBotSpawner(game, body.Deck, body.Dialog, count);
+        await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.spawn_bot", RbacPermissions.BotSpawn, game.RoomName, http.GetRemoteIpNormalized(), "ok", string.Join(",", spawned), ct).ConfigureAwait(false);
+        return Results.Ok(new { success = true, spawned });
+    }
+
+    [HttpPost("/api/v1/rooms/{roomName}/kick")]
+    [AdminAuth(RbacPermissions.RoomKick)]
+    private async Task<IResult> KickRoomPlayerAsync(
+        AuthenticatedPrincipal principal,
+        HttpContext http,
+        string roomName,
+        KickPlayerRequestDto body,
+        CancellationToken ct)
+    {
+        if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
+            return Results.NotFound(new { message = $"房间 '{roomName}' 不存在。" });
+
+        Player? target = null;
+        if (body.SlotIndex.HasValue && body.SlotIndex.Value >= 0 && body.SlotIndex.Value < game.Players.Length)
+            target = game.Players[body.SlotIndex.Value];
+        else if (!string.IsNullOrWhiteSpace(body.PlayerName))
         {
-            AuthenticatedPrincipal principal = http.GetRequiredPrincipal();
-            if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
-                return Results.NotFound(new { message = $"房间 '{roomName}' 不存在。" });
+            string trimmedName = body.PlayerName.Trim();
+            target = game.Players.FirstOrDefault(p => p is not null && string.Equals(p.Name, trimmedName, StringComparison.OrdinalIgnoreCase))
+                     ?? RoomConfigHelper.SnapshotObservers(game).FirstOrDefault(o => string.Equals(o.Name, trimmedName, StringComparison.OrdinalIgnoreCase));
+        }
 
-            if (!CanManageRoom(principal, game.RoomName, RbacPermissions.RoomClose))
-                return Results.Json(new { message = "无权关闭他人创建的房间。" }, statusCode: StatusCodes.Status403Forbidden);
+        if (target is null)
+            return Results.NotFound(new { message = "未找到目标玩家。" });
 
-            if (!_serverHost.Server.IsMultiRoom)
-                return Results.BadRequest(new { message = "单房间模式下不支持单独销毁默认房间。" });
+        string kickedName = target.Name ?? "Player";
+        game.RemovePlayer(target);
+        target.Disconnect();
+        await _store.Cache.FlushNamespaceAsync("rooms", ct).ConfigureAwait(false);
+        await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.kick", RbacPermissions.RoomKick, $"{game.RoomName}:{kickedName}", http.GetRemoteIpNormalized(), "ok", null, ct).ConfigureAwait(false);
+        return Results.Ok(new { success = true, kicked = kickedName });
+    }
 
-            foreach (Player? p in game.Players.ToArray())
-                p?.Disconnect();
-            foreach (Player obs in game.Observers.ToArray())
-                obs.Disconnect();
-            game.End();
+    [HttpDelete("/api/v1/rooms/{roomName}")]
+    [AdminAuth(RbacPermissions.RoomClose, RbacPermissions.RoomCreateOwn)]
+    private async Task<IResult> CloseRoomAsync(
+        AuthenticatedPrincipal principal,
+        HttpContext http,
+        string roomName,
+        CancellationToken ct)
+    {
+        if (!_serverHost.Server.TryGetRoom(roomName, out Game? game) || game is null)
+            return Results.NotFound(new { message = $"房间 '{roomName}' 不存在。" });
 
-            await _store.Cache.FlushNamespaceAsync("rooms", ct).ConfigureAwait(false);
-            await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.close", RbacPermissions.RoomClose, game.RoomName, http.GetRemoteIpNormalized(), "ok", null, ct).ConfigureAwait(false);
-            return Results.Ok(new { success = true });
-        }).RequireAdminAuth(RbacPermissions.RoomClose, RbacPermissions.RoomCreateOwn);
+        if (!CanManageRoom(principal, game.RoomName, RbacPermissions.RoomClose))
+            return Results.Json(new { message = "无权关闭他人创建的房间。" }, statusCode: StatusCodes.Status403Forbidden);
+
+        if (!_serverHost.Server.IsMultiRoom)
+            return Results.BadRequest(new { message = "单房间模式下不支持单独销毁默认房间。" });
+
+        foreach (Player? p in game.Players.ToArray())
+            p?.Disconnect();
+        foreach (Player obs in game.Observers.ToArray())
+            obs.Disconnect();
+        game.End();
+
+        await _store.Cache.FlushNamespaceAsync("rooms", ct).ConfigureAwait(false);
+        await _store.AppendAuditAsync("panel_user", principal.UserId.ToString(), principal.Username, "room.close", RbacPermissions.RoomClose, game.RoomName, http.GetRemoteIpNormalized(), "ok", null, ct).ConfigureAwait(false);
+        return Results.Ok(new { success = true });
     }
 
     private bool CanManageRoom(AuthenticatedPrincipal principal, string roomName, string globalPermission)

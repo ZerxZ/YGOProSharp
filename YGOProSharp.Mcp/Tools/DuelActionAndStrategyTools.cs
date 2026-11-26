@@ -33,6 +33,7 @@ public sealed class DuelActionAndStrategyTools(McpRuntimeDependencies deps)
         [Description("可选：顺带发送到房间聊天框的台词")] string? chatMessage = null,
         [Description("chatMessage 别名：关键出招时贴合人设的简短发言（勿泄露暗牌）")] string? chatLine = null,
         [Description("可选：顺带更新跨回合战术计划")] PlanUpdateInput? planUpdate = null,
+        [Description("可选：按结构化谓词 (promptType/kind/cardCode/zone/labelContains) 连续追加执行的确定性连招步骤")] AgentBatchStep[]? steps = null,
         CancellationToken ct = default)
     {
         (bool ok, string err, AgentDuelSession? s) = deps.SessionManager.TryGetOwnedSession(McpCallerScope.Current.Caller.TokenId, sessionId);
@@ -54,15 +55,38 @@ public sealed class DuelActionAndStrategyTools(McpRuntimeDependencies deps)
         string? effectiveChat = !string.IsNullOrWhiteSpace(chatLine) ? chatLine : chatMessage;
         AgentObservationDetail obsDetail = McpArgHelpers.ParseDetail(detail, AgentObservationDetail.Standard);
 
+        if (actionIndex is null && effectiveIndices is null && steps is { Length: > 0 })
+        {
+            if (!string.IsNullOrWhiteSpace(effectiveChat))
+                s.SendChat(effectiveChat);
+            AgentActionResult batchOnly = await s.ExecuteBatchStepsAsync(steps.Take(16).ToList(), obsDetail, ct).ConfigureAwait(false);
+            return ToolOutcome.From(batchOnly.Success, batchOnly);
+        }
+
         AgentActionResult res = await s.SubmitActionAsync(
             actionIndex,
             effectiveIndices,
             effectivePromptId,
             thoughtSummary,
             effectiveChat,
-            obsDetail,
+            steps is { Length: > 0 } ? AgentObservationDetail.None : obsDetail,
             waitSettleMs: 850,
             cancellationToken: ct).ConfigureAwait(false);
+
+        if (res.Success && res.HasPendingAction && steps is { Length: > 0 })
+        {
+            AgentActionResult followUp = await s.ExecuteBatchStepsAsync(steps.Take(16).ToList(), obsDetail, ct).ConfigureAwait(false);
+            res = followUp with
+            {
+                Success = true,
+                AppliedSteps = 1 + followUp.AppliedSteps
+            };
+        }
+        else if (steps is { Length: > 0 } && obsDetail != AgentObservationDetail.None)
+        {
+            res = res with { Observation = s.GetObservation(obsDetail) };
+        }
+
         return ToolOutcome.From(res.Success, res);
     }
 

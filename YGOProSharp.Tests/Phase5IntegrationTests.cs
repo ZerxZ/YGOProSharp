@@ -257,7 +257,7 @@ public sealed class Phase5IntegrationTests
                 AssertTrue(badEvalErr2);
             }
 
-            // 提交合法 0~100 整数六维评分
+            // 提交合法 0~100 整数六维评分（含起手初动、标准终场、怕吃坑弱点与改构建议）
             var (okEvalErr, okEvalDoc) = await CallMcpToolAsync(tokSpec, "deck_submit_evaluation", new
             {
                 ydkContent = ydkForward,
@@ -269,15 +269,22 @@ public sealed class Phase5IntegrationTests
                 fun_factor = 95,
                 complexity = 84,
                 meta_adaptability = 86,
+                starters = new[] { "废品同调士·改", "调律星芒" },
                 coreRoutines = new[] { "废品同调士通召拉墓地 -> 同调星尘龙·极 -> 盖星尘闪光结界护航" },
+                targetEndboard = new[] { "星尘龙·极 + 后场星尘闪光结界" },
+                chokepoints = new[] { "废品同调士通召时吃无限泡影或效果遮蒙者" },
                 strengths = new[] { "终端自带破坏无效且后场反击封锁特召" },
                 weaknesses = new[] { "通召点吃无限泡影容易停牌" },
+                upgradeSuggestions = new[] { "可投入墓穴的指名者保护通召初动" },
                 commentary = "兼具魂度与高强度压制的经典同调构筑。"
             });
             using (okEvalDoc)
             {
                 AssertFalse(okEvalErr);
-                AssertEqual("S+", okEvalDoc.RootElement.GetProperty("evaluation").GetProperty("overallTier").GetString()!);
+                JsonElement evDto = okEvalDoc.RootElement.GetProperty("evaluation");
+                AssertEqual("S+", evDto.GetProperty("overallTier").GetString()!);
+                AssertEqual(2, evDto.GetProperty("routines").GetProperty("starters").GetArrayLength());
+                AssertEqual(1, evDto.GetProperty("routines").GetProperty("targetEndboard").GetArrayLength());
             }
 
             // 用乱序版 ydkReversed 请求 Web 门户 /api/portal/decks/analyze，验证顺序无关 Hash 自动命中刚才保存的 S+ 雷达评测！
@@ -310,17 +317,19 @@ public sealed class Phase5IntegrationTests
                 AssertEqual((int)HttpStatusCode.OK, (int)createTagResp.StatusCode);
             }
 
-            async Task<string> JoinAndReadyAsync(string tok)
+            async Task<string> JoinAndReadyAsync(string tok, bool assertMemories = false)
             {
                 var (jErr, jDoc) = await CallMcpToolAsync(tok, "duel_join_room", new { room = "TagForce01" });
                 using (jDoc)
                 {
                     AssertFalse(jErr);
+                    if (assertMemories)
+                        AssertTrue(jDoc.RootElement.GetProperty("recentMemories").GetArrayLength() >= 1);
                     return jDoc.RootElement.GetProperty("sessionId").GetString()!;
                 }
             }
 
-            string sid0 = await JoinAndReadyAsync(tokA1); // Seat 0 (Team 0)
+            string sid0 = await JoinAndReadyAsync(tokA1, assertMemories: true); // Seat 0 (Team 0) — 验证入房自动附带跨局生涯记忆
             string sid1 = await JoinAndReadyAsync(tokA2); // Seat 1 (Team 0)
             string sid2 = await JoinAndReadyAsync(tokB1); // Seat 2 (Team 1)
             string sid3 = await JoinAndReadyAsync(tokB2); // Seat 3 (Team 1)
@@ -363,7 +372,7 @@ public sealed class Phase5IntegrationTests
 
             await Task.Delay(120);
 
-            // 验证 Seat 0 的 tagContext 含完整四席 0->2->1->3 轮转拓扑 + sharedBoardHandoffNote
+            // 验证 Seat 0 的 tagContext 含完整四席 0->2->1->3 轮转拓扑、nextTurnActor + sharedBoardHandoffNote + formatKey
             var (_, obs0Doc) = await CallMcpToolAsync(tokA1, "duel_get_observation", new { sessionId = sid0, detail = "standard" });
             using (obs0Doc)
             {
@@ -371,9 +380,14 @@ public sealed class Phase5IntegrationTests
                 AssertEqual(0, tagCtx.GetProperty("myTeamId").GetInt32());
                 AssertEqual(1, tagCtx.GetProperty("partnerSeatIndex").GetInt32());
                 AssertEqual("杰克亚特兰斯", tagCtx.GetProperty("partnerName").GetString()!);
+                AssertEqual(2, tagCtx.GetProperty("nextTurnActor").GetProperty("seatIndex").GetInt32());
                 int[] rotSeats = tagCtx.GetProperty("turnRotationOrder").EnumerateArray().Select(x => x.GetProperty("seatIndex").GetInt32()).ToArray();
                 AssertCollectionEqual(new[] { 0, 2, 1, 3 }, rotSeats);
                 AssertTrue(tagCtx.GetProperty("sharedBoardHandoffNote").GetString()!.Contains("星尘闪光结界", StringComparison.Ordinal));
+                if (obs0Doc.RootElement.TryGetProperty("pendingPrompt", out JsonElement pp0) && pp0.ValueKind == JsonValueKind.Object)
+                {
+                    AssertTrue(!string.IsNullOrEmpty(pp0.GetProperty("formatKey").GetString()));
+                }
             }
 
             // 验证队友 Seat 1 收到了 setup_partner 私密方针，而敌方 Seat 2 及网页公开观战流绝不泄露秘密盖卡文本！
@@ -427,6 +441,22 @@ public sealed class Phase5IntegrationTests
                 AssertTrue(staleDoc.RootElement.GetProperty("hasPendingAction").GetBoolean());
             }
 
+            // Seat 0 先通过谓词步进 steps (zone="Hand", kind="summon") 通常召唤一只手牌怪兽（触发服务端公开召唤时间轴），再进结束阶段
+            using ((await CallMcpToolAsync(tokA1, "duel_submit_action", new
+            {
+                sessionId = sid0,
+                steps = new object[]
+                {
+                    new { promptType = "select_idle_cmd", kind = "summon", zone = "Hand" }
+                }
+            })).Body) { }
+
+            using ((await CallMcpToolAsync(tokA1, "duel_auto_play", new { sessionId = sid0, strategy = "pass_chains", maxSteps = 4, detail = "none" })).Body) { }
+
+            // 队友 Seat 1 在普通聊天发送含战术关键词的台词，验证自然语言战术意图识别 (detectedTacticalHint)
+            using ((await CallMcpToolAsync(tokA2, "duel_chat", new { sessionId = sid1, message = "搭档干得漂亮，下回合看我总攻斩杀！" })).Body) { }
+            await Task.Delay(80);
+
             // Seat 0 提交一个带内联 planUpdate、thoughtSummary 与公开 chatLine 的动作（直接进结束阶段）
             var (_, idlePromptDoc) = await CallMcpToolAsync(tokA1, "duel_get_legal_actions", new { sessionId = sid0 });
             int endPhaseIdx = 0;
@@ -454,7 +484,10 @@ public sealed class Phase5IntegrationTests
             using (act5ADoc)
             {
                 AssertFalse(act5AErr);
-                AssertEqual("双打同调接力斩杀", act5ADoc.RootElement.GetProperty("observation").GetProperty("strategicPlan").GetProperty("winCondition").GetString()!);
+                JsonElement obsAfterAct = act5ADoc.RootElement.GetProperty("observation");
+                AssertEqual("双打同调接力斩杀", obsAfterAct.GetProperty("strategicPlan").GetProperty("winCondition").GetString()!);
+                AssertEqual("untrusted_player_chat", obsAfterAct.GetProperty("chatContext").GetProperty("trustLevel").GetString()!);
+                AssertTrue(obsAfterAct.GetProperty("chatContext").GetRawText().Contains("all_in_otk", StringComparison.Ordinal));
             }
 
             await Task.Delay(100);
@@ -484,13 +517,31 @@ public sealed class Phase5IntegrationTests
             }
             AssertTrue(finishedDuelId > 0);
 
-            // 对局已完结归档：只读 spectator 角色现在可以合法读取 R#<id> 的全视角构筑与公开时间轴（且不含私密 PartnerTactic 与 ClientIp）
+            // 验证 spectator 可通过 duel_list_replays 与 ygopro://replays/recent 自主发现已完结对局 R#<id>
+            var (repListErr, repListDoc) = await CallMcpToolAsync(tokSpec, "duel_list_replays", new { limit = 10 });
+            using (repListDoc)
+            {
+                AssertFalse(repListErr);
+                AssertTrue(repListDoc.RootElement.GetProperty("count").GetInt32() >= 1);
+                AssertEqual($"R#{finishedDuelId}", repListDoc.RootElement.GetProperty("replays")[0].GetProperty("replayCode").GetString()!);
+            }
+
+            using (JsonDocument resReadDoc = await SendMcpRpcAsync(tokSpec, "resources/read", new { uri = "ygopro://replays/recent" }))
+            {
+                string resText = resReadDoc.RootElement.GetProperty("result").GetProperty("contents")[0].GetProperty("text").GetString()!;
+                AssertTrue(resText.Contains($"R#{finishedDuelId}", StringComparison.Ordinal));
+                AssertFalse(resText.Contains("clientIp", StringComparison.OrdinalIgnoreCase));
+            }
+
+            // 对局已完结归档：只读 spectator 角色现在可以合法读取 R#<id> 的全视角构筑、LP曲线与公开召唤/思考时间轴（且不含私密 PartnerTactic 与 ClientIp）
             var (tlErr, tlDoc) = await CallMcpToolAsync(tokSpec, "duel_get_replay_timeline", new { duelId = $"R#{finishedDuelId}" });
             using (tlDoc)
             {
                 AssertFalse(tlErr);
                 AssertEqual(4, tlDoc.RootElement.GetProperty("players").GetArrayLength());
+                AssertTrue(tlDoc.RootElement.GetProperty("lpCurve").GetArrayLength() >= 1);
                 string tlRaw = tlDoc.RootElement.GetRawText();
+                AssertTrue(tlRaw.Contains("通常召唤", StringComparison.Ordinal));
                 AssertTrue(tlRaw.Contains("聚集的祈愿", StringComparison.Ordinal));
                 AssertTrue(tlRaw.Contains("先稳住场面", StringComparison.Ordinal));
                 AssertFalse(tlRaw.Contains("星尘闪光结界", StringComparison.Ordinal));

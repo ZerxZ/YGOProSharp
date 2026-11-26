@@ -15,7 +15,7 @@ const SIX_DIM_AXES: { key: string; label: string }[] = [
 function SixDimRadarSvg({ dimensions }: { dimensions: Record<string, number> | null | undefined }) {
   const cx = 145;
   const cy = 135;
-  const radius = 88;
+  const radius = 86;
   const levels = [25, 50, 75, 100];
 
   const pointAt = (axisIdx: number, val0To100: number) => {
@@ -34,7 +34,14 @@ function SixDimRadarSvg({ dimensions }: { dimensions: Record<string, number> | n
   });
 
   return (
-    <svg viewBox="0 0 290 270" className="w-full max-w-[290px] mx-auto select-none">
+    <svg viewBox="0 0 290 270" className="w-full max-w-[280px] mx-auto select-none">
+      <defs>
+        <linearGradient id="radarGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#10b981" stopOpacity="0.42" />
+          <stop offset="100%" stopColor="#06b6d4" stopOpacity="0.22" />
+        </linearGradient>
+      </defs>
+
       {levels.map((lv) => {
         const ring = SIX_DIM_AXES.map((_, i) => {
           const p = pointAt(i, lv);
@@ -58,18 +65,18 @@ function SixDimRadarSvg({ dimensions }: { dimensions: Record<string, number> | n
 
       <polygon
         points={dataPoints.join(' ')}
-        fill={dimensions ? 'rgba(16, 185, 129, 0.28)' : 'rgba(100, 116, 139, 0.16)'}
+        fill={dimensions ? 'url(#radarGrad)' : 'rgba(100, 116, 139, 0.16)'}
         stroke={dimensions ? '#34d399' : '#64748b'}
-        strokeWidth="2"
+        strokeWidth="2.2"
       />
 
       {SIX_DIM_AXES.map((axis, i) => {
         const val = dataValues[i];
         const dot = pointAt(i, val);
-        const labelPos = pointAt(i, 124);
+        const labelPos = pointAt(i, 125);
         return (
           <g key={axis.key}>
-            <circle cx={dot.x} cy={dot.y} r="3.5" fill={dimensions ? '#6ee7b7' : '#94a3b8'} />
+            <circle cx={dot.x} cy={dot.y} r="4" fill={dimensions ? '#6ee7b7' : '#94a3b8'} />
             <text
               x={labelPos.x}
               y={labelPos.y - 4}
@@ -97,13 +104,16 @@ function SixDimRadarSvg({ dimensions }: { dimensions: Record<string, number> | n
 
 export function DeckSixDimRadarSection({
   chaosYdk,
+  apiPrefix = '/api/portal',
   notify
 }: {
   chaosYdk?: string;
+  apiPrefix?: '/api/portal' | '/api/v1';
   notify: (t: string, k?: 'ok' | 'err') => void;
 }) {
   const [presets, setPresets] = useState<any[]>([]);
   const [recentEvals, setRecentEvals] = useState<any[]>([]);
+  const [inputMode, setInputMode] = useState<'preset' | 'ydk'>('preset');
   const [selectedPreset, setSelectedPreset] = useState<string>('');
   const [ydkInput, setYdkInput] = useState<string>('');
   const [analysis, setAnalysis] = useState<{ profile: any; evaluation: any } | null>(null);
@@ -112,19 +122,21 @@ export function DeckSixDimRadarSection({
   const loadInitialLists = useCallback(async () => {
     try {
       const [pr, ev] = await Promise.all([
-        apiFetch('/api/portal/decks/presets'),
-        apiFetch('/api/portal/decks/evaluations?limit=12')
+        apiFetch(`${apiPrefix}/decks/presets`),
+        apiFetch(`${apiPrefix}/decks/evaluations?limit=12`)
       ]);
       const presetList = pr.presets || [];
       setPresets(presetList);
       setRecentEvals(ev.evaluations || []);
       if (presetList.length > 0) {
         setSelectedPreset((prev) => prev || presetList[0].id);
+      } else {
+        setInputMode('ydk');
       }
     } catch {
       // ignore initial empty state
     }
-  }, []);
+  }, [apiPrefix]);
 
   useEffect(() => {
     loadInitialLists();
@@ -133,14 +145,14 @@ export function DeckSixDimRadarSection({
   const runAnalyze = async (overridePreset?: string, overrideYdk?: string, overrideHash?: string) => {
     setLoading(true);
     try {
-      const ydk = (overrideYdk ?? ydkInput).trim();
+      const ydk = overrideYdk !== undefined ? overrideYdk.trim() : inputMode === 'ydk' ? ydkInput.trim() : '';
       const preset = overridePreset ?? selectedPreset;
       const body = overrideHash
         ? { deckHash: overrideHash }
         : ydk
-        ? { ydkContent: ydk }
-        : { presetName: preset };
-      const res = await apiFetch('/api/portal/decks/analyze', {
+          ? { ydkContent: ydk }
+          : { presetName: preset };
+      const res = await apiFetch(`${apiPrefix}/decks/analyze`, {
         method: 'POST',
         body: JSON.stringify(body)
       });
@@ -156,96 +168,114 @@ export function DeckSixDimRadarSection({
   const evaluation = analysis?.evaluation;
   const evalPrompt = profile
     ? `请调用 deck_analyze_features(${
-        ydkInput.trim() ? 'ydkContent=<我粘贴的构筑>' : `presetName="${selectedPreset}"`
-      }) 分析卡组（DeckHash: ${profile.deckHash}），然后调用 deck_submit_evaluation 为爆发强度/续航韧性/阴间指数/娱乐整活度/操作复杂度/环境适应性给出 0~100 整数分与核心套路。`
+        inputMode === 'ydk' && ydkInput.trim() ? 'ydkContent=<我粘贴的构筑>' : `presetName="${selectedPreset}"`
+      }) 分析卡组（DeckHash: ${profile.deckHash}），然后调用 deck_submit_evaluation 为爆发强度/续航韧性/阴间指数/娱乐整活度/操作复杂度/环境适应性给出 0~100 整数分，并填写 starters、coreRoutines、targetEndboard、chokepoints 与 upgradeSuggestions。`
     : '';
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-4 text-xs">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
+    <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-4 text-xs">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
         <div>
-          <h2 className="text-sm font-semibold flex items-center gap-2 text-emerald-300">
+          <h2 className="text-sm sm:text-base font-bold flex items-center gap-2 text-emerald-300">
             <Sparkles className="w-4 h-4" /> 卡组静态特征剖析器 & 0~100 六维能力雷达
           </h2>
-          <p className="text-[11px] text-slate-400">
-            服务端零大模型出站依赖：本地确定性提取怪魔陷曲线、字段与效果词频，结合外部 MCP AI 提交的 0~100 六维评分点亮雷达图
+          <p className="text-[11px] text-slate-400 mt-0.5">
+            确定性统计怪魔陷曲线、字段与效果词频，结合外部 MCP AI 提交的 0~100 六维评分渲染雷达图与套路图鉴
           </p>
         </div>
-        {chaosYdk && (
-          <button
-            type="button"
-            onClick={() => {
-              setYdkInput(chaosYdk);
-              runAnalyze(undefined, chaosYdk);
-            }}
-            className="px-2.5 py-1 rounded bg-purple-600/30 border border-purple-500/40 text-purple-200 cursor-pointer"
-          >
-            剖析刚才试抽的混沌卡组
-          </button>
-        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="inline-flex p-0.5 rounded-xl bg-slate-950 border border-slate-800">
+            <button
+              type="button"
+              onClick={() => setInputMode('preset')}
+              className={`px-3 py-1.5 rounded-lg font-medium transition cursor-pointer ${
+                inputMode === 'preset' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              预设卡组库 ({presets.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setInputMode('ydk')}
+              className={`px-3 py-1.5 rounded-lg font-medium transition cursor-pointer ${
+                inputMode === 'ydk' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              粘贴 .ydk 文本
+            </button>
+          </div>
+          {chaosYdk && (
+            <button
+              type="button"
+              onClick={() => {
+                setInputMode('ydk');
+                setYdkInput(chaosYdk);
+                runAnalyze(undefined, chaosYdk);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-purple-600/25 border border-purple-500/40 text-purple-200 font-medium cursor-pointer"
+            >
+              剖析刚抽的混沌卡组
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
-        <div className="lg:col-span-4">
-          <label className="block text-slate-400 mb-1">选择预设/内置 WindBot 卡组</label>
-          <select
-            value={selectedPreset}
-            onChange={(e) => {
-              setSelectedPreset(e.target.value);
-              setYdkInput('');
-            }}
-            className="w-full px-3 py-1.5 rounded bg-slate-950 border border-slate-700"
-          >
-            {presets.length === 0 && <option value="">（暂无预设卡组，请在右侧粘贴 .ydk）</option>}
-            {presets.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name} (主{d.mainCount}+额{d.extraCount}{d.hasDiyCards ? ' · 含DIY' : ''})
-              </option>
-            ))}
-          </select>
+      <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-end">
+        <div className="flex-1">
+          {inputMode === 'preset' ? (
+            <select
+              value={selectedPreset}
+              onChange={(e) => setSelectedPreset(e.target.value)}
+              className="w-full px-3.5 py-2.5 input-modern"
+            >
+              {presets.length === 0 && <option value="">（暂无预设卡组，请切换至「粘贴 .ydk 文本」）</option>}
+              {presets.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name} (主{d.mainCount} + 额{d.extraCount}
+                  {d.hasDiyCards ? ' · 含DIY' : ''})
+                </option>
+              ))}
+            </select>
+          ) : (
+            <textarea
+              rows={3}
+              value={ydkInput}
+              onChange={(e) => setYdkInput(e.target.value)}
+              placeholder="#main&#10;89631143&#10;..."
+              className="w-full px-3.5 py-2 input-modern font-mono text-[11px]"
+            />
+          )}
         </div>
-        <div className="lg:col-span-6">
-          <label className="block text-slate-400 mb-1">或直接粘贴 .ydk 卡组文本（优先于预设下拉框）</label>
-          <textarea
-            rows={2}
-            value={ydkInput}
-            onChange={(e) => setYdkInput(e.target.value)}
-            placeholder="#main&#10;89631143&#10;..."
-            className="w-full px-3 py-1 rounded bg-slate-950 border border-slate-700 font-mono text-[11px]"
-          />
-        </div>
-        <div className="lg:col-span-2">
-          <button
-            type="button"
-            disabled={loading}
-            onClick={() => runAnalyze()}
-            className="w-full py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-semibold text-white cursor-pointer"
-          >
-            {loading ? '剖析中...' : '静态剖析 & 雷达'}
-          </button>
-        </div>
+        <button
+          type="button"
+          disabled={loading}
+          onClick={() => runAnalyze()}
+          className="min-h-[42px] px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 font-semibold text-white shadow-lg shadow-emerald-950/50 shrink-0 cursor-pointer"
+        >
+          {loading ? '剖析中...' : '静态剖析 & 点亮雷达'}
+        </button>
       </div>
 
       {recentEvals.length > 0 && (
-        <div className="flex items-center gap-2 flex-wrap pt-1">
-          <span className="text-[11px] text-slate-400">全服近期已评分卡组：</span>
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+          <span className="text-[11px] text-slate-400 shrink-0">近期高光评测：</span>
           {recentEvals.map((ev) => (
             <button
               key={ev.id}
               type="button"
               onClick={() => runAnalyze(undefined, undefined, ev.deckHash)}
-              className="px-2.5 py-1 rounded-full bg-slate-950 hover:bg-slate-800 border border-slate-700 text-[11px] flex items-center gap-1.5 cursor-pointer"
+              className="px-2.5 py-1 rounded-full glass-subcard hover:border-emerald-500/40 text-[11px] flex items-center gap-1.5 shrink-0 cursor-pointer"
             >
-              <span className="font-bold text-amber-300">[{ev.overallTier}]</span>
-              <span>{ev.archetypeTitle || ev.deckName}</span>
+              <span className="font-bold text-amber-300 font-mono">[{ev.overallTier}]</span>
+              <span className="text-slate-200">{ev.archetypeTitle || ev.deckName}</span>
             </button>
           ))}
         </div>
       )}
 
       {analysis && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 pt-2 border-t border-slate-800">
-          <div className="lg:col-span-7 bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 pt-3 border-t border-slate-800/80 animate-fade-in">
+          <div className="lg:col-span-7 glass-subcard rounded-2xl p-4 space-y-3.5">
             {profile ? (
               <>
                 <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -255,22 +285,22 @@ export function DeckSixDimRadarSection({
                       主 {profile.mainCount} / 额外 {profile.extraCount} / 副 {profile.sideCount}（去重 {profile.distinctCardCount} 种）
                     </span>
                   </div>
-                  <span className="font-mono text-[10px] text-slate-500">Hash: {profile.deckHash.slice(0, 16)}...</span>
+                  <span className="font-mono text-[10px] text-slate-500">Hash: {profile.deckHash.slice(0, 14)}...</span>
                 </div>
 
                 <div className="grid grid-cols-3 gap-2 text-center">
-                  <div className="bg-slate-900 p-2 rounded border border-slate-800">
-                    <div className="text-slate-400 text-[11px]">主卡组怪兽</div>
-                    <div className="font-mono font-bold text-amber-300 text-sm">
+                  <div className="bg-slate-900/90 p-2.5 rounded-xl border border-slate-800">
+                    <div className="text-slate-400 text-[11px]">怪兽配比</div>
+                    <div className="font-mono font-bold text-amber-300 text-base">
                       {(profile.lowLevelMonsterCopies ?? 0) + (profile.highLevelMonsterCopies ?? 0)}
                     </div>
                     <div className="text-[10px] text-slate-500">
-                      下级 {profile.lowLevelMonsterCopies} · 高星 {profile.highLevelMonsterCopies} · 调整 {profile.tunerCopies}
+                      下级 {profile.lowLevelMonsterCopies} · 高星 {profile.highLevelMonsterCopies}
                     </div>
                   </div>
-                  <div className="bg-slate-900 p-2 rounded border border-slate-800">
-                    <div className="text-slate-400 text-[11px]">魔法卡</div>
-                    <div className="font-mono font-bold text-emerald-300 text-sm">
+                  <div className="bg-slate-900/90 p-2.5 rounded-xl border border-slate-800">
+                    <div className="text-slate-400 text-[11px]">魔法配比</div>
+                    <div className="font-mono font-bold text-emerald-300 text-base">
                       {(profile.normalSpellCopies ?? 0) +
                         (profile.quickPlaySpellCopies ?? 0) +
                         (profile.continuousSpellCopies ?? 0) +
@@ -279,20 +309,20 @@ export function DeckSixDimRadarSection({
                         (profile.ritualSpellCopies ?? 0)}
                     </div>
                     <div className="text-[10px] text-slate-500">
-                      通常 {profile.normalSpellCopies} · 速攻 {profile.quickPlaySpellCopies} · 场地 {profile.fieldSpellCopies}
+                      通常 {profile.normalSpellCopies} · 速攻 {profile.quickPlaySpellCopies}
                     </div>
                   </div>
-                  <div className="bg-slate-900 p-2 rounded border border-slate-800">
+                  <div className="bg-slate-900/90 p-2.5 rounded-xl border border-slate-800">
                     <div className="text-slate-400 text-[11px]">陷阱 & DIY</div>
-                    <div className="font-mono font-bold text-pink-300 text-sm">
+                    <div className="font-mono font-bold text-pink-300 text-base">
                       {(profile.normalTrapCopies ?? 0) + (profile.continuousTrapCopies ?? 0) + (profile.counterTrapCopies ?? 0)}
                     </div>
                     <div className="text-[10px] text-slate-500">DIY 卡 {profile.diyCardCopies} 张</div>
                   </div>
                 </div>
 
-                <div className="text-[11px] text-slate-300">
-                  额外构成：融合 {profile.fusionCopies} · 同调 {profile.synchroCopies} · 超量 {profile.xyzCopies} · 连接 {profile.linkCopies}
+                <div className="text-[11px] text-slate-300 bg-slate-900/60 px-3 py-1.5 rounded-lg border border-slate-800/80">
+                  额外轴分布：融合 <b>{profile.fusionCopies}</b> · 同调 <b>{profile.synchroCopies}</b> · 超量 <b>{profile.xyzCopies}</b> · 连接 <b>{profile.linkCopies}</b> · 调整怪兽 <b>{profile.tunerCopies}</b>
                 </div>
 
                 {profile.keywordStats && (
@@ -309,7 +339,7 @@ export function DeckSixDimRadarSection({
                     ].map(([label, cnt]) => (
                       <span
                         key={String(label)}
-                        className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-[11px] text-slate-300"
+                        className="px-2.5 py-1 rounded-lg bg-slate-900/90 border border-slate-800 text-[11px] text-slate-300"
                       >
                         {label}: <b className="text-emerald-300 font-mono">{cnt}</b>
                       </span>
@@ -318,15 +348,39 @@ export function DeckSixDimRadarSection({
                 )}
               </>
             ) : (
-              <div className="text-slate-400 py-8 text-center">当前仅展示按 DeckHash 归档的六维评测卡片</div>
+              <div className="text-slate-400 py-6 text-center">当前展示按 DeckHash 归档的六维评测百科</div>
             )}
 
             {evaluation?.routines && (
-              <div className="space-y-1.5 pt-2 border-t border-slate-800/80">
+              <div className="space-y-2 pt-2.5 border-t border-slate-800/80 leading-relaxed">
+                {Array.isArray(evaluation.routines.starters) && evaluation.routines.starters.length > 0 && (
+                  <div className="text-[11px] text-amber-200">
+                    <span className="font-semibold text-amber-400">起手初动：</span>
+                    {evaluation.routines.starters.join(' ｜ ')}
+                  </div>
+                )}
                 {Array.isArray(evaluation.routines.coreRoutines) && evaluation.routines.coreRoutines.length > 0 && (
                   <div className="text-[11px] text-emerald-200">
-                    <span className="font-semibold text-emerald-400">核心套路 Combo：</span>
+                    <span className="font-semibold text-emerald-400">核心套路：</span>
                     {evaluation.routines.coreRoutines.join(' ｜ ')}
+                  </div>
+                )}
+                {Array.isArray(evaluation.routines.targetEndboard) && evaluation.routines.targetEndboard.length > 0 && (
+                  <div className="text-[11px] text-indigo-200">
+                    <span className="font-semibold text-indigo-400">标准终场：</span>
+                    {evaluation.routines.targetEndboard.join(' ｜ ')}
+                  </div>
+                )}
+                {Array.isArray(evaluation.routines.grindLoop) && evaluation.routines.grindLoop.length > 0 && (
+                  <div className="text-[11px] text-teal-200">
+                    <span className="font-semibold text-teal-400">续航回收：</span>
+                    {evaluation.routines.grindLoop.join('；')}
+                  </div>
+                )}
+                {Array.isArray(evaluation.routines.chokepoints) && evaluation.routines.chokepoints.length > 0 && (
+                  <div className="text-[11px] text-orange-200">
+                    <span className="font-semibold text-orange-400">怕吃坑点：</span>
+                    {evaluation.routines.chokepoints.join('；')}
                   </div>
                 )}
                 {Array.isArray(evaluation.routines.strengths) && evaluation.routines.strengths.length > 0 && (
@@ -337,26 +391,30 @@ export function DeckSixDimRadarSection({
                 )}
                 {Array.isArray(evaluation.routines.weaknesses) && evaluation.routines.weaknesses.length > 0 && (
                   <div className="text-[11px] text-rose-200">
-                    <span className="font-semibold text-rose-400">针对弱点：</span>
+                    <span className="font-semibold text-rose-400">构筑短板：</span>
                     {evaluation.routines.weaknesses.join('；')}
+                  </div>
+                )}
+                {Array.isArray(evaluation.routines.upgradeSuggestions) && evaluation.routines.upgradeSuggestions.length > 0 && (
+                  <div className="text-[11px] text-purple-200">
+                    <span className="font-semibold text-purple-400">改构建议：</span>
+                    {evaluation.routines.upgradeSuggestions.join('；')}
                   </div>
                 )}
               </div>
             )}
           </div>
 
-          <div className="lg:col-span-5 bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-2">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="font-bold text-sm text-emerald-300">
+          <div className="lg:col-span-5 glass-subcard rounded-2xl p-4 flex flex-col justify-between space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-bold text-sm text-emerald-300 truncate">
                   {evaluation ? evaluation.archetypeTitle : '待外部 AI 提交六维评分'}
                 </div>
-                {evaluation && (
-                  <div className="text-[11px] text-slate-400">评测员: {evaluation.evaluatorName}</div>
-                )}
+                {evaluation && <div className="text-[11px] text-slate-400">评测员: {evaluation.evaluatorName}</div>}
               </div>
               {evaluation && (
-                <div className="px-3 py-1 rounded-lg bg-amber-500/20 border border-amber-400/50 text-amber-300 font-bold text-base font-mono">
+                <div className="px-3 py-1 rounded-xl bg-amber-500/20 border border-amber-400/50 text-amber-300 font-bold text-sm font-mono shrink-0">
                   Tier {evaluation.overallTier}
                 </div>
               )}
@@ -365,18 +423,14 @@ export function DeckSixDimRadarSection({
             <SixDimRadarSvg dimensions={evaluation?.dimensions} />
 
             {evaluation?.commentary ? (
-              <p className="text-[11px] text-slate-300 bg-slate-900 p-2.5 rounded border border-slate-800 leading-relaxed">
+              <p className="text-[11px] text-slate-200 bg-slate-900/90 p-3 rounded-xl border border-slate-800 leading-relaxed">
                 {evaluation.commentary}
               </p>
             ) : (
               evalPrompt && (
-                <div className="flex items-center justify-between gap-2 bg-slate-900 p-2 rounded border border-slate-800">
+                <div className="flex items-center justify-between gap-2 bg-slate-900/90 p-2.5 rounded-xl border border-slate-800">
                   <span className="text-[11px] text-slate-400 truncate">发给外部 MCP AI 即可生成 0~100 六维雷达评分</span>
-                  <QuickCopyPill
-                    text={evalPrompt}
-                    label="复制评测指令"
-                    onCopied={() => notify('已复制六维评测提示词')}
-                  />
+                  <QuickCopyPill text={evalPrompt} label="复制评测指令" onCopied={() => notify('已复制六维评测提示词')} />
                 </div>
               )
             )}

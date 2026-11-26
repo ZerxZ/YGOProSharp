@@ -18,6 +18,25 @@ public interface IGame
     event Action<object, PlayerChatInterceptEventArgs>? OnBeforePlayerChat;
     event Action<object, PlayerChatEventArgs>? OnPlayerChat;
     event Action<object, DuelStartContext>? OnBeforeDuelStart;
+    event Action<object, DuelPublicActionEventArgs>? OnPublicDuelEvent;
+}
+
+/// <summary>
+/// 100% 公开可见的对局动作与基本分变动事件参数（严格遵守战争迷雾：绝不包含抽卡卡密、里侧盖卡卡密、手牌或牌堆顺序）。
+/// </summary>
+public sealed class DuelPublicActionEventArgs : EventArgs
+{
+    public string Kind { get; init; } = string.Empty;
+    public int TurnCount { get; init; }
+    public int DuelSide { get; init; }
+    public int LobbyTeamId { get; init; }
+    public string? ActorName { get; init; }
+    public int CardCode { get; init; }
+    public int Location { get; init; }
+    public int Sequence { get; init; }
+    public int Value { get; init; }
+    public int Team0Lp { get; init; }
+    public int Team1Lp { get; init; }
 }
 
 public class PlayerEventArgs : EventArgs

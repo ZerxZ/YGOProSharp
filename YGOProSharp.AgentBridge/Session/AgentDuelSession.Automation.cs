@@ -70,6 +70,9 @@ public sealed partial class AgentDuelSession
                             continue;
                         if (step.CardCode.HasValue && c.CardCode != step.CardCode.Value)
                             continue;
+                        if (!string.IsNullOrWhiteSpace(step.Zone) &&
+                            (c.Zone is null || !c.Zone.Contains(step.Zone.Trim(), StringComparison.OrdinalIgnoreCase)))
+                            continue;
                         if (!string.IsNullOrWhiteSpace(step.LabelContains) && !c.Label.Contains(step.LabelContains.Trim(), StringComparison.OrdinalIgnoreCase))
                             continue;
 

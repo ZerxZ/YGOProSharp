@@ -896,6 +896,7 @@ public sealed class ServerAndRoomTests
             EnableChatCommands = true,
             Game = new GameOptions
             {
+                Banlist = -1,
                 DeckRules = new DeckRules(MainDeckMinSize: 10, MainDeckMaxSize: 40)
             }
         });

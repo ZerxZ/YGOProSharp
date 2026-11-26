@@ -297,6 +297,12 @@ public sealed class ArchitectureBoundaryTests
             string xml = File.ReadAllText(csproj);
             AssertDoesNotContainAny(xml, forbiddenLlmSdkTokens, Path.GetRelativePath(root, csproj));
         }
+
+        string webDir = Path.Combine(root, "YGOProSharp.Web");
+        AssertDoesNotContainAny(
+            ProjectText(webDir),
+            ["app.MapGet(", "app.MapPost(", "app.MapPut(", "app.MapPatch(", "app.MapDelete("],
+            "Web declarative source-generated endpoint routing");
     }
 
 }

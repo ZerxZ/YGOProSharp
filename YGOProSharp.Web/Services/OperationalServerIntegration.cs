@@ -29,7 +29,10 @@ public sealed record ArchivedTimelineEntryDto(
     int Turn,
     string Kind,
     string? Actor,
-    string Text);
+    string Text,
+    int? Team0Lp = null,
+    int? Team1Lp = null,
+    int? CardCode = null);
 
 /// <summary>
 /// 单个房间的公开运行轨迹缓存（严格遵守战争迷雾：仅缓存公开聊天与公开阶段变更，绝不采集任何玩家暗手牌或洗牌牌序）。
@@ -72,16 +75,27 @@ public sealed class RoomActivityState
         }
     }
 
-    public void AddPublicEvent(string eventType, string summary, int turn = 0, string? actor = null)
+    public void AddPublicEvent(
+        string eventType,
+        string summary,
+        int turn = 0,
+        string? actor = null,
+        int? team0Lp = null,
+        int? team1Lp = null,
+        int? cardCode = null,
+        bool appendToLiveFeed = true)
     {
         lock (_gate)
         {
-            while (_events.Count >= MaxEntries)
-                _events.Dequeue();
             DateTime now = DateTime.UtcNow;
-            _events.Enqueue(new RoomPublicEventRecord(now, eventType, summary));
+            if (appendToLiveFeed)
+            {
+                while (_events.Count >= MaxEntries)
+                    _events.Dequeue();
+                _events.Enqueue(new RoomPublicEventRecord(now, eventType, summary));
+            }
             if (_duelTimeline.Count < MaxTimelineEntries)
-                _duelTimeline.Add(new ArchivedTimelineEntryDto(now, turn, eventType, actor, summary));
+                _duelTimeline.Add(new ArchivedTimelineEntryDto(now, turn, eventType, actor, summary, team0Lp, team1Lp, cardCode));
         }
     }
 
@@ -121,13 +135,20 @@ public sealed class OperationalServerCoordinator : IDisposable
     private readonly ConcurrentDictionary<string, RoomActivityState> _roomStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _agentGate = new();
     private AgentSessionManager? _agentSessionManager;
+    private Func<INamedCardRepository>? _namedCardRepoProvider;
 
     public event Action<string, object>? OnPublicEventPublished;
 
-    public OperationalServerCoordinator(OperationalStore store)
+    public OperationalServerCoordinator(
+        OperationalStore store,
+        Func<INamedCardRepository>? namedCardRepositoryProvider = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
+        _namedCardRepoProvider = namedCardRepositoryProvider;
     }
+
+    public INamedCardRepository ResolveNamedCardRepository() =>
+        _namedCardRepoProvider?.Invoke() ?? EmptyNamedCardRepository.Instance;
 
     public AgentSessionManager GetOrCreateAgentSessionManager(
         YGOProSharpServerHost serverHost,
@@ -135,12 +156,15 @@ public sealed class OperationalServerCoordinator : IDisposable
     {
         lock (_agentGate)
         {
+            if (namedCardRepositoryProvider is not null)
+                _namedCardRepoProvider = namedCardRepositoryProvider;
+
             if (_agentSessionManager is not null)
                 return _agentSessionManager;
 
             _agentSessionManager = new AgentSessionManager(
                 () => serverHost.CreateLocalTransport(),
-                () => namedCardRepositoryProvider?.Invoke() ?? EmptyNamedCardRepository.Instance,
+                () => _namedCardRepoProvider?.Invoke() ?? EmptyNamedCardRepository.Instance,
                 serverHost.Server.Options.ClientVersion);
 
             _agentSessionManager.OnThoughtPublished += thought =>
@@ -375,6 +399,7 @@ public sealed class OperationalServerCoordinator : IDisposable
             Game.OnPlayerChat += HandlePlayerChat;
             Game.OnGameStart += HandleGameStart;
             Game.OnBeforeDuelStart += HandleBeforeDuelStart;
+            Game.OnPublicDuelEvent += HandlePublicDuelEvent;
             Game.OnDuelEnd += HandleDuelEnd;
             Game.OnGameEnd += HandleGameEnd;
         }
@@ -466,7 +491,12 @@ public sealed class OperationalServerCoordinator : IDisposable
 
         private void HandleBeforeDuelStart(object sender, DuelStartContext e)
         {
-            EnsureState().AddPublicEvent("duel.started", $"第 {Game.DuelCount + 1} 局正式开始（Seed={e.Seed}）。", 1);
+            EnsureState().AddPublicEvent(
+                "duel.started",
+                $"第 {Game.DuelCount + 1} 局正式开始（初始 LP {Game.StartLp}）。",
+                turn: 1,
+                team0Lp: Game.StartLp,
+                team1Lp: Game.StartLp);
             _coordinator.PublishEvent("duel.public_event", new
             {
                 roomName = Game.RoomName,
@@ -475,6 +505,105 @@ public sealed class OperationalServerCoordinator : IDisposable
                 mode = Game.Mode,
                 randomDeckMode = Game.RandomDeckMode.ToString()
             });
+        }
+
+        private void HandlePublicDuelEvent(object sender, DuelPublicActionEventArgs e)
+        {
+            RoomActivityState state = EnsureState();
+            INamedCardRepository repo = _coordinator.ResolveNamedCardRepository();
+            string teamLabel = e.LobbyTeamId == 0 ? "A队" : (e.LobbyTeamId == 1 ? "B队" : "对局");
+            string actorLabel = !string.IsNullOrWhiteSpace(e.ActorName) ? e.ActorName : teamLabel;
+
+            string ResolveCard(int code) =>
+                code > 0 && repo.TryGetCard(code, out NamedCard? nc) && nc is not null && !string.IsNullOrWhiteSpace(nc.Name)
+                    ? $"「{nc.Name}」"
+                    : (code > 0 ? $"#{code}" : "卡片");
+
+            switch (e.Kind)
+            {
+                case "duel.turn":
+                    state.AddPublicEvent(
+                        e.Kind,
+                        $"第 {e.TurnCount} 回合开始（执子：{actorLabel}，LP {e.Team0Lp}:{e.Team1Lp}）",
+                        e.TurnCount,
+                        actorLabel,
+                        e.Team0Lp,
+                        e.Team1Lp);
+                    break;
+
+                case "duel.tag_swap":
+                    state.AddPublicEvent(
+                        e.Kind,
+                        $"2v2 双打换棒：{teamLabel} 交由「{actorLabel}」执子接管场面",
+                        e.TurnCount,
+                        actorLabel);
+                    break;
+
+                case "duel.phase":
+                    string phaseName = ((YGOProSharp.Abstractions.Ocg.Enums.DuelPhase)e.Value).ToString();
+                    state.AddPublicEvent(
+                        e.Kind,
+                        $"阶段切换 -> {phaseName}",
+                        e.TurnCount,
+                        actorLabel,
+                        appendToLiveFeed: false);
+                    break;
+
+                case "duel.summon":
+                case "duel.spsummon":
+                case "duel.flipsummon":
+                    string verb = e.Kind switch
+                    {
+                        "duel.spsummon" => "特殊召唤",
+                        "duel.flipsummon" => "反转召唤",
+                        _ => "通常召唤"
+                    };
+                    state.AddPublicEvent(
+                        e.Kind,
+                        $"{actorLabel} {verb} {ResolveCard(e.CardCode)}",
+                        e.TurnCount,
+                        actorLabel,
+                        cardCode: e.CardCode > 0 ? e.CardCode : null);
+                    break;
+
+                case "duel.chain":
+                    state.AddPublicEvent(
+                        e.Kind,
+                        $"{actorLabel} 发动效果 {ResolveCard(e.CardCode)}",
+                        e.TurnCount,
+                        actorLabel,
+                        cardCode: e.CardCode > 0 ? e.CardCode : null);
+                    break;
+
+                case "duel.attack":
+                    string atkTarget = e.Location == 0 ? "发动直接攻击！" : "向敌方怪兽宣言攻击";
+                    state.AddPublicEvent(
+                        e.Kind,
+                        $"{actorLabel}（#{e.Sequence} 号位怪兽）{atkTarget}",
+                        e.TurnCount,
+                        actorLabel);
+                    break;
+
+                case "duel.damage":
+                case "duel.pay_lp":
+                case "duel.recover":
+                case "duel.lp_set":
+                    string lpAction = e.Kind switch
+                    {
+                        "duel.damage" => $"受到 {e.Value} 点伤害",
+                        "duel.pay_lp" => $"支付 {e.Value} 基本分",
+                        "duel.recover" => $"回复 {e.Value} 基本分",
+                        _ => $"LP 更新为 {e.Value}"
+                    };
+                    state.AddPublicEvent(
+                        e.Kind,
+                        $"{actorLabel} {lpAction}（当前 LP — A队 {e.Team0Lp} : B队 {e.Team1Lp}）",
+                        e.TurnCount,
+                        actorLabel,
+                        e.Team0Lp,
+                        e.Team1Lp);
+                    break;
+            }
         }
 
         private void HandleDuelEnd(object sender, EventArgs e)
@@ -616,6 +745,7 @@ public sealed class OperationalServerCoordinator : IDisposable
             Game.OnPlayerChat -= HandlePlayerChat;
             Game.OnGameStart -= HandleGameStart;
             Game.OnBeforeDuelStart -= HandleBeforeDuelStart;
+            Game.OnPublicDuelEvent -= HandlePublicDuelEvent;
             Game.OnDuelEnd -= HandleDuelEnd;
             Game.OnGameEnd -= HandleGameEnd;
             _coordinator.RemoveRoomState(Game.RoomName);

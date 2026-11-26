@@ -102,7 +102,8 @@ public sealed record AgentPendingPrompt(
     int MaxSelect,
     bool SupportsMultiSelect,
     string SubmitField,
-    IReadOnlyList<AgentLegalActionChoice> Choices);
+    IReadOnlyList<AgentLegalActionChoice> Choices,
+    string? FormatKey = null);
 
 public sealed record AgentDeckCountSummary(
     int CardCode,
@@ -116,13 +117,25 @@ public sealed record AgentChatEntry(
     string SpeakerName,
     string SpeakerRelation,
     int? SeatIndex,
-    string Text);
+    string Text,
+    string? DetectedTacticalHint = null);
+
+public sealed record AgentChatContext(
+    string TrustLevel,
+    string TrustNotice,
+    IReadOnlyList<AgentChatEntry> Messages);
 
 public sealed record AgentTagRotationSlot(
     int Order,
     int SeatIndex,
     string? PlayerName,
     string Relation);
+
+public sealed record AgentTagNextActor(
+    int SeatIndex,
+    string? PlayerName,
+    string Relation,
+    string Note);
 
 public sealed record AgentTagTeamContext(
     int MySeatIndex,
@@ -133,7 +146,11 @@ public sealed record AgentTagTeamContext(
     string CurrentTurnRelation,
     string? NextTurnHint,
     IReadOnlyList<AgentTagRotationSlot>? TurnRotationOrder = null,
-    string? SharedBoardHandoffNote = null);
+    string? SharedBoardHandoffNote = null,
+    int? CurrentActiveSeatIndex = null,
+    AgentTagNextActor? NextTurnActor = null,
+    int? TeammateHandCount = null,
+    bool? TeammateSurrenderRequested = null);
 
 public sealed record AgentPartnerTactic(
     string Stance,
@@ -156,7 +173,8 @@ public sealed record AgentBatchStep(
     int? CardCode = null,
     string? LabelContains = null,
     bool Cancel = false,
-    int? ActionIndex = null);
+    int? ActionIndex = null,
+    string? Zone = null);
 
 public sealed record AgentObservation(
     string SessionId,
@@ -195,7 +213,8 @@ public sealed record AgentObservation(
     AgentPartnerTactic? PartnerTactic,
     AgentStrategicPlan? StrategicPlan,
     bool HasPendingAction,
-    AgentPendingPrompt? PendingPrompt);
+    AgentPendingPrompt? PendingPrompt,
+    AgentChatContext? ChatContext = null);
 
 public sealed record AgentActionResult(
     bool Success,

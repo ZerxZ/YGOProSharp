@@ -151,9 +151,38 @@ public sealed class DeckAndReplayAppService(
         }).ToArray();
 
         JsonNode? timeline = null;
+        List<object> lpCurve = new();
         if (!string.IsNullOrWhiteSpace(record.DecisionTimelineJson))
         {
-            try { timeline = JsonNode.Parse(record.DecisionTimelineJson); } catch { }
+            try
+            {
+                timeline = JsonNode.Parse(record.DecisionTimelineJson);
+                if (timeline is JsonArray arr)
+                {
+                    foreach (JsonNode? item in arr)
+                    {
+                        if (item is not JsonObject obj)
+                            continue;
+                        int? t0 = (int?)(obj["team0Lp"] ?? obj["Team0Lp"]);
+                        int? t1 = (int?)(obj["team1Lp"] ?? obj["Team1Lp"]);
+                        if (t0.HasValue && t1.HasValue)
+                        {
+                            lpCurve.Add(new
+                            {
+                                turn = (int?)(obj["turn"] ?? obj["Turn"]) ?? 0,
+                                kind = (string?)(obj["kind"] ?? obj["Kind"]) ?? "duel.lp",
+                                actor = (string?)(obj["actor"] ?? obj["Actor"]),
+                                summary = (string?)(obj["text"] ?? obj["Text"]) ?? string.Empty,
+                                team0Lp = t0.Value,
+                                team1Lp = t1.Value
+                            });
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
         }
 
         object[] formattedReviews = reviews.Select(FormatDuelReviewDto).ToArray();
@@ -176,6 +205,7 @@ public sealed class DeckAndReplayAppService(
             record.EndedAt,
             hasYrp = !string.IsNullOrWhiteSpace(record.YrpPath),
             players,
+            lpCurve,
             timeline = timeline ?? new JsonArray(),
             reviews = formattedReviews,
             existingReviews = formattedReviews

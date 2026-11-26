@@ -109,6 +109,42 @@ namespace YGOProSharp.Server
         public event Action<object, PlayerChatInterceptEventArgs>? OnBeforePlayerChat;
         public event Action<object, PlayerChatEventArgs>? OnPlayerChat;
         public event Action<object, DuelStartContext>? OnBeforeDuelStart;
+        public event Action<object, DuelPublicActionEventArgs>? OnPublicDuelEvent;
+
+        internal void RaisePublicDuelEvent(
+            string kind,
+            int duelSide,
+            int cardCode = 0,
+            int location = 0,
+            int sequence = 0,
+            int value = 0)
+        {
+            Action<object, DuelPublicActionEventArgs>? handler = OnPublicDuelEvent;
+            if (handler is null)
+                return;
+
+            int lobbyTeam = duelSide is 0 or 1 ? GetLobbyTeamFromDuelSide(duelSide) : -1;
+            string? actor = duelSide is 0 or 1 && duelSide < CurPlayers.Length
+                ? CurPlayers[duelSide]?.Name
+                : null;
+            int team0Lp = LifePoints[IsDuelSwapped ? 1 : 0];
+            int team1Lp = LifePoints[IsDuelSwapped ? 0 : 1];
+
+            handler(this, new DuelPublicActionEventArgs
+            {
+                Kind = kind,
+                TurnCount = TurnCount,
+                DuelSide = duelSide,
+                LobbyTeamId = lobbyTeam,
+                ActorName = actor,
+                CardCode = cardCode,
+                Location = location,
+                Sequence = sequence,
+                Value = value,
+                Team0Lp = team0Lp,
+                Team1Lp = team1Lp
+            });
+        }
 
         /// <summary>
         /// 使用领域依赖创建 game room；socket 和 native 实现细节留在本类之外。

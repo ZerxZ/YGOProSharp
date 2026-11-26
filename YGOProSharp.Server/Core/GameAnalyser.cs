@@ -148,14 +148,16 @@ namespace YGOProSharp.Server
                     Game.RefreshSpells(1);
                     break;
                 case GameMessage.Summoning:
+                    OnPublicSummoning(cmsg, "duel.summon");
+                    break;
                 case GameMessage.SpSummoning:
-                    SendToAll(cmsg, 8);
+                    OnPublicSummoning(cmsg, "duel.spsummon");
                     break;
                 case GameMessage.FlipSummoning:
                     OnFlipSummoning(cmsg);
                     break;
                 case GameMessage.Chaining:
-                    SendToAll(cmsg, 16);
+                    OnPublicChaining(cmsg);
                     break;
                 case GameMessage.Chained:
                     SendToAll(cmsg, 1);
@@ -209,7 +211,7 @@ namespace YGOProSharp.Server
                     SendToAll(cmsg, 7);
                     break;
                 case GameMessage.Attack:
-                    SendToAll(cmsg, 8);
+                    OnPublicAttack(cmsg);
                     break;
                 case GameMessage.Battle:
                     SendToAll(cmsg, 26);
@@ -610,14 +612,16 @@ namespace YGOProSharp.Server
             SendToAll(msg);
 
             Game.TurnCount++;
+            Game.RaisePublicDuelEvent("duel.turn", Game.CurrentPlayer);
             return Game.TrySettleSuddenDeathOnNewTurn();
         }
 
         private void OnNewPhase(CoreMessage msg)
         {
-            msg.Reader.Skip(sizeof(short));
+            short phase = msg.Reader.ReadInt16();
             SendToAll(msg);
             Game.RefreshAll();
+            Game.RaisePublicDuelEvent("duel.phase", Game.CurrentPlayer, value: phase);
         }
 
         private void OnMove(CoreMessage msg)
@@ -669,11 +673,37 @@ namespace YGOProSharp.Server
             Game.SendToAll(packet);
         }
 
+        private void OnPublicSummoning(CoreMessage msg, string kind)
+        {
+            ReadOnlySpan<byte> raw = msg.Reader.ReadSpan(8);
+            SendToAll(msg);
+            int code = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(raw[..4]);
+            Game.RaisePublicDuelEvent(kind, raw[4], cardCode: code, location: raw[5], sequence: raw[6]);
+        }
+
+        private void OnPublicChaining(CoreMessage msg)
+        {
+            ReadOnlySpan<byte> raw = msg.Reader.ReadSpan(16);
+            SendToAll(msg);
+            int code = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(raw[..4]);
+            int desc = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(raw.Slice(12, 4));
+            Game.RaisePublicDuelEvent("duel.chain", raw[8], cardCode: code, location: raw[5], value: desc);
+        }
+
+        private void OnPublicAttack(CoreMessage msg)
+        {
+            ReadOnlySpan<byte> raw = msg.Reader.ReadSpan(8);
+            SendToAll(msg);
+            Game.RaisePublicDuelEvent("duel.attack", raw[0], location: raw[5], sequence: raw[2]);
+        }
+
         private void OnFlipSummoning(CoreMessage msg)
         {
             ReadOnlySpan<byte> raw = msg.Reader.ReadSpan(8);
             Game.RefreshSingle(raw[4], raw[5], raw[6]);
             SendToAll(msg);
+            int code = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(raw[..4]);
+            Game.RaisePublicDuelEvent("duel.flipsummon", raw[4], cardCode: code, location: raw[5], sequence: raw[6]);
         }
 
         private void OnCardSelected(CoreMessage msg)
@@ -742,6 +772,15 @@ namespace YGOProSharp.Server
             }
 
             SendToAll(msg);
+
+            string lpKind = msg.Message switch
+            {
+                GameMessage.Damage => "duel.damage",
+                GameMessage.PayLpCost => "duel.pay_lp",
+                GameMessage.Recover => "duel.recover",
+                _ => "duel.lp_set"
+            };
+            Game.RaisePublicDuelEvent(lpKind, player, value: value);
         }
 
         private void OnMissedEffect(CoreMessage msg)
@@ -845,6 +884,7 @@ namespace YGOProSharp.Server
             }
 
             Game.ToggleTagPlayer(player);
+            Game.RaisePublicDuelEvent("duel.tag_swap", player);
 
             SendToPlayer(msg, player);
             Game.SendToAllBut(packet, player);

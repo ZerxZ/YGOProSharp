@@ -1,7 +1,156 @@
 @import "tailwindcss";
 
 @layer base {
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  :root {
+    color-scheme: dark;
   }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background-color: #020617;
+    color: #f1f5f9;
+  }
+
+  /* 防止 iOS Safari 点击小字号输入框时自动放大页面 */
+  @media (max-width: 639px) {
+    input,
+    select,
+    textarea {
+      font-size: 16px !important;
+    }
+  }
+
+  /* 现代纤细滚动条 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(71, 85, 105, 0.55) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: rgba(71, 85, 105, 0.55);
+    border-radius: 9999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgba(100, 116, 139, 0.8);
+  }
+}
+
+/* 氛围背景光晕：前台青翠决斗场 / 后台靛紫控制面 */
+.portal-ambient-bg {
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -15%, rgba(16, 185, 129, 0.16), transparent 70%),
+    radial-gradient(ellipse 55% 40% at 90% 10%, rgba(14, 165, 233, 0.1), transparent 65%);
+}
+
+.admin-ambient-bg {
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -15%, rgba(99, 102, 241, 0.18), transparent 70%),
+    radial-gradient(ellipse 55% 40% at 88% 12%, rgba(168, 85, 247, 0.1), transparent 65%);
+}
+
+/* 现代毛玻璃表面卡片与表单控件 */
+.glass-card {
+  background: rgba(15, 23, 42, 0.76);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  box-shadow: 0 10px 30px -12px rgba(2, 6, 23, 0.65), inset 0 1px 0 0 rgba(255, 255, 255, 0.04);
+}
+
+.glass-subcard {
+  background: rgba(2, 6, 23, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.input-modern {
+  background-color: rgba(2, 6, 23, 0.8);
+  border: 1px solid rgba(71, 85, 105, 0.65);
+  border-radius: 0.625rem;
+  color: #f1f5f9;
+  transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+}
+
+.input-modern:focus {
+  outline: none;
+  border-color: rgba(52, 211, 153, 0.75);
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.16);
+  background-color: rgba(2, 6, 23, 0.95);
+}
+
+.input-modern-indigo:focus {
+  outline: none;
+  border-color: rgba(129, 140, 248, 0.8);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+  background-color: rgba(2, 6, 23, 0.95);
+}
+
+/* 隐藏横向胶囊导航滚动条但保留滑动手势 */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* 移动端刘海屏与底部 Home Indicator 安全区 */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+.pb-mobile-nav {
+  padding-bottom: calc(5.25rem + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 768px) {
+  .pb-mobile-nav {
+    padding-bottom: 2rem;
+  }
+}
+
+/* 柔和动效 */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideUpSheet {
+  from {
+    opacity: 0;
+    transform: translateY(28px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.animate-slide-up {
+  animation: slideUpSheet 240ms cubic-bezier(0.16, 1, 0.3, 1);
 }

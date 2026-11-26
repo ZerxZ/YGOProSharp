@@ -20,14 +20,14 @@ using YGOProSharp.Mcp;
 using YGOProSharp.Persistence;
 using YGOProSharp.Persistence.Security;
 using YGOProSharp.Server;
+using YGOProSharp.Web.Routing;
 using YGOProSharp.Web.Security;
 using YGOProSharp.Web.Services;
 
 namespace YGOProSharp.Web;
 
 /// <summary>
-/// 前台玩家与社区用户面板宿主（已按单一职责拆分为宿主生命周期与分域路由 `Portal/UserPortalHost.*.cs`）：
-/// 统一复用 ASP.NET Core 标准认证、滑动窗口限流与共享 <see cref="McpServerEngine.AppService"/>。
+/// 前台玩家与社区用户面板宿主：所有业务端点均通过声明式特性由 Roslyn 增量源生成器（<c>UserPortalHost.Endpoints.g.cs</c>）在编译期完成零反射映射。
 /// </summary>
 public sealed partial class UserPortalHost : IAsyncDisposable, IDisposable
 {
@@ -114,7 +114,30 @@ public sealed partial class UserPortalHost : IAsyncDisposable, IDisposable
         }
 
         app.UseYgoWebSecurityAndRateLimiting();
-        MapPortalEndpoints(app, staticRoot);
+
+        // 编译期源生成路由挂载（独立门户端口同时挂载独立探针与 PortalCore 分组）
+        MapGeneratedEndpoints(app);
+        MapGeneratedPortalCoreEndpoints(app);
+        app.MapMcpStreamableHttp(_mcpEngine, _store, allowedSurfaceRoles: [McpRoleCodes.Player, McpRoleCodes.Spectator]);
+
+        if (staticRoot is not null)
+        {
+            string indexHtml = Path.Combine(staticRoot, "index.html");
+            app.MapFallback(async (HttpContext http) =>
+            {
+                if (http.Request.Path.StartsWithSegments("/api") ||
+                    http.Request.Path.StartsWithSegments("/ws") ||
+                    http.Request.Path.StartsWithSegments("/mcp"))
+                {
+                    http.Response.StatusCode = StatusCodes.Status404NotFound;
+                    await http.Response.WriteAsJsonAsync(new { error = "not_found", message = "前台用户面板不存在该接口。" });
+                    return;
+                }
+
+                http.Response.ContentType = "text/html; charset=utf-8";
+                await http.Response.SendFileAsync(indexHtml);
+            });
+        }
 
         await app.StartAsync(cancellationToken).ConfigureAwait(false);
         _app = app;
@@ -158,95 +181,67 @@ public sealed partial class UserPortalHost : IAsyncDisposable, IDisposable
         }
     }
 
-    private void MapPortalEndpoints(WebApplication app, string? staticRoot)
-    {
-        app.MapGet("/api/surface", () => Results.Ok(new
+    [HttpGet("/api/surface")]
+    private IResult GetPortalSurface() =>
+        Results.Ok(new
         {
             surface = "portal",
             gamePort = _serverHost.Server.Options.Port,
             publicGameHost = _options.PublicGameHost,
             portalPort = _options.Port,
             mcpPortHint = _options.McpPortHint ?? _options.Port
-        }));
-
-        app.MapGet("/healthz", async (CancellationToken ct) =>
-        {
-            DatabaseHealthSnapshot dbHealth = await _store.Database.CheckHealthAsync(ct).ConfigureAwait(false);
-            bool ok = _serverHost.IsRunning && dbHealth.IsHealthy;
-            return Results.Json(new
-            {
-                surface = "portal",
-                status = ok ? "healthy" : "degraded",
-                gameServerRunning = _serverHost.IsRunning,
-                maintenanceMode = _serverHost.Server.IsMaintenanceMode
-            }, statusCode: ok ? StatusCodes.Status200OK : StatusCodes.Status503ServiceUnavailable);
         });
 
-        app.MapMcpStreamableHttp(_mcpEngine, _store, allowedSurfaceRoles: [McpRoleCodes.Player, McpRoleCodes.Spectator]);
-        MapPortalCoreRoutes(app);
-
-        if (staticRoot is not null)
+    [HttpGet("/healthz")]
+    private async Task<IResult> GetPortalHealthzAsync(CancellationToken ct)
+    {
+        DatabaseHealthSnapshot dbHealth = await _store.Database.CheckHealthAsync(ct).ConfigureAwait(false);
+        bool ok = _serverHost.IsRunning && dbHealth.IsHealthy;
+        return Results.Json(new
         {
-            string indexHtml = Path.Combine(staticRoot, "index.html");
-            app.MapFallback(async (HttpContext http) =>
-            {
-                if (http.Request.Path.StartsWithSegments("/api") ||
-                    http.Request.Path.StartsWithSegments("/ws") ||
-                    http.Request.Path.StartsWithSegments("/mcp"))
-                {
-                    http.Response.StatusCode = StatusCodes.Status404NotFound;
-                    await http.Response.WriteAsJsonAsync(new { error = "not_found", message = "前台用户面板不存在该接口。" });
-                    return;
-                }
-
-                http.Response.ContentType = "text/html; charset=utf-8";
-                await http.Response.SendFileAsync(indexHtml);
-            });
-        }
+            surface = "portal",
+            status = ok ? "healthy" : "degraded",
+            gameServerRunning = _serverHost.IsRunning,
+            maintenanceMode = _serverHost.Server.IsMaintenanceMode
+        }, statusCode: ok ? StatusCodes.Status200OK : StatusCodes.Status503ServiceUnavailable);
     }
 
-    internal void MapPortalCoreRoutes(WebApplication app)
+    [MapEndpoint("/ws/public", Group = "PortalCore")]
+    private async Task HandlePortalPublicWebSocketAsync(HttpContext http, CancellationToken ct)
     {
-        MapPortalAuthAndTokenEndpoints(app);
-        MapPortalRoomAndTagForceEndpoints(app);
-        MapPortalCatalogReplayAndSelfServiceEndpoints(app);
-
-        app.Map("/ws/public", async (HttpContext http, CancellationToken ct) =>
+        if (!http.WebSockets.IsWebSocketRequest)
         {
-            if (!http.WebSockets.IsWebSocketRequest)
-            {
-                http.Response.StatusCode = StatusCodes.Status400BadRequest;
-                return;
-            }
+            http.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
 
-            using WebSocket ws = await http.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
-            Guid subId = Guid.NewGuid();
-            _publicSubscribers[subId] = ws;
+        using WebSocket ws = await http.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
+        Guid subId = Guid.NewGuid();
+        _publicSubscribers[subId] = ws;
 
-            try
-            {
-                byte[] welcome = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { type = "connected", surface = "portal" }));
-                await ws.SendAsync(welcome, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+        try
+        {
+            byte[] welcome = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { type = "connected", surface = "portal" }));
+            await ws.SendAsync(welcome, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
 
-                byte[] recvBuf = new byte[1024];
-                while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
-                {
-                    WebSocketReceiveResult res = await ws.ReceiveAsync(recvBuf, ct).ConfigureAwait(false);
-                    if (res.MessageType == WebSocketMessageType.Close)
-                        break;
-                }
-            }
-            catch (OperationCanceledException)
+            byte[] recvBuf = new byte[1024];
+            while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
             {
+                WebSocketReceiveResult res = await ws.ReceiveAsync(recvBuf, ct).ConfigureAwait(false);
+                if (res.MessageType == WebSocketMessageType.Close)
+                    break;
             }
-            catch (WebSocketException)
-            {
-            }
-            finally
-            {
-                _publicSubscribers.TryRemove(subId, out _);
-            }
-        });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (WebSocketException)
+        {
+        }
+        finally
+        {
+            _publicSubscribers.TryRemove(subId, out _);
+        }
     }
 
     private void HandlePublicEvent(string eventType, object payload)

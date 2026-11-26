@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <NoWarn>$(NoWarn);RS2008</NoWarn>
     <IsRoslynComponent>true</IsRoslynComponent>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
   </PropertyGroup>
