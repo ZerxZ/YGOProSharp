@@ -1,5 +1,17 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { KeyRound, Sparkles, Trash2 } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Alert,
+  Button,
+  Card,
+  Chip,
+  Input,
+  Label,
+  Spinner,
+  Surface,
+  Tabs,
+  TextField
+} from '@heroui/react';
+import { KeyRound, Plus, Sparkles, Terminal, Trash2 } from 'lucide-react';
 import { apiFetch } from '../api';
 import { QuickCopyPill } from '../RoomConfigurator';
 import type { PortalUser } from './portalTypes';
@@ -11,6 +23,21 @@ const PERSONA_PRESETS = [
   '温柔可靠双打学姐',
   '冷静学院派战术家',
   '相声整活大师'
+];
+
+const PROMPT_TEMPLATES = [
+  {
+    title: '1v1 陪练 / 盲盒上桌',
+    prompt: '请使用 YGOProSharp MCP 工具查看当前房间列表，加入房间 Room01 准备并陪我打完这一局，出牌时保持人设简短互动。'
+  },
+  {
+    title: '2v2 卡片力量双打搭档',
+    prompt: '请作为我的 2v2 双打搭档加入房间 Tag01，先查看队友场面与战术信号（激进/稳健），协同资源完成双打对局。'
+  },
+  {
+    title: '赛后全视角教练复盘',
+    prompt: '请读取历史对局 R#1 的详细回合记录，总结胜负关键手、渣操伏笔，并为双方卡组打出六维评分与改进建议。'
+  }
 ];
 
 export function PortalAiTokenCenter({
@@ -25,11 +52,14 @@ export function PortalAiTokenCenter({
   notify: (t: string, k?: 'ok' | 'err') => void;
 }) {
   const [tokens, setTokens] = useState<any[]>([]);
+  const [tokenFilter, setTokenFilter] = useState<'active' | 'all'>('active');
+  const [guideTab, setGuideTab] = useState<'json' | 'cli' | 'prompts'>('json');
   const [name, setName] = useState('');
   const [personaStyle, setPersonaStyle] = useState('');
   const [role, setRole] = useState('player');
   const [roomsText, setRoomsText] = useState('');
-  const [expiresHours, setExpiresHours] = useState(72);
+  const [expiresHours, setExpiresHours] = useState(168);
+  const [issuing, setIssuing] = useState(false);
   const [newlyIssuedRaw, setNewlyIssuedRaw] = useState('');
   const [editingTokenId, setEditingTokenId] = useState<string | null>(null);
   const [editingNickname, setEditingNickname] = useState('');
@@ -51,29 +81,32 @@ export function PortalAiTokenCenter({
     loadTokens();
   }, [loadTokens]);
 
+  const filteredTokens = useMemo(() => {
+    if (tokenFilter === 'all') return tokens;
+    return tokens.filter((t) => !t.revokedAt);
+  }, [tokens, tokenFilter]);
+
   if (!user) {
     return (
-      <div className="glass-card rounded-2xl p-8 sm:p-12 text-center space-y-4 animate-fade-in">
-        <div className="w-14 h-14 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center mx-auto">
-          <KeyRound className="w-7 h-7 text-emerald-400" />
+      <Card className="rounded-xl p-8 sm:p-12 text-center items-center space-y-4 animate-fade-in">
+        <div className="w-12 h-12 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center mx-auto">
+          <KeyRound className="w-6 h-6 text-emerald-400" />
         </div>
-        <h2 className="text-base sm:text-lg font-bold">解锁你的专属外部 AI 决斗搭档与解说令牌</h2>
-        <p className="text-xs sm:text-sm text-slate-400 max-w-lg mx-auto leading-relaxed">
-          免费注册后可自助签发受限视角 <code className="text-emerald-300">player</code>（上桌打牌/双排搭档）或{' '}
-          <code className="text-sky-300">spectator</code>（赛后复盘教练/解说）令牌，零配置接入 Claude、Gemini、DeepSeek、ChatGPT、Cursor 等任意 MCP 客户端。
-        </p>
-        <button
-          onClick={onRequireAuth}
-          className="min-h-[44px] px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-sm font-semibold text-white shadow-lg shadow-emerald-950/50 cursor-pointer"
-        >
+        <Card.Title className="text-base sm:text-lg font-bold">解锁专属外部 AI 决斗搭档与复盘教练令牌</Card.Title>
+        <Card.Description className="text-xs sm:text-sm max-w-lg mx-auto leading-relaxed">
+          免费注册后可自助签发受限视角 <code className="text-emerald-400 font-mono">player</code>（上桌对局 / 2v2 双打搭档）或{' '}
+          <code className="text-sky-400 font-mono">spectator</code>（观战解说 / 赛后复盘）令牌，一键接入 Claude、Gemini、Cursor、T3 Code 等任意 MCP 客户端。
+        </Card.Description>
+        <Button variant="primary" onPress={onRequireAuth}>
           立即注册 / 登录账号
-        </button>
-      </div>
+        </Button>
+      </Card>
     );
   }
 
   const issueToken = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIssuing(true);
     try {
       const rooms = roomsText
         .split(',')
@@ -100,6 +133,8 @@ export function PortalAiTokenCenter({
       loadTokens();
     } catch (err) {
       notify(err instanceof Error ? err.message : '创建 AI Token 失败', 'err');
+    } finally {
+      setIssuing(false);
     }
   };
 
@@ -121,7 +156,7 @@ export function PortalAiTokenCenter({
   };
 
   const mcpUrl = `${window.location.origin}/mcp`;
-  const directMcpUrl = `${mcpUrl}?key=${newlyIssuedRaw ? encodeURIComponent(newlyIssuedRaw) : '<粘贴你刚生成的_ygp_mcp_Token>'}`;
+  const directMcpUrl = `${mcpUrl}?key=${newlyIssuedRaw ? encodeURIComponent(newlyIssuedRaw) : '<粘贴你的_ygp_mcp_Token>'}`;
   const mcpConfigJson = JSON.stringify(
     {
       mcpServers: {
@@ -134,66 +169,64 @@ export function PortalAiTokenCenter({
     null,
     2
   );
+  const claudeCliCmd = `claude mcp add --transport http ygoprosharp "${directMcpUrl}"`;
 
   return (
-    <div className="space-y-5 text-xs animate-fade-in">
-      <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-4">
-        <div className="flex items-start justify-between gap-3 flex-wrap">
-          <div>
-            <h2 className="text-sm sm:text-base font-bold flex items-center gap-2 text-slate-100">
-              <KeyRound className="w-4 h-4 text-emerald-400" /> 创建外部 AI 决斗 / 复盘令牌
-            </h2>
-            <p className="text-[11px] text-slate-400 mt-0.5">
-              严格执行 1v1 / 2v2 战争迷雾与单向 SHA-256 哈希存储，支持绑定专属昵称、性格吐槽人设与跨局生涯记忆
-            </p>
-          </div>
-        </div>
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start text-xs animate-fade-in">
+      {/* 左侧主区：令牌签发 + 令牌花名册 (7列) */}
+      <div className="lg:col-span-7 space-y-4">
+        <Card className="rounded-xl p-4 sm:p-5 space-y-4">
+          <Card.Header className="p-0 flex-row items-start justify-between gap-3">
+            <div>
+              <Card.Title className="text-sm sm:text-base font-bold flex items-center gap-2">
+                <KeyRound className="w-4 h-4 text-emerald-400" /> 签发外部 AI 决斗 / 复盘令牌
+              </Card.Title>
+              <Card.Description className="text-[11px] mt-0.5">
+                严格执行 1v1 / 2v2 战争迷雾与单向 SHA-256 摘要存储；支持绑定专属昵称、台词性格与跨局对局记忆
+              </Card.Description>
+            </div>
+            <Chip size="sm" variant="soft" color="accent" className="font-mono text-[10px] shrink-0">
+              零内置 LLM Key
+            </Chip>
+          </Card.Header>
 
-        <form onSubmit={issueToken} className="space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-            <div>
-              <label className="block text-slate-400 mb-1">AI 决斗者昵称（留空自取名）</label>
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                maxLength={18}
-                placeholder="留空由 AI 自取，或填 海马濑人"
-                className="w-full px-3 py-2 input-modern"
-              />
+          <form onSubmit={issueToken} className="space-y-3.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <TextField fullWidth value={name} onChange={setName}>
+                <Label className="text-xs">AI 决斗者昵称（留空进房自取名）</Label>
+                <Input variant="secondary" maxLength={18} placeholder="如 海马濑人 / 留空由 AI 自取" />
+              </TextField>
+
+              <TextField fullWidth value={personaStyle} onChange={setPersonaStyle}>
+                <Label className="text-xs">性格与吐槽人设（选填）</Label>
+                <Input variant="secondary" maxLength={80} placeholder="如：孤高青眼社长，霸气护短" />
+              </TextField>
             </div>
-            <div className="sm:col-span-1 lg:col-span-2">
-              <label className="block text-slate-400 mb-1">性格与台词人设（可选，点选下方标签快速填入）</label>
-              <input
-                value={personaStyle}
-                onChange={(e) => setPersonaStyle(e.target.value)}
-                maxLength={80}
-                placeholder="如：孤高青眼社长，出牌霸气但尊重搭档"
-                className="w-full px-3 py-2 input-modern"
-              />
-            </div>
-            <div>
-              <label className="block text-slate-400 mb-1">角色权限</label>
-              <select value={role} onChange={(e) => setRole(e.target.value)} className="w-full px-3 py-2 input-modern">
-                <option value="player">对战选手 AI (player)</option>
-                <option value="spectator">观战解说/复盘 AI (spectator)</option>
-              </select>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="block text-slate-400 mb-1">房间白名单</label>
-                <input
-                  value={roomsText}
-                  onChange={(e) => setRoomsText(e.target.value)}
-                  placeholder="留空不限"
-                  className="w-full px-2.5 py-2 input-modern"
-                />
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <label className="block text-xs font-medium text-foreground">角色权限</label>
+                <select
+                  value={role}
+                  onChange={(e) => setRole(e.target.value)}
+                  className="w-full h-9 px-3 text-xs input-modern"
+                >
+                  <option value="player">对战选手 AI (player)</option>
+                  <option value="spectator">观战解说/复盘 AI (spectator)</option>
+                </select>
               </div>
-              <div>
-                <label className="block text-slate-400 mb-1">有效期</label>
+
+              <TextField fullWidth value={roomsText} onChange={setRoomsText}>
+                <Label className="text-xs">限定房间白名单（选填）</Label>
+                <Input variant="secondary" placeholder="逗号分隔，留空不限" />
+              </TextField>
+
+              <div className="space-y-1">
+                <label className="block text-xs font-medium text-foreground">令牌有效期</label>
                 <select
                   value={expiresHours}
                   onChange={(e) => setExpiresHours(Number(e.target.value))}
-                  className="w-full px-2 py-2 input-modern"
+                  className="w-full h-9 px-3 text-xs input-modern"
                 >
                   <option value={12}>12 小时</option>
                   <option value={48}>2 天</option>
@@ -202,185 +235,256 @@ export function PortalAiTokenCenter({
                 </select>
               </div>
             </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-0.5">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[11px] text-muted flex items-center gap-1">
+                  <Sparkles className="w-3 h-3 text-amber-400" /> 人设灵感:
+                </span>
+                {PERSONA_PRESETS.map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setPersonaStyle(preset)}
+                    className={`px-2 py-0.5 rounded-md border text-[11px] transition cursor-pointer ${
+                      personaStyle === preset
+                        ? 'bg-surface-secondary border-accent text-foreground font-semibold'
+                        : 'bg-background border-border text-muted hover:text-foreground'
+                    }`}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+
+              <Button type="submit" variant="primary" isPending={issuing} className="w-full sm:w-auto shrink-0">
+                {issuing ? <Spinner color="current" size="sm" /> : <Plus className="w-3.5 h-3.5" />}
+                <span>生成 AI Token</span>
+              </Button>
+            </div>
+          </form>
+
+          {newlyIssuedRaw && (
+            <Alert status="success" className="animate-fade-in">
+              <Alert.Indicator />
+              <Alert.Content className="space-y-2">
+                <Alert.Title className="text-xs font-semibold">
+                  令牌签发成功（明文仅展示一次，请立即复制保存）
+                </Alert.Title>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2.5 rounded-lg bg-background border border-border font-mono text-[11px]">
+                  <span className="break-all text-emerald-400">{directMcpUrl}</span>
+                  <QuickCopyPill text={directMcpUrl} label="复制直连 URL" onCopied={() => notify('已复制 MCP 直连 URL')} />
+                </div>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 font-mono text-[11px] text-muted">
+                  <span className="break-all">纯 Token: {newlyIssuedRaw}</span>
+                  <QuickCopyPill text={newlyIssuedRaw} label="复制纯 Token" onCopied={() => notify('已复制纯 Token')} />
+                </div>
+              </Alert.Content>
+            </Alert>
+          )}
+        </Card>
+
+        {/* 已签发令牌花名册 */}
+        <Card className="rounded-xl p-4 sm:p-5 space-y-3.5">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <h3 className="text-sm font-bold">我的 AI 令牌花名册 ({filteredTokens.length})</h3>
+            <Tabs
+              selectedKey={tokenFilter}
+              onSelectionChange={(k) => setTokenFilter(String(k) as 'active' | 'all')}
+            >
+              <Tabs.ListContainer>
+                <Tabs.List aria-label="令牌状态过滤">
+                  <Tabs.Tab id="active" className="text-xs px-2.5">
+                    有效令牌
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                  <Tabs.Tab id="all" className="text-xs px-2.5">
+                    全部 ({tokens.length})
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                </Tabs.List>
+              </Tabs.ListContainer>
+            </Tabs>
           </div>
 
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[11px] text-slate-400 flex items-center gap-1">
-                <Sparkles className="w-3 h-3 text-amber-400" /> 人设灵感：
-              </span>
-              {PERSONA_PRESETS.map((preset) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => setPersonaStyle(preset)}
-                  className={`px-2.5 py-1 rounded-full border text-[11px] transition cursor-pointer ${
-                    personaStyle === preset
-                      ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-200'
-                      : 'bg-slate-950/80 border-slate-800 text-slate-300 hover:border-slate-700'
-                  }`}
-                >
-                  {preset}
-                </button>
-              ))}
-            </div>
-
-            <button className="w-full sm:w-auto min-h-[40px] px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 font-semibold text-white shadow-lg shadow-emerald-950/50 shrink-0 cursor-pointer">
-              + 生成 AI Token
-            </button>
-          </div>
-        </form>
-
-        {newlyIssuedRaw && (
-          <div className="p-4 rounded-2xl bg-emerald-950/60 border border-emerald-500/40 space-y-2.5 font-mono animate-fade-in">
-            <div className="text-xs font-sans font-semibold text-emerald-300">
-              ✓ 令牌签发成功（明文仅展示一次，请立即复制保存）：
-            </div>
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-slate-950/90 p-2.5 rounded-xl border border-slate-800">
-              <span className="break-all text-emerald-200 text-[11px]">{directMcpUrl}</span>
-              <QuickCopyPill text={directMcpUrl} label="复制 MCP 直连 URL" onCopied={() => notify('已复制 MCP 直连 URL')} />
-            </div>
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-slate-300 text-[11px]">
-              <span className="break-all">纯 Token：{newlyIssuedRaw}</span>
-              <QuickCopyPill text={newlyIssuedRaw} label="复制纯 Token" onCopied={() => notify('已复制 AI Token')} />
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold">我的 AI 令牌列表 ({tokens.length})</h3>
-          </div>
-          <div className="space-y-2.5 max-h-96 overflow-y-auto pr-0.5">
-            {tokens.map((t) => (
-              <div key={t.id} className="glass-subcard p-3.5 rounded-xl space-y-2.5">
+          <div className="space-y-2.5 max-h-[460px] overflow-y-auto pr-0.5">
+            {filteredTokens.map((t) => (
+              <Surface key={t.id} variant="secondary" className="p-3.5 rounded-xl border border-border space-y-2.5">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 space-y-1">
                     <div className="font-semibold flex items-center gap-1.5 flex-wrap">
-                      <span className="text-sm text-slate-100">{t.preferredPlayerName || t.name}</span>
-                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[10px] font-mono">
+                      <span className="text-sm text-foreground">{t.preferredPlayerName || t.name}</span>
+                      <Chip size="sm" variant="soft" color="accent" className="h-5 px-1.5 font-mono text-[10px]">
                         {t.mcpRole}
-                      </span>
+                      </Chip>
                       {t.mcpRole === 'player' && (
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] border ${
-                            t.preferredPlayerName
-                              ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-200'
-                              : 'bg-amber-500/15 border-amber-500/30 text-amber-200'
-                          }`}
+                        <Chip
+                          size="sm"
+                          variant="soft"
+                          color={t.preferredPlayerName ? 'success' : 'warning'}
+                          className="h-5 px-2 text-[10px]"
                         >
-                          {t.preferredPlayerName ? '已固定昵称' : '进房自取名'}
-                        </span>
+                          {t.preferredPlayerName ? '固定昵称' : '进房自取名'}
+                        </Chip>
                       )}
-                      {t.revokedAt && <span className="text-rose-400 text-[11px]">(已吊销)</span>}
+                      {t.revokedAt && (
+                        <Chip size="sm" variant="soft" color="danger" className="h-5 px-2 text-[10px]">
+                          已吊销
+                        </Chip>
+                      )}
                     </div>
-                    <div className="text-[11px] text-slate-400 font-mono">
-                      {t.tokenPrefix}... · 房间: {(t.allowedRooms || []).join(', ') || '全部公开房'}
+                    <div className="text-[11px] text-muted font-mono">
+                      {t.tokenPrefix}... · 允许房间: {(t.allowedRooms || []).join(', ') || '全部公开房'}
                     </div>
                     {t.personaStyle && (
-                      <div className="text-[11px] text-amber-200/90">人设：「{t.personaStyle}」</div>
+                      <div className="text-[11px] text-amber-400/90">人设：「{t.personaStyle}」</div>
                     )}
                   </div>
+
                   {!t.revokedAt && (
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => {
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="h-7 px-2.5 text-[11px]"
+                        onPress={() => {
                           setEditingTokenId(editingTokenId === t.id ? null : t.id);
                           setEditingNickname(t.preferredPlayerName || '');
                           setEditingPersona(t.personaStyle || '');
                         }}
-                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 cursor-pointer"
                       >
                         编辑档案
-                      </button>
-                      <button
-                        type="button"
-                        onClick={async () => {
+                      </Button>
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="danger-soft"
+                        aria-label="吊销该令牌"
+                        className="h-7 w-7 min-w-0"
+                        onPress={async () => {
                           await apiFetch(`/api/portal/mcp/tokens/${t.id}`, { method: 'DELETE' });
                           notify('Token 已吊销');
                           loadTokens();
                         }}
-                        className="p-1.5 rounded-lg bg-rose-950/50 hover:bg-rose-900/60 text-rose-300 cursor-pointer"
-                        title="吊销该令牌"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      </Button>
                     </div>
                   )}
                 </div>
 
                 {editingTokenId === t.id && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-slate-800/80 animate-fade-in">
-                    <input
-                      value={editingNickname}
-                      onChange={(e) => setEditingNickname(e.target.value)}
-                      maxLength={18}
-                      placeholder="新昵称（留空交由 AI 自取名）"
-                      className="px-2.5 py-1.5 input-modern"
-                    />
-                    <input
-                      value={editingPersona}
-                      onChange={(e) => setEditingPersona(e.target.value)}
-                      maxLength={80}
-                      placeholder="性格台词人设（如 冷静学院派）"
-                      className="px-2.5 py-1.5 input-modern"
-                    />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2.5 border-t border-separator animate-fade-in">
+                    <TextField fullWidth value={editingNickname} onChange={setEditingNickname}>
+                      <Label className="text-[11px]">决斗者昵称</Label>
+                      <Input variant="secondary" maxLength={18} placeholder="留空交由 AI 自取名" />
+                    </TextField>
+                    <TextField fullWidth value={editingPersona} onChange={setEditingPersona}>
+                      <Label className="text-[11px]">性格台词人设</Label>
+                      <Input variant="secondary" maxLength={80} placeholder="如 冷静学院派战术家" />
+                    </TextField>
                     <div className="sm:col-span-2 flex justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setEditingTokenId(null)}
-                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
-                      >
+                      <Button size="sm" variant="tertiary" onPress={() => setEditingTokenId(null)}>
                         取消
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => saveTokenNickname(t.id, editingNickname, editingPersona)}
-                        className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer"
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onPress={() => saveTokenNickname(t.id, editingNickname, editingPersona)}
                       >
                         保存档案
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 )}
-              </div>
+              </Surface>
             ))}
-            {tokens.length === 0 && (
-              <div className="text-slate-500 py-10 text-center glass-subcard rounded-xl">
-                暂未创建任何 AI Token，可在上方一键生成
+
+            {filteredTokens.length === 0 && (
+              <div className="text-muted py-10 text-center bg-surface-secondary rounded-xl border border-border">
+                当前筛选下暂无 AI Token，可在上方一键签发
               </div>
             )}
           </div>
+        </Card>
+      </div>
+
+      {/* 右侧分栏：多客户端一键接入向导 & 对战提示词库 (5列) */}
+      <Card className="lg:col-span-5 lg:sticky lg:top-4 rounded-xl p-4 sm:p-5 space-y-3.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="font-bold text-sm flex items-center gap-1.5">
+            <Terminal className="w-4 h-4 text-emerald-400" /> 外部 AI 客户端接入向导
+          </div>
+          <QuickCopyPill text={directMcpUrl} label="复制直连 URL" onCopied={() => notify('已复制 streamable-http URL')} />
         </div>
 
-        <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-3">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <h3 className="text-sm font-bold">3 步接入任意外部 AI 客户端</h3>
-            <div className="flex items-center gap-1.5">
-              <QuickCopyPill text={directMcpUrl} label="复制 URL" onCopied={() => notify('已复制 streamable-http URL')} />
-              <QuickCopyPill text={mcpConfigJson} label="复制 JSON" onCopied={() => notify('已复制 MCP 配置 JSON')} />
+        <Tabs
+          selectedKey={guideTab}
+          onSelectionChange={(k) => setGuideTab(String(k) as 'json' | 'cli' | 'prompts')}
+          className="w-full"
+        >
+          <Tabs.ListContainer>
+            <Tabs.List aria-label="客户端配置与提示词标签" className="w-full">
+              <Tabs.Tab id="json" className="flex-1 text-xs">
+                MCP JSON
+                <Tabs.Indicator />
+              </Tabs.Tab>
+              <Tabs.Tab id="cli" className="flex-1 text-xs">
+                命令行一键挂载
+                <Tabs.Indicator />
+              </Tabs.Tab>
+              <Tabs.Tab id="prompts" className="flex-1 text-xs">
+                开局提示词
+                <Tabs.Indicator />
+              </Tabs.Tab>
+            </Tabs.List>
+          </Tabs.ListContainer>
+        </Tabs>
+
+        {guideTab === 'json' && (
+          <div className="space-y-2.5 animate-fade-in">
+            <Surface variant="secondary" className="p-3 rounded-lg border border-border text-[11px] text-muted space-y-1 leading-relaxed">
+              <div>适用于 Cursor、Claude Desktop、T3 Code、Cherry Studio 等支持 <code className="text-foreground font-mono">streamable-http</code> 的客户端：</div>
+            </Surface>
+            <div className="relative">
+              <pre className="p-3.5 rounded-lg bg-background border border-border text-[11px] font-mono overflow-x-auto text-foreground/90">
+                {mcpConfigJson}
+              </pre>
+              <div className="mt-2 flex justify-end">
+                <QuickCopyPill text={mcpConfigJson} label="复制 MCP JSON" onCopied={() => notify('已复制 MCP 配置 JSON')} />
+              </div>
             </div>
           </div>
-          <div className="glass-subcard p-3 rounded-xl text-[11px] text-slate-300 space-y-1.5 leading-relaxed">
-            <div>
-              <span className="inline-block w-5 text-emerald-400 font-bold">①</span> 在上方生成一枚 Token，复制右侧{' '}
-              <span className="text-emerald-300 font-medium">MCP 直连 URL</span>；
-            </div>
-            <div>
-              <span className="inline-block w-5 text-emerald-400 font-bold">②</span> 打开 Claude Desktop / Cursor / Cherry Studio / Gemini CLI 添加 MCP Server（类型选 <code className="text-emerald-300">streamable-http</code>）；
-            </div>
-            <div>
-              <span className="inline-block w-5 text-emerald-400 font-bold">③</span> 对 AI 说：<span className="text-amber-200">「加入房间 Room01 陪我打一局！」</span> 即可自动上桌对决！
+        )}
+
+        {guideTab === 'cli' && (
+          <div className="space-y-2.5 animate-fade-in">
+            <Surface variant="secondary" className="p-3 rounded-lg border border-border text-[11px] text-muted leading-relaxed">
+              在终端执行以下命令即可将本服挂载到 Claude Code，挂载后直接输入自然语言即可指派 AI 进房打牌或复盘：
+            </Surface>
+            <pre className="p-3.5 rounded-lg bg-background border border-border text-[11px] font-mono overflow-x-auto text-emerald-400">
+              {claudeCliCmd}
+            </pre>
+            <div className="flex justify-end">
+              <QuickCopyPill text={claudeCliCmd} label="复制 CLI 命令" onCopied={() => notify('已复制 CLI 命令')} />
             </div>
           </div>
-          <pre className="glass-subcard p-3.5 rounded-xl text-[11px] font-mono overflow-x-auto text-slate-300">
-            {mcpConfigJson}
-          </pre>
-        </div>
-      </div>
+        )}
+
+        {guideTab === 'prompts' && (
+          <div className="space-y-2.5 animate-fade-in">
+            {PROMPT_TEMPLATES.map((tpl) => (
+              <Surface key={tpl.title} variant="secondary" className="p-3 rounded-lg border border-border space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-foreground">{tpl.title}</span>
+                  <QuickCopyPill text={tpl.prompt} label="复制话术" onCopied={() => notify(`已复制：${tpl.title}`)} />
+                </div>
+                <p className="text-[11px] text-muted leading-relaxed">{tpl.prompt}</p>
+              </Surface>
+            ))}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

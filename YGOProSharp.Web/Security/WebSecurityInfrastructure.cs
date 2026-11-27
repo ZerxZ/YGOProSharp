@@ -164,6 +164,71 @@ public static class WebSecurityExtensions
         });
     }
 
+    public static void UseYgoAntiBypassHardening(this WebApplication app, string configuredBindHost)
+    {
+        bool isLoopbackBind = IsLoopbackHostName(configuredBindHost);
+
+        app.Use(async (http, next) =>
+        {
+            // 1. 注入基础安全响应头（禁 iframe 劫持、禁 MIME 嗅探、零 Referer 外泄以防 Token 随外链泄露）
+            IHeaderDictionary headers = http.Response.Headers;
+            headers["X-Content-Type-Options"] = "nosniff";
+            headers["X-Frame-Options"] = "DENY";
+            headers["Referrer-Policy"] = "no-referrer";
+            headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
+            headers["Content-Security-Policy"] = "frame-ancestors 'none'; base-uri 'self'; object-src 'none'";
+
+            // 2. 阻断 URL 编码路径穿越与敏感运营数据库/配置文件探测越狱
+            string rawTarget = http.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpRequestFeature>()?.RawTarget
+                               ?? http.Request.Path.Value
+                               ?? string.Empty;
+            int queryIdx = rawTarget.IndexOf('?');
+            string rawPathOnly = queryIdx >= 0 ? rawTarget[..queryIdx] : rawTarget;
+            if (ContainsPathTraversalOrNullByte(rawPathOnly) || IsForbiddenSensitiveFileProbe(http.Request.Path.Value))
+            {
+                http.Response.StatusCode = StatusCodes.Status403Forbidden;
+                await http.Response.WriteAsJsonAsync(
+                    new { error = "path_traversal_blocked", message = "非法请求路径已被服务器安全边界拦截。" },
+                    http.RequestAborted).ConfigureAwait(false);
+                return;
+            }
+
+            // 3. 本地回环监听下的 DNS Rebinding 越狱防护（拒绝恶意外部网页伪造域名指向 127.0.0.1 访问控制面）
+            if (isLoopbackBind)
+            {
+                string reqHost = http.Request.Host.Host;
+                if (!string.IsNullOrWhiteSpace(reqHost) && !IsLoopbackHostName(reqHost))
+                {
+                    http.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    await http.Response.WriteAsJsonAsync(
+                        new { error = "dns_rebinding_blocked", message = "拒绝非回环 Host 头访问本地受保护服务。" },
+                        http.RequestAborted).ConfigureAwait(false);
+                    return;
+                }
+            }
+
+            // 4. 阻断跨站 WebSocket 劫持 (CSWSH) 与跨源控制面/门户写操作（不影响标准 /mcp JSON-RPC 跨域宿主）
+            string originHeader = http.Request.Headers.Origin.ToString();
+            if (!string.IsNullOrWhiteSpace(originHeader))
+            {
+                PathString reqPath = http.Request.Path;
+                bool isProtectedWs = reqPath.StartsWithSegments("/ws");
+                bool isProtectedApiMutation = IsMutatingMethod(http.Request.Method) &&
+                                              (reqPath.StartsWithSegments("/api/v1") || reqPath.StartsWithSegments("/api/portal"));
+                if ((isProtectedWs || isProtectedApiMutation) && !IsSameOriginAuthority(originHeader, http.Request.Host))
+                {
+                    http.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    await http.Response.WriteAsJsonAsync(
+                        new { error = "cross_origin_blocked", message = "拒绝跨源请求访问受保护的控制面或实时通道。" },
+                        http.RequestAborted).ConfigureAwait(false);
+                    return;
+                }
+            }
+
+            await next().ConfigureAwait(false);
+        });
+    }
+
     public static void UseYgoWebSecurityAndRateLimiting(this WebApplication app)
     {
         app.UseAuthentication();
@@ -211,6 +276,30 @@ public static class WebSecurityExtensions
                     {
                         error = expired ? "session_expired" : (isPortalSurface ? "unauthenticated" : "unauthorized"),
                         message = isPortalSurface ? "请先注册或登录玩家账号。" : "请先登录管理面板。"
+                    },
+                    statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            if (!isPortalSurface && ctx.Principal.IsPortalSessionOnly)
+            {
+                OperationalStore store = http.RequestServices.GetRequiredService<OperationalStore>();
+                await store.AppendAuditAsync(
+                    "panel_user",
+                    ctx.Principal.UserId.ToString(),
+                    ctx.Principal.Username,
+                    http.Request.Path,
+                    "admin_surface_isolation",
+                    null,
+                    GetRemoteIpNormalized(http),
+                    "cross_surface_token_rejected",
+                    null,
+                    http.RequestAborted).ConfigureAwait(false);
+
+                return Results.Json(
+                    new
+                    {
+                        error = "cross_surface_token_rejected",
+                        message = "前台玩家门户会话令牌禁止跨端访问管理后台接口，请通过管理后台重新登录。"
                     },
                     statusCode: StatusCodes.Status401Unauthorized);
             }
@@ -328,4 +417,82 @@ public static class WebSecurityExtensions
         HttpMethods.IsPut(method) ||
         HttpMethods.IsPatch(method) ||
         HttpMethods.IsDelete(method);
+
+    private static bool IsLoopbackHostName(string? host)
+    {
+        if (string.IsNullOrWhiteSpace(host))
+            return true;
+
+        string trimmed = host.Trim().Trim('[', ']');
+        if (string.Equals(trimmed, "localhost", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(trimmed, "127.0.0.1", StringComparison.Ordinal) ||
+            string.Equals(trimmed, "::1", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return IPAddress.TryParse(trimmed, out IPAddress? ip) && IPAddress.IsLoopback(ip);
+    }
+
+    private static bool IsSameOriginAuthority(string originHeader, HostString requestHost)
+    {
+        if (!requestHost.HasValue)
+            return true;
+
+        if (!Uri.TryCreate(originHeader.Trim(), UriKind.Absolute, out Uri? originUri))
+            return false;
+
+        if (!string.Equals(originUri.Host, requestHost.Host, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (requestHost.Port.HasValue && !originUri.IsDefaultPort && originUri.Port != requestHost.Port.Value)
+            return false;
+
+        return true;
+    }
+
+    private static bool ContainsPathTraversalOrNullByte(string rawPath)
+    {
+        if (string.IsNullOrEmpty(rawPath))
+            return false;
+
+        if (rawPath.Contains('\\') ||
+            rawPath.Contains('\0') ||
+            rawPath.Contains("%00", StringComparison.OrdinalIgnoreCase) ||
+            rawPath.Contains("%2e", StringComparison.OrdinalIgnoreCase) ||
+            rawPath.Contains("%5c", StringComparison.OrdinalIgnoreCase) ||
+            rawPath.Contains("%2f", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        string[] segments = rawPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        foreach (string seg in segments)
+        {
+            if (seg == "..")
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsForbiddenSensitiveFileProbe(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        if (path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        string lower = path.ToLowerInvariant();
+        return lower.EndsWith(".db", StringComparison.Ordinal) ||
+               lower.EndsWith(".db-wal", StringComparison.Ordinal) ||
+               lower.EndsWith(".db-shm", StringComparison.Ordinal) ||
+               lower.EndsWith(".sqlite", StringComparison.Ordinal) ||
+               lower.EndsWith(".sqlite3", StringComparison.Ordinal) ||
+               lower.EndsWith(".cdb", StringComparison.Ordinal) ||
+               lower.EndsWith(".env", StringComparison.Ordinal) ||
+               lower.Contains("/.git/", StringComparison.Ordinal) ||
+               lower.EndsWith("/.git", StringComparison.Ordinal);
+    }
 }

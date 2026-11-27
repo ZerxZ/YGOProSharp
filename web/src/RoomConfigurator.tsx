@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { Button, Spinner } from '@heroui/react';
 import { Check, ChevronDown, ChevronUp, Copy, KeyRound, Plus, Sliders, Sparkles, X } from 'lucide-react';
 import { apiFetch } from './api';
 
@@ -224,9 +225,6 @@ export function RoomConfigurator({
   const [createdResult, setCreatedResult] = useState<any | null>(null);
 
   const isEmerald = theme === 'emerald';
-  const accentBtn = isEmerald
-    ? 'bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white shadow-lg shadow-emerald-950/50'
-    : 'bg-gradient-to-r from-indigo-600 to-violet-500 hover:from-indigo-500 hover:to-violet-400 text-white shadow-lg shadow-indigo-950/50';
   const accentBorder = isEmerald ? 'border-emerald-500/40' : 'border-indigo-500/40';
   const accentText = isEmerald ? 'text-emerald-300' : 'text-indigo-300';
   const inputCls = `w-full px-3 py-2 text-xs input-modern ${!isEmerald ? 'input-modern-indigo' : ''}`;
@@ -390,14 +388,15 @@ export function RoomConfigurator({
           </div>
         </div>
         {onClose && (
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-2 sm:px-3 sm:py-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 flex items-center gap-1 shrink-0 cursor-pointer"
+          <Button
+            size="sm"
+            variant="secondary"
+            onPress={onClose}
+            className="shrink-0"
           >
             <X className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">收起</span>
-          </button>
+          </Button>
         )}
       </div>
 
@@ -742,22 +741,24 @@ export function RoomConfigurator({
 
           <div className="w-full sm:w-auto">
             {canCreateOnServer ? (
-              <button
+              <Button
                 type="submit"
-                disabled={submitting}
-                className={`w-full sm:w-auto min-h-[40px] px-5 py-2.5 rounded-xl font-semibold flex items-center justify-center gap-1.5 transition active:scale-[0.99] cursor-pointer disabled:opacity-50 ${accentBtn}`}
+                variant="primary"
+                isPending={submitting}
+                className="w-full sm:w-auto"
               >
-                <Plus className="w-4 h-4" />
+                {submitting ? <Spinner color="current" size="sm" /> : <Plus className="w-4 h-4" />}
                 {submitting ? '正在创建...' : '立即在服务器创建房间'}
-              </button>
+              </Button>
             ) : (
-              <button
+              <Button
                 type="button"
-                onClick={onRequireAuth}
-                className={`w-full sm:w-auto min-h-[40px] px-5 py-2.5 rounded-xl font-semibold transition active:scale-[0.99] cursor-pointer ${accentBtn}`}
+                variant="primary"
+                onPress={onRequireAuth}
+                className="w-full sm:w-auto"
               >
                 登录 / 免费注册后一键建房 & 领 AI 令牌
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -846,24 +847,21 @@ export function QuickCopyPill({
 }) {
   const [copied, setCopied] = useState(false);
   return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        navigator.clipboard?.writeText(text);
-        setCopied(true);
-        onCopied?.();
-        setTimeout(() => setCopied(false), 1400);
-      }}
-      className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition active:scale-95 shrink-0 cursor-pointer ${
-        copied
-          ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-200'
-          : 'bg-slate-800/90 hover:bg-slate-700/90 border-slate-700/80 text-slate-200'
-      }`}
-      title={`点击复制: ${text}`}
-    >
-      {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-emerald-400" />}
-      <span>{copied ? '已复制' : label}</span>
-    </button>
+    <span onClick={(e) => e.stopPropagation()} className="inline-flex shrink-0">
+      <Button
+        size="sm"
+        variant={copied ? 'primary' : 'secondary'}
+        className="h-7 px-2.5 text-[11px]"
+        onPress={() => {
+          navigator.clipboard?.writeText(text);
+          setCopied(true);
+          onCopied?.();
+          setTimeout(() => setCopied(false), 1400);
+        }}
+      >
+        {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5 text-emerald-400" />}
+        <span>{copied ? '已复制' : label}</span>
+      </Button>
+    </span>
   );
 }

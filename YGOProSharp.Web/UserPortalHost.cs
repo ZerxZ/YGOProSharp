@@ -107,6 +107,7 @@ public sealed partial class UserPortalHost : IAsyncDisposable, IDisposable
         builder.AddYgoWebSecurityAndRateLimiting(_store, "ygp_panel_sid", _options.SessionCookieName);
 
         WebApplication app = builder.Build();
+        app.UseYgoAntiBypassHardening(bindHost);
         app.UseWebSockets(new WebSocketOptions
         {
             KeepAliveInterval = TimeSpan.FromSeconds(25)

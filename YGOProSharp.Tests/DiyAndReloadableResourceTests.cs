@@ -413,6 +413,43 @@ public sealed class DiyAndReloadableResourceTests
             AssertTrue(installedReport.TotalFiles >= 4);
             var installedConf = pkgMgr.TryReadInstalledPackageFile("pack-roundtrip", "strings.conf");
             AssertTrue(installedConf is not null && installedConf.Value.IsText && installedConf.Value.TextContent.Contains("!setname", StringComparison.Ordinal));
+
+            // 6. 回归验证：包含 64 位 category 位掩码 (> Int32.MaxValue) 与 uint32 高位符号位 (0x80000000) 的 DataEditorX 风格 .ypk 不抛 OverflowException
+            string highBitCdbPath = Path.Combine(tempDir, "highbit.cdb");
+            using (Microsoft.Data.Sqlite.SqliteConnection hbConn = new($"Data Source={highBitCdbPath};Pooling=False"))
+            {
+                hbConn.Open();
+                using var createCmd = hbConn.CreateCommand();
+                createCmd.CommandText =
+                    "CREATE TABLE datas (id INTEGER PRIMARY KEY, ot INTEGER, alias INTEGER, setcode INTEGER, type INTEGER, atk INTEGER, def INTEGER, level INTEGER, race INTEGER, attribute INTEGER, category INTEGER);" +
+                    "CREATE TABLE texts (id INTEGER PRIMARY KEY, name TEXT, desc TEXT, str1 TEXT);";
+                createCmd.ExecuteNonQuery();
+
+                using var insData = hbConn.CreateCommand();
+                insData.CommandText =
+                    "INSERT INTO datas VALUES (99887766, 4, 0, 4294967296, 2147483681, 2500, 2000, 2164785156, 2147483648, 32, 4611686020574871552);" +
+                    "INSERT INTO texts VALUES (99887766, '高维幻想龙', '64位category与uint32高位测试', '提示1');";
+                insData.ExecuteNonQuery();
+            }
+
+            using (MemoryStream highBitYpk = new())
+            {
+                using (ZipArchive hz = new(highBitYpk, ZipArchiveMode.Create, leaveOpen: true))
+                {
+                    ZipArchiveEntry cdbEntry = hz.CreateEntry("cards.cdb");
+                    using Stream es = cdbEntry.Open();
+                    byte[] cdbBytes = File.ReadAllBytes(highBitCdbPath);
+                    es.Write(cdbBytes, 0, cdbBytes.Length);
+                }
+
+                highBitYpk.Position = 0;
+                (_, DiyYpkInspectionReport hbReport) = pkgMgr.SavePreviewYpk(highBitYpk, "highbit_64.ypk");
+                AssertTrue(hbReport.IsSafe);
+                AssertEqual(1, hbReport.CardCount);
+                AssertEqual(99887766, hbReport.Cards[0].Card.Id);
+                AssertEqual(4611686020574871552L, hbReport.Cards[0].Card.Category);
+                AssertEqual(unchecked((int)2147483648L), hbReport.Cards[0].Card.Race);
+            }
         }
         finally
         {

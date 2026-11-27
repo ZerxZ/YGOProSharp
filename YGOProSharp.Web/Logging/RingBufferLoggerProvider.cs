@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 
 namespace YGOProSharp.Web.Logging;
@@ -11,9 +12,22 @@ public sealed record BufferedLogEntry(
 
 /// <summary>
 /// 线程安全的内存结构化日志环形缓冲区，供管理面板仪表盘与 WebSocket 实时日志流订阅。
+/// 内置敏感凭据脱敏器，确保持久化前或推送给面板端时绝不泄露一次性超管密码、会话令牌或 MCP 密钥。
 /// </summary>
-public sealed class LogRingBuffer
+public sealed partial class LogRingBuffer
 {
+    [GeneratedRegex(@"(?i)(One-time initial password:|Temporary reset password:)\s*\S+", RegexOptions.CultureInvariant)]
+    private static partial Regex BootstrapPasswordRegex();
+
+    [GeneratedRegex(@"\bygp_(?:mcp|sess|adm_sess|usr_sess)_[A-Za-z0-9_\-]+", RegexOptions.CultureInvariant)]
+    private static partial Regex YgoTokenRegex();
+
+    [GeneratedRegex(@"(?i)(Bearer\s+)[A-Za-z0-9_\-\.~+/=]{8,}", RegexOptions.CultureInvariant)]
+    private static partial Regex BearerHeaderRegex();
+
+    [GeneratedRegex(@"(?i)([?&](?:key|token|password|secret)=)[^&\s""']+", RegexOptions.CultureInvariant)]
+    private static partial Regex QuerySecretRegex();
+
     private readonly object _gate = new();
     private readonly BufferedLogEntry[] _buffer;
     private readonly int _capacity;
@@ -29,8 +43,22 @@ public sealed class LogRingBuffer
         _buffer = new BufferedLogEntry[_capacity];
     }
 
+    public static string RedactSensitiveText(string? message)
+    {
+        if (string.IsNullOrEmpty(message))
+            return string.Empty;
+
+        string redacted = BootstrapPasswordRegex().Replace(message, "$1 [REDACTED_BY_RING_BUFFER]");
+        redacted = YgoTokenRegex().Replace(redacted, static m =>
+            m.Value.Length <= 14 ? "ygp_****[REDACTED]" : $"{m.Value[..14]}****[REDACTED]");
+        redacted = BearerHeaderRegex().Replace(redacted, "$1[REDACTED]");
+        redacted = QuerySecretRegex().Replace(redacted, "$1[REDACTED]");
+        return redacted;
+    }
+
     public void Append(LogLevel level, string category, string message)
     {
+        string safeMessage = RedactSensitiveText(message);
         BufferedLogEntry entry;
         lock (_gate)
         {
@@ -40,7 +68,7 @@ public sealed class LogRingBuffer
                 DateTime.UtcNow,
                 level.ToString(),
                 category,
-                message);
+                safeMessage);
 
             _buffer[_writeIndex] = entry;
             _writeIndex = (_writeIndex + 1) % _capacity;

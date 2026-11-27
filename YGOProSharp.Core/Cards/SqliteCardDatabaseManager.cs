@@ -129,7 +129,7 @@ public sealed class SqliteCardDatabaseManager : ICardDatabaseManager
             RawCardFields f = ReadCardFields(reader);
             string name = reader.IsDBNull(10) ? string.Empty : reader.GetString(10);
             string desc = reader.IsDBNull(11) ? string.Empty : reader.GetString(11);
-            int category = reader.IsDBNull(12) ? 0 : reader.GetInt32(12);
+            long category = ReadInt64OrDefault(reader, 12);
 
             string[] strs = stringColCount > 0 ? new string[16] : [];
             if (stringColCount > 0)
@@ -412,16 +412,16 @@ public sealed class SqliteCardDatabaseManager : ICardDatabaseManager
 
     private static RawCardFields ReadCardFields(SqliteDataReader reader)
     {
-        int id = reader.GetInt32(0);
-        int ot = reader.GetInt32(1);
-        int alias = reader.GetInt32(2);
-        long setcode = reader.GetInt64(3);
-        int type = reader.GetInt32(4);
-        int levelInfo = reader.GetInt32(5);
-        int race = reader.GetInt32(6);
-        int attribute = reader.GetInt32(7);
-        int attack = reader.GetInt32(8);
-        int defense = reader.GetInt32(9);
+        int id = ReadUncheckedInt32(reader, 0);
+        int ot = ReadUncheckedInt32(reader, 1);
+        int alias = ReadUncheckedInt32(reader, 2);
+        long setcode = ReadInt64OrDefault(reader, 3);
+        int type = ReadUncheckedInt32(reader, 4);
+        int levelInfo = ReadUncheckedInt32(reader, 5);
+        int race = ReadUncheckedInt32(reader, 6);
+        int attribute = ReadUncheckedInt32(reader, 7);
+        int attack = ReadUncheckedInt32(reader, 8);
+        int defense = ReadUncheckedInt32(reader, 9);
 
         int level = levelInfo & 0xff;
         int lScale = (levelInfo >> 24) & 0xff;
@@ -435,6 +435,37 @@ public sealed class SqliteCardDatabaseManager : ICardDatabaseManager
         }
 
         return new RawCardFields(id, ot, alias, setcode, type, level, lScale, rScale, race, attribute, attack, defense, linkMarker);
+    }
+
+    private static int ReadUncheckedInt32(SqliteDataReader reader, int ordinal) =>
+        unchecked((int)ReadInt64OrDefault(reader, ordinal));
+
+    private static long ReadInt64OrDefault(SqliteDataReader reader, int ordinal)
+    {
+        if (reader.IsDBNull(ordinal))
+            return 0L;
+
+        Type fieldType = reader.GetFieldType(ordinal);
+        if (fieldType == typeof(long))
+            return reader.GetInt64(ordinal);
+        if (fieldType == typeof(double))
+            return unchecked((long)reader.GetDouble(ordinal));
+        if (fieldType == typeof(string))
+        {
+            string raw = reader.GetString(ordinal).Trim();
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+                ulong.TryParse(raw.AsSpan(2), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out ulong hexVal))
+            {
+                return unchecked((long)hexVal);
+            }
+
+            if (long.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out long decVal))
+                return decVal;
+            if (ulong.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out ulong uVal))
+                return unchecked((long)uVal);
+        }
+
+        return 0L;
     }
 
     private readonly record struct RawCardFields(

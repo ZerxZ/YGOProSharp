@@ -1555,6 +1555,9 @@ public sealed partial class DiyPackageManager
 
         foreach (string fullPath in Directory.EnumerateFiles(pkgDir, "*.*", SearchOption.AllDirectories))
         {
+            if (HasReparsePointInChain(pkgDir, fullPath))
+                continue;
+
             string rel = Path.GetRelativePath(pkgDir, fullPath).Replace('\\', '/');
             string fileName = Path.GetFileName(fullPath);
             string folder = Path.GetDirectoryName(rel)?.Replace('\\', '/') ?? string.Empty;
@@ -1864,15 +1867,24 @@ public sealed partial class DiyPackageManager
 
     private static void CopyDirectoryRecursively(string sourceDir, string destinationDir)
     {
+        if (IsReparsePoint(sourceDir))
+            throw new InvalidOperationException("Symbolic link or junction directory is forbidden in DIY storage.");
+
         Directory.CreateDirectory(destinationDir);
         foreach (string file in Directory.EnumerateFiles(sourceDir))
         {
+            if (IsReparsePoint(file))
+                throw new InvalidOperationException("Symbolic link file is forbidden in DIY storage.");
+
             string destFile = Path.Combine(destinationDir, Path.GetFileName(file));
             File.Copy(file, destFile, overwrite: true);
         }
 
         foreach (string subDir in Directory.EnumerateDirectories(sourceDir))
         {
+            if (IsReparsePoint(subDir))
+                throw new InvalidOperationException("Symbolic link or junction subdirectory is forbidden in DIY storage.");
+
             string destSub = Path.Combine(destinationDir, Path.GetFileName(subDir));
             CopyDirectoryRecursively(subDir, destSub);
         }
@@ -1880,6 +1892,9 @@ public sealed partial class DiyPackageManager
 
     private static void AddFileToZip(ZipArchive zip, string sourceFilePath, string entryName)
     {
+        if (IsReparsePoint(sourceFilePath))
+            throw new InvalidOperationException("Symbolic link file cannot be exported into .ypk archive.");
+
         ZipArchiveEntry entry = zip.CreateEntry(entryName, CompressionLevel.Optimal);
         using Stream entryStream = entry.Open();
         byte[] bytes = File.ReadAllBytes(sourceFilePath);
@@ -2080,7 +2095,43 @@ public sealed partial class DiyPackageManager
         if (!candidate.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Path traversal detected.");
 
+        if (HasReparsePointInChain(fullBase, candidate))
+            throw new InvalidOperationException("Symbolic link or reparse point traversal is forbidden.");
+
         return candidate;
+    }
+
+    private static bool IsReparsePoint(string path)
+    {
+        try
+        {
+            if (!File.Exists(path) && !Directory.Exists(path))
+                return false;
+            return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool HasReparsePointInChain(string baseDirectory, string targetPath)
+    {
+        string root = baseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (IsReparsePoint(root))
+            return true;
+
+        string? current = targetPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        while (!string.IsNullOrEmpty(current) &&
+               current.Length > root.Length &&
+               current.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        {
+            if (IsReparsePoint(current))
+                return true;
+            current = Path.GetDirectoryName(current);
+        }
+
+        return false;
     }
 
     private static string EnsureSafeChildPath(string baseDirectory, string relativePath, string requiredExtension)

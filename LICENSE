@@ -115,6 +115,12 @@ remain with their respective authors.
     License: MIT License
     Copyright (c) 2018-2025 Marijn Haverbeke and contributors
 
+16. HeroUI v3 (@heroui/react, @heroui/styles, React Aria) & HeroUI React MCP (@heroui/react-mcp)
+    Source: https://github.com/heroui-inc/heroui
+    Role: accessible React v3 compound UI components, Tailwind CSS v4 design tokens in web/, and project-scoped MCP documentation server
+    License: Apache License 2.0 (@heroui/react, @heroui/styles) / Apache License 2.0 (Adobe React Aria) / MIT License (@heroui/react-mcp)
+    Copyright (c) HeroUI Inc. and Adobe Inc.
+
 YGOProSharp is an experimental AI-assisted adaptation and refactoring project.
 It does not imply endorsement by the upstream projects and does not guarantee
 compatibility with upstream clients, scripts, databases, or runtime behavior.

@@ -137,6 +137,7 @@ public sealed partial class WebControlHost : IAsyncDisposable, IDisposable
         builder.AddYgoWebSecurityAndRateLimiting(_store, _options.SessionCookieName, "ygp_portal_sid");
 
         WebApplication app = builder.Build();
+        app.UseYgoAntiBypassHardening(bindHost);
         app.UseWebSockets(new WebSocketOptions
         {
             KeepAliveInterval = TimeSpan.FromSeconds(25)
@@ -310,7 +311,7 @@ public sealed partial class WebControlHost : IAsyncDisposable, IDisposable
             principal = await _store.ValidateSessionAsync(rawToken, ct).ConfigureAwait(false);
         }
 
-        if (principal is null || principal.MustChangePassword)
+        if (principal is null || principal.MustChangePassword || principal.IsPortalSessionOnly)
             return Results.Unauthorized();
 
         using WebSocket ws = await http.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);

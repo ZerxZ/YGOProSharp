@@ -1,5 +1,19 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
+  Alert,
+  Button,
+  Card,
+  Chip,
+  Input,
+  Label,
+  SearchField,
+  Surface,
+  Switch,
+  Tabs,
+  TextField,
+  Tooltip
+} from '@heroui/react';
+import {
   Gamepad2,
   Sparkles,
   Swords,
@@ -16,9 +30,8 @@ import {
   Layers,
   Users,
   Shield,
-  ChevronDown,
-  ChevronUp,
-  HelpCircle
+  HelpCircle,
+  BookOpen
 } from 'lucide-react';
 import { apiFetch, setPortalCsrfToken } from './api';
 import { QuickCopyPill, RoomConfigurator } from './RoomConfigurator';
@@ -26,7 +39,6 @@ import {
   StatBox,
   SmallCopy,
   LpVersusBar,
-  MobileBottomSheet,
   type PortalUser,
   type SurfaceInfo
 } from './portal/portalTypes';
@@ -37,11 +49,18 @@ import { ReplayReviewPanel } from './portal/ReplayReviewPanel';
 import { DeckSixDimRadarSection } from './portal/DeckSixDimRadarSection';
 import { PortalDiyWorkshop } from './portal/PortalDiyWorkshop';
 import { CodeMirrorEditor } from './components/CodeMirrorEditor';
+import {
+  ConsoleLogEntry,
+  WorkspaceInspectorTab,
+  WorkspaceSidebarGroup,
+  WorkspaceShell
+} from './components/WorkspaceShell';
 
 export type { SurfaceInfo } from './portal/portalTypes';
 
 type PortalTab = 'lobby' | 'ai_tokens' | 'replays' | 'diy_workshop' | 'catalog';
 type RoomFilter = 'all' | 'lobby' | 'duel' | 'tag' | 'random';
+type InspectorTabKey = 'room' | 'create' | 'guides';
 
 function RoomDetailBody({
   room,
@@ -59,12 +78,12 @@ function RoomDetailBody({
 
   return (
     <div className="space-y-3 text-xs">
-      <div className="glass-subcard rounded-2xl p-3 space-y-2.5">
+      <Surface variant="secondary" className="rounded-xl p-3 space-y-2.5 border border-border">
         <div className="flex items-center justify-between gap-2">
           <span className="font-bold text-sm text-emerald-300 truncate">{room.summary.roomName}</span>
-          <span className="text-[11px] text-slate-400 shrink-0">
+          <Chip size="sm" variant="soft" className="h-5 px-2 text-[10px]">
             MR{room.summary.masterRule} · {room.summary.banlistName || '无禁限'}
-          </span>
+          </Chip>
         </div>
 
         <LpVersusBar
@@ -76,15 +95,15 @@ function RoomDetailBody({
         />
 
         <div className="flex items-center justify-between gap-2 flex-wrap pt-0.5">
-          <span className="text-slate-400 truncate">
-            进房密码: <code className="font-mono text-white font-semibold">{hostPw}</code>
+          <span className="text-muted truncate">
+            进房密码: <code className="font-mono text-foreground font-semibold">{hostPw}</code>
           </span>
-          <QuickCopyPill text={hostPw} label="复制主机密码" onCopied={() => notify(`已复制主机密码：${hostPw}`)} />
+          <QuickCopyPill text={hostPw} label="复制口令" onCopied={() => notify(`已复制主机密码：${hostPw}`)} />
         </div>
 
         {room.summary.fullHostPassword && room.summary.fullHostPassword !== room.summary.roomName && (
-          <div className="flex items-center justify-between gap-2 flex-wrap pt-2 border-t border-slate-800/70">
-            <span className="text-slate-400 truncate">
+          <div className="flex items-center justify-between gap-2 flex-wrap pt-2 border-t border-separator">
+            <span className="text-muted truncate">
               完整规则串: <code className="font-mono text-emerald-300">{room.summary.fullHostPassword}</code>
             </span>
             <QuickCopyPill
@@ -94,7 +113,7 @@ function RoomDetailBody({
             />
           </div>
         )}
-      </div>
+      </Surface>
 
       {isTag && (
         <TagForceCommandPad
@@ -106,39 +125,36 @@ function RoomDetailBody({
         />
       )}
 
-      <div className="glass-subcard rounded-2xl p-3 space-y-1.5">
+      <Surface variant="secondary" className="rounded-xl p-3 space-y-1.5 border border-border">
         <div className="font-semibold text-sky-300 flex items-center justify-between">
           <span>观战席 ({(room.summary.observers || []).length} 人)</span>
-          <span className="text-[10px] text-slate-500">满座进房自动转观战</span>
+          <span className="text-[10px] text-muted">满座进房自动转观战</span>
         </div>
         {(room.summary.observers || []).length > 0 ? (
           <div className="flex flex-wrap gap-1.5 pt-0.5">
             {(room.summary.observers || []).map((obs: any, idx: number) => (
-              <span
-                key={`${obs.playerName}-${idx}`}
-                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-500/15 border border-sky-500/30 text-sky-200"
-              >
+              <Chip key={`${obs.playerName}-${idx}`} size="sm" variant="soft" color="accent" className="h-5 px-2 text-[11px]">
                 <Eye className="w-3 h-3" />
-                {obs.playerName}
-              </span>
+                <Chip.Label>{obs.playerName}</Chip.Label>
+              </Chip>
             ))}
           </div>
         ) : (
-          <div className="text-slate-500 text-[11px]">当前暂无观战观众</div>
+          <div className="text-muted text-[11px]">当前暂无观战观众</div>
         )}
-      </div>
+      </Surface>
 
       <div className="space-y-1.5">
-        <div className="font-semibold text-slate-300 flex items-center justify-between">
+        <div className="font-semibold text-foreground flex items-center justify-between">
           <span>实时公开战况与房间聊天</span>
-          <span className="text-[10px] text-slate-500">战争迷雾保护</span>
+          <span className="text-[10px] text-muted">战争迷雾保护</span>
         </div>
-        <div className="h-60 overflow-y-auto glass-subcard rounded-2xl p-3 space-y-1.5">
+        <Surface variant="secondary" className="h-64 overflow-y-auto rounded-xl p-3 space-y-1.5 border border-border">
           {(room.publicEvents || []).length === 0 && (room.chats || []).length === 0 && (
-            <div className="text-slate-500 text-center py-10">等待玩家出牌或发言...</div>
+            <div className="text-muted text-center py-10">等待玩家出牌或发言...</div>
           )}
           {(room.publicEvents || []).map((e: any, i: number) => (
-            <div key={`e-${i}`} className="text-emerald-300/95 leading-relaxed">
+            <div key={`e-${i}`} className="text-emerald-300/95 leading-relaxed font-mono text-[11px]">
               · {e.summary}
             </div>
           ))}
@@ -155,16 +171,16 @@ function RoomDetailBody({
                     : st === 0
                       ? { text: '0席', cls: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' }
                       : { text: '1席', cls: 'bg-sky-500/20 text-sky-300 border-sky-500/30' }
-                  : { text: '观战', cls: 'bg-slate-800 text-slate-400 border-slate-700' };
+                  : { text: '观战', cls: 'bg-surface-tertiary text-muted border-border' };
             return (
-              <div key={`c-${i}`} className="text-slate-200 flex items-baseline gap-1.5 flex-wrap leading-relaxed">
+              <div key={`c-${i}`} className="text-foreground flex items-baseline gap-1.5 flex-wrap leading-relaxed">
                 <span className={`px-1.5 py-0.2 rounded border text-[10px] font-semibold ${badge.cls}`}>{badge.text}</span>
                 <span className="text-amber-300 font-medium">{c.senderName}:</span>
                 <span>{c.message}</span>
               </div>
             );
           })}
-        </div>
+        </Surface>
       </div>
     </div>
   );
@@ -180,14 +196,14 @@ export function UserPortalApp({
   const [tab, setTab] = useState<PortalTab>('lobby');
   const [portalUser, setPortalUser] = useState<PortalUser | null>(null);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register' | 'password' | null>(null);
-  const [showConfigurator, setShowConfigurator] = useState<boolean>(() =>
-    typeof window !== 'undefined' ? window.innerWidth >= 768 : true
-  );
-  const [showRuleGuides, setShowRuleGuides] = useState<boolean>(false);
-  const [showConnectHelp, setShowConnectHelp] = useState<boolean>(false);
   const [roomFilter, setRoomFilter] = useState<RoomFilter>('all');
   const [roomKeyword, setRoomKeyword] = useState<string>('');
-  const [mobileRoomSheetOpen, setMobileRoomSheetOpen] = useState<boolean>(false);
+
+  // 右侧三标签分栏状态 (对齐 T3 Code 右侧面板)
+  const [inspectorOpen, setInspectorOpen] = useState<boolean>(true);
+  const [mobileInspectorOpen, setMobileInspectorOpen] = useState<boolean>(false);
+  const [inspectorTab, setInspectorTab] = useState<InspectorTabKey>('room');
+  const [consoleLogs, setConsoleLogs] = useState<ConsoleLogEntry[]>([]);
 
   const [overview, setOverview] = useState<any>(null);
   const [rooms, setRooms] = useState<any[]>([]);
@@ -215,6 +231,11 @@ export function UserPortalApp({
   const [tPlayer, setTPlayer] = useState('');
   const [tYdk, setTYdk] = useState('');
   const [tResultHash, setTResultHash] = useState('');
+
+  const pushLog = useCallback((source: string, message: string, level: ConsoleLogEntry['level'] = 'info') => {
+    const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    setConsoleLogs((prev) => [{ id: `${Date.now()}-${Math.random()}`, time, level, source, message }, ...prev].slice(0, 60));
+  }, []);
 
   const notify = useCallback((text: string, kind: 'ok' | 'err' = 'ok') => {
     setToast({ text, kind });
@@ -255,12 +276,14 @@ export function UserPortalApp({
   }, [notify]);
 
   const openRoomDetail = useCallback(
-    async (roomName: string, openSheetOnMobile = false) => {
+    async (roomName: string, openOnMobile = false) => {
       try {
         const res = await apiFetch(`/api/portal/rooms/${encodeURIComponent(roomName)}`);
         setSelectedRoom(res.room);
-        if (openSheetOnMobile) {
-          setMobileRoomSheetOpen(true);
+        setInspectorTab('room');
+        setInspectorOpen(true);
+        if (openOnMobile) {
+          setMobileInspectorOpen(true);
         }
       } catch (err) {
         notify(err instanceof Error ? err.message : '房间已结束', 'err');
@@ -288,9 +311,22 @@ export function UserPortalApp({
   useEffect(() => {
     refreshPortalAuth();
     loadLobby();
+    pushLog('YGOProSharp.Portal', '已连接实时决斗大厅工作台，等待对局广播...');
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${window.location.host}/ws/public`);
-    ws.onmessage = () => {
+    ws.onmessage = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.data);
+        const typeStr = String(parsed.type || 'lobby.sync');
+        const summaryStr =
+          parsed.payload?.summary ||
+          parsed.payload?.message ||
+          parsed.payload?.roomName ||
+          '大厅状态已同步';
+        pushLog(typeStr, String(summaryStr), typeStr.includes('chat') ? 'chat' : 'event');
+      } catch {
+        pushLog('ws.public', '收到大厅状态更新');
+      }
       loadLobby();
       if (selectedRoomNameRef.current) {
         openRoomDetail(selectedRoomNameRef.current, false);
@@ -300,7 +336,7 @@ export function UserPortalApp({
     return () => {
       wsRef.current?.close();
     };
-  }, [loadLobby, openRoomDetail, refreshPortalAuth]);
+  }, [loadLobby, openRoomDetail, pushLog, refreshPortalAuth]);
 
   const handlePortalLogout = async () => {
     try {
@@ -319,7 +355,7 @@ export function UserPortalApp({
       notify(`已关闭房间 ${roomName}`);
       if (selectedRoom?.summary?.roomName === roomName) {
         setSelectedRoom(null);
-        setMobileRoomSheetOpen(false);
+        setMobileInspectorOpen(false);
       }
       loadLobby();
     } catch (err) {
@@ -414,844 +450,956 @@ export function UserPortalApp({
   const gamePort = overview?.gamePort || surfaceInfo.gamePort || 7911;
   const fullServerAddr = `${gameHost}:${gamePort}`;
 
-  const navItems: { key: PortalTab; label: string; shortLabel: string; icon: React.ReactNode }[] = [
-    { key: 'lobby', label: '实时大厅 & 建房', shortLabel: '大厅', icon: <Gamepad2 className="w-4 h-4" /> },
-    { key: 'ai_tokens', label: '我的 AI 令牌', shortLabel: 'AI 令牌', icon: <KeyRound className="w-4 h-4" /> },
-    { key: 'replays', label: '战报 & 复盘剧场', shortLabel: '战报', icon: <Video className="w-4 h-4" /> },
-    { key: 'diy_workshop', label: 'DIY 制卡工坊', shortLabel: 'DIY 工坊', icon: <Palette className="w-4 h-4" /> },
-    { key: 'catalog', label: '卡查 · 雷达 · 赛事', shortLabel: '卡查/赛事', icon: <Sparkles className="w-4 h-4" /> }
+  const navItems: { key: PortalTab; label: string; shortLabel: string; icon: React.ReactNode; badge?: number }[] = [
+    {
+      key: 'lobby',
+      label: '实时大厅 & 房间',
+      shortLabel: '大厅',
+      icon: <Gamepad2 className="w-3.5 h-3.5" />,
+      badge: rooms.length
+    },
+    { key: 'ai_tokens', label: '我的 AI 令牌', shortLabel: 'AI 令牌', icon: <KeyRound className="w-3.5 h-3.5" /> },
+    {
+      key: 'replays',
+      label: '战报 & 复盘剧场',
+      shortLabel: '战报',
+      icon: <Video className="w-3.5 h-3.5" />,
+      badge: replays.length || undefined
+    },
+    {
+      key: 'diy_workshop',
+      label: 'DIY 制卡工坊',
+      shortLabel: 'DIY 工坊',
+      icon: <Palette className="w-3.5 h-3.5" />,
+      badge: diyPackages.length || undefined
+    },
+    { key: 'catalog', label: '卡查 · 雷达 · 赛事', shortLabel: '卡查/赛事', icon: <Sparkles className="w-3.5 h-3.5" /> }
   ];
 
-  return (
-    <div className="min-h-screen bg-slate-950 portal-ambient-bg text-slate-100 flex flex-col">
-      {/* 顶部毛玻璃导航栏 */}
-      <header className="border-b border-white/[0.08] bg-slate-950/80 backdrop-blur-xl sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-3 sm:px-4 h-14 sm:h-16 flex items-center justify-between gap-2 sm:gap-4">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center font-black text-white shadow-lg shadow-emerald-950/60 shrink-0">
-              Y
-            </div>
-            <div className="min-w-0">
-              <div className="font-bold text-sm sm:text-base flex items-center gap-2">
-                <span className="truncate">YGOProSharp</span>
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/25 shrink-0">
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      overview?.maintenanceMode ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'
-                    }`}
-                  />
-                  {overview?.maintenanceMode ? '维护中' : '在线'}
-                </span>
-              </div>
-              <div className="text-[11px] text-slate-400 truncate hidden sm:block">
-                玩家决斗大厅 · AI 搭档双打 · 赛后全视角复盘
-              </div>
-            </div>
-          </div>
+  const currentNavObj = navItems.find((n) => n.key === tab) || navItems[0];
 
-          {/* 桌面端胶囊导航 */}
-          <nav className="hidden md:flex items-center gap-1 p-1 rounded-2xl bg-slate-900/90 border border-white/[0.06]">
-            {navItems.map((item) => (
-              <button
-                key={item.key}
-                onClick={() => setTab(item.key)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
-                  tab === item.key
-                    ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950/60'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
-                }`}
-              >
-                {item.icon}
-                <span>{item.label}</span>
-              </button>
+  // 左侧栏活动分组 (对齐 T3 Code 的「运行中」/「已收尾」分组列表)
+  const sidebarGroups: WorkspaceSidebarGroup[] = useMemo(
+    () => [
+      {
+        id: 'running-rooms',
+        label: '运行中房间',
+        count: rooms.length,
+        defaultOpen: true,
+        emptyText: '当前暂无活动对局',
+        items: rooms.slice(0, 12).map((r) => {
+          const occupied = (r.slots || []).filter((s: any) => Boolean(s.playerName)).map((s: any) => s.playerName);
+          return {
+            id: r.roomName,
+            title: r.roomName,
+            meta: r.state === 'Lobby' ? '待开局' : `T${r.turnCount || 1}`,
+            subtitle: occupied.length > 0 ? occupied.join(' vs ') : '空席等待加入',
+            statusColor: r.state === 'Lobby' ? 'amber' : 'emerald',
+            active: selectedRoom?.summary?.roomName === r.roomName,
+            onSelect: () => {
+              setTab('lobby');
+              openRoomDetail(r.roomName, true);
+            }
+          };
+        })
+      },
+      {
+        id: 'finished-replays',
+        label: '已收尾战报',
+        count: replays.length,
+        defaultOpen: false,
+        emptyText: '暂无归档录像',
+        items: replays.slice(0, 8).map((rp) => ({
+          id: String(rp.id),
+          title: `${rp.replayCode} · ${rp.roomName}`,
+          meta: `${rp.turnCount}T`,
+          subtitle: (rp.players || []).map((p: any) => p.playerName).join(' vs '),
+          statusColor: 'muted' as const,
+          active: selectedReplayDetail?.duelId === rp.id,
+          onSelect: () => {
+            setTab('replays');
+            openReplayDetail(rp.id);
+          }
+        }))
+      }
+    ],
+    [openReplayDetail, openRoomDetail, replays, rooms, selectedReplayDetail?.duelId, selectedRoom?.summary?.roomName]
+  );
+
+  // 右侧多标签分栏 (对齐 T3 Code 右侧 Diff / Inspector 文件标签栏)
+  const inspectorTabs: WorkspaceInspectorTab[] = [
+    {
+      key: 'room',
+      label: selectedRoom ? `实况 · ${selectedRoom.summary.roomName}` : '房间实况',
+      icon: <Eye className="w-3.5 h-3.5 text-emerald-400" />,
+      content: selectedRoom ? (
+        <RoomDetailBody
+          room={selectedRoom}
+          portalUser={portalUser}
+          onRequireAuth={() => {
+            setMobileInspectorOpen(false);
+            setAuthModalMode('login');
+          }}
+          notify={notify}
+        />
+      ) : (
+        <div className="py-16 px-4 text-center space-y-3 text-xs text-muted">
+          <Eye className="w-7 h-7 text-muted/50 mx-auto" />
+          <div className="font-semibold text-foreground/85">尚未选中对局房间</div>
+          <p className="leading-relaxed">
+            点击中央或左侧任意房间查看实时 LP、观战席、公开战况与 2v2 搭档战术盘；或切换至上方「快速建房」标签开桌。
+          </p>
+          <Button
+            size="sm"
+            variant="secondary"
+            onPress={() => setInspectorTab('create')}
+          >
+            <Plus className="w-3.5 h-3.5" /> 切换至快速建房
+          </Button>
+        </div>
+      )
+    },
+    {
+      key: 'create',
+      label: '快速建房',
+      icon: <Plus className="w-3.5 h-3.5 text-amber-400" />,
+      content: (
+        <RoomConfigurator
+          apiEndpoint="/api/portal/rooms"
+          theme="emerald"
+          canCreateOnServer={Boolean(portalUser)}
+          canIssueAiTokens={Boolean(portalUser?.allowedMcpRolesToIssue?.includes('player'))}
+          banlists={overview?.banlists || []}
+          onRequireAuth={() => {
+            setMobileInspectorOpen(false);
+            setAuthModalMode('register');
+          }}
+          onCreated={(res) => {
+            loadLobby();
+            if (res?.room?.roomName) {
+              openRoomDetail(res.room.roomName, false);
+            }
+          }}
+          notify={notify}
+        />
+      )
+    },
+    {
+      key: 'guides',
+      label: '联机口令',
+      icon: <BookOpen className="w-3.5 h-3.5 text-sky-400" />,
+      content: (
+        <div className="space-y-3 text-xs">
+          <Surface variant="secondary" className="rounded-xl p-3 space-y-2 border border-border">
+            <div className="font-semibold text-emerald-300">MDPro3 / YGOPro 客户端三步直连</div>
+            <div className="space-y-1 text-muted leading-relaxed">
+              <div>① 打开游戏客户端进入「联机模式」</div>
+              <div>
+                ② 主机地址填 <code className="text-foreground font-mono">{gameHost}</code>，端口填{' '}
+                <code className="text-foreground font-mono">{gamePort}</code>
+              </div>
+              <div>③ 主机密码框粘贴房间名或下方规则前缀口令（输入 R#编号 可直接看云回放）</div>
+            </div>
+            <QuickCopyPill
+              text={fullServerAddr}
+              label={`复制地址 ${fullServerAddr}`}
+              onCopied={() => notify(`已复制服务器地址：${fullServerAddr}`)}
+            />
+          </Surface>
+
+          <div className="space-y-2">
+            <div className="font-semibold text-foreground px-0.5">免登录客户端建房规则前缀</div>
+            {(overview?.ruleGuides || []).map((g: any) => (
+              <Surface key={g.prefix} variant="secondary" className="rounded-xl p-3 space-y-1 border border-border">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono font-bold text-emerald-300">{g.prefix}</span>
+                  <SmallCopy text={g.prefix} label="复制" onCopied={() => notify(`已复制口令模板：${g.prefix}`)} />
+                </div>
+                <div className="font-semibold text-foreground">{g.title}</div>
+                <div className="text-[11px] text-muted leading-relaxed">{g.desc}</div>
+              </Surface>
             ))}
-          </nav>
-
-          {/* 右侧联机地址胶囊 + 账号操作 */}
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                navigator.clipboard?.writeText(fullServerAddr);
-                notify(`已复制游戏联机地址：${fullServerAddr}`);
-              }}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-800 text-[11px] font-mono text-emerald-300 cursor-pointer"
-              title="点击复制游戏服务器地址"
-            >
-              <span className="hidden lg:inline font-sans text-slate-400">联机:</span>
-              <span>{fullServerAddr}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowConnectHelp((v) => !v)}
-              className="p-2 rounded-xl bg-slate-900/80 hover:bg-slate-800 text-slate-400 hover:text-emerald-300 border border-slate-800 cursor-pointer"
-              title="如何用客户端联机进房？"
-            >
-              <HelpCircle className="w-4 h-4" />
-            </button>
-
-            {portalUser ? (
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setAuthModalMode('password')}
-                  className="px-2.5 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-xs font-semibold text-emerald-200 max-w-28 truncate cursor-pointer"
-                  title="修改个人账号或密码"
-                >
-                  {portalUser.displayName}
-                </button>
-                <button
-                  onClick={handlePortalLogout}
-                  className="p-2 rounded-xl text-slate-400 hover:text-rose-400 hover:bg-slate-800 cursor-pointer"
-                  title="退出登录"
-                >
-                  <LogOut className="w-4 h-4" />
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5">
-                <button
-                  onClick={() => setAuthModalMode('login')}
-                  className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-xs font-medium cursor-pointer"
-                >
-                  登录
-                </button>
-                <button
-                  onClick={() => setAuthModalMode('register')}
-                  className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-xs font-semibold text-white flex items-center gap-1 shadow-md shadow-emerald-950/50 cursor-pointer"
-                >
-                  <UserPlus className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">注册</span>
-                </button>
-              </div>
-            )}
-
-            {onNavigateAdmin && surfaceInfo.unifiedPortal !== false && (
-              <button
-                type="button"
-                onClick={onNavigateAdmin}
-                className="inline-flex p-2 rounded-xl bg-slate-900/80 hover:bg-indigo-950/60 border border-slate-800 text-slate-400 hover:text-indigo-300 cursor-pointer"
-                title="进入管理后台 (/admin)"
-              >
-                <Shield className="w-4 h-4" />
-              </button>
-            )}
           </div>
         </div>
+      )
+    }
+  ];
 
-        {/* 联机新手三步提示条 */}
-        {showConnectHelp && (
-          <div className="border-t border-emerald-500/25 bg-emerald-950/40 px-4 py-2.5 text-xs animate-fade-in">
-            <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-slate-200">
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                <span className="font-semibold text-emerald-300">客户端三步联机：</span>
-                <span>① 打开 MDPro3 / YGOPro「联机模式」</span>
-                <span>
-                  ② 主机地址填 <code className="text-emerald-300 font-mono">{gameHost}</code>，端口填{' '}
-                  <code className="text-emerald-300 font-mono">{gamePort}</code>
-                </span>
-                <span>③ 主机密码粘贴任意房间口令（输入 R#编号 可直接看云录像）</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowConnectHelp(false)}
-                className="text-emerald-300 hover:underline self-end sm:self-auto shrink-0 cursor-pointer"
+  const openQuickCreateRoom = () => {
+    setInspectorTab('create');
+    setInspectorOpen(true);
+    setMobileInspectorOpen(true);
+  };
+
+  return (
+    <WorkspaceShell
+      themeClass="portal-theme"
+      ambientClass="portal-ambient-bg"
+      monogram="YP"
+      monogramClass="bg-emerald-500/20 text-emerald-300 border-emerald-500/35"
+      workspaceName="YGOProSharp"
+      workspaceBranchTag="main"
+      breadcrumbCurrent={currentNavObj.label}
+      statusBadge={
+        <Chip
+          size="sm"
+          variant="soft"
+          color={overview?.maintenanceMode ? 'warning' : 'success'}
+          className="h-5 px-2 text-[10px]"
+        >
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              overview?.maintenanceMode ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'
+            }`}
+          />
+          <Chip.Label>{overview?.maintenanceMode ? '维护中' : `在线 ${overview?.clientCount ?? 0}`}</Chip.Label>
+        </Chip>
+      }
+      navItems={navItems}
+      activeNavKey={tab}
+      onSelectNav={(k) => {
+        setTab(k as PortalTab);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }}
+      sidebarQuickAction={{
+        label: '快速创建房间 / 生成口令',
+        icon: <Plus className="w-3.5 h-3.5" />,
+        onPress: openQuickCreateRoom
+      }}
+      sidebarGroups={sidebarGroups}
+      sidebarFooterTop={
+        portalUser ? (
+          <div className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg bg-surface border border-border/80 text-xs">
+            <button
+              type="button"
+              onClick={() => setAuthModalMode('password')}
+              className="min-w-0 text-left truncate cursor-pointer"
+              title="点击修改个人用户名或密码"
+            >
+              <div className="font-semibold text-foreground truncate">{portalUser.displayName}</div>
+              <div className="text-[10px] text-muted font-mono truncate">@{portalUser.username}</div>
+            </button>
+            <Tooltip delay={200}>
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                aria-label="退出登录"
+                className="h-6 w-6 min-w-0 text-muted data-[hovered=true]:text-danger"
+                onPress={handlePortalLogout}
               >
-                知道了
-              </button>
+                <LogOut className="w-3.5 h-3.5" />
+              </Button>
+              <Tooltip.Content>
+                <p className="text-xs">退出玩家账号</p>
+              </Tooltip.Content>
+            </Tooltip>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-1.5">
+            <Button size="sm" variant="secondary" className="h-7 text-xs" onPress={() => setAuthModalMode('login')}>
+              登录
+            </Button>
+            <Button size="sm" variant="primary" className="h-7 text-xs" onPress={() => setAuthModalMode('register')}>
+              <UserPlus className="w-3 h-3" /> 注册
+            </Button>
+          </div>
+        )
+      }
+      sidebarUtilityLeft={
+        <Tooltip delay={200}>
+          <button
+            type="button"
+            onClick={() => {
+              navigator.clipboard?.writeText(fullServerAddr);
+              notify(`已复制游戏联机地址：${fullServerAddr}`);
+            }}
+            className="text-[11px] font-mono text-emerald-400 hover:underline truncate cursor-pointer"
+          >
+            {fullServerAddr}
+          </button>
+          <Tooltip.Content>
+            <p className="text-xs">点击复制客户端联机地址</p>
+          </Tooltip.Content>
+        </Tooltip>
+      }
+      sidebarUtilityRight={
+        <>
+          <Tooltip delay={200}>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label="联机口令速查"
+              className="h-7 w-7 min-w-0 text-muted data-[hovered=true]:text-foreground"
+              onPress={() => {
+                setInspectorTab('guides');
+                setInspectorOpen(true);
+                setMobileInspectorOpen(true);
+              }}
+            >
+              <HelpCircle className="w-3.5 h-3.5" />
+            </Button>
+            <Tooltip.Content>
+              <p className="text-xs">联机指引与规则前缀速查</p>
+            </Tooltip.Content>
+          </Tooltip>
+
+          {onNavigateAdmin && surfaceInfo.unifiedPortal !== false && (
+            <Tooltip delay={200}>
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                aria-label="进入管理后台"
+                className="h-7 w-7 min-w-0 text-muted data-[hovered=true]:text-indigo-400"
+                onPress={onNavigateAdmin}
+              >
+                <Shield className="w-3.5 h-3.5" />
+              </Button>
+              <Tooltip.Content>
+                <p className="text-xs">管理控制台 (/admin)</p>
+              </Tooltip.Content>
+            </Tooltip>
+          )}
+        </>
+      }
+      headerRightActions={
+        <div className="flex items-center gap-1.5">
+          <Button size="sm" variant="primary" className="h-7 px-2.5 text-xs" onPress={openQuickCreateRoom}>
+            <Plus className="w-3.5 h-3.5" />
+            <span>新建房间</span>
+          </Button>
+
+          {!portalUser && (
+            <Button
+              size="sm"
+              variant="secondary"
+              className="hidden sm:inline-flex h-7 px-2.5 text-xs"
+              onPress={() => setAuthModalMode('login')}
+            >
+              登录
+            </Button>
+          )}
+        </div>
+      }
+      inspectorTabs={tab === 'lobby' ? inspectorTabs : []}
+      activeInspectorKey={inspectorTab}
+      onChangeInspectorKey={(k) => setInspectorTab(k as InspectorTabKey)}
+      inspectorOpen={inspectorOpen}
+      onInspectorOpenChange={setInspectorOpen}
+      mobileInspectorOpen={mobileInspectorOpen}
+      onMobileInspectorOpenChange={setMobileInspectorOpen}
+      consoleLogs={consoleLogs}
+      consoleStatusText={`Duel TCP ${fullServerAddr} · Rooms ${rooms.length} · Presets ${overview?.presetDeckCount ?? 0}`}
+      modals={
+        authModalMode ? (
+          <PortalAuthModal
+            mode={authModalMode}
+            currentUser={portalUser}
+            onSwitchMode={setAuthModalMode}
+            onClose={() => setAuthModalMode(null)}
+            onAuthenticated={(u, msg) => {
+              setPortalCsrfToken(u.csrfToken);
+              setPortalUser(u);
+              setAuthModalMode(null);
+              notify(msg);
+            }}
+          />
+        ) : null
+      }
+      toast={
+        toast ? (
+          <div className="fixed bottom-16 md:bottom-10 right-4 left-4 sm:left-auto sm:max-w-md z-50 animate-slide-up">
+            <Alert status={toast.kind === 'ok' ? 'success' : 'danger'} className="shadow-2xl">
+              <Alert.Indicator />
+              <Alert.Content>
+                <Alert.Title className="text-xs">{toast.text}</Alert.Title>
+              </Alert.Content>
+            </Alert>
+          </div>
+        ) : null
+      }
+    >
+      {tab === 'lobby' && (
+        <div className="space-y-4">
+          {/* 顶部紧凑四指标栏 */}
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-2.5">
+            <StatBox
+              title="游戏联机地址"
+              value={overview?.maintenanceMode ? '维护拦截中' : fullServerAddr}
+              sub={overview?.maintenanceReason || '兼容 MDPro3 / YGOPro 直连'}
+              icon={<Gamepad2 className="w-3.5 h-3.5" />}
+              accent={overview?.maintenanceMode ? 'amber' : 'emerald'}
+            />
+            <StatBox
+              title="实时在线玩家"
+              value={`${overview?.clientCount ?? 0} 人`}
+              sub={`活动房间 ${overview?.roomCount ?? 0} 个`}
+              icon={<Users className="w-3.5 h-3.5" />}
+              accent="sky"
+            />
+            <StatBox
+              title="随机盲盒主题池"
+              value={`${overview?.presetDeckCount ?? 0} 套`}
+              sub="RD# 盲盒 · CHAOS# 混沌即玩"
+              icon={<Sparkles className="w-3.5 h-3.5" />}
+              accent="purple"
+            />
+            <StatBox
+              title="DIY 扩展卡库"
+              value={`${overview?.enabledDiyPackageCount ?? 0} 包启用`}
+              sub={`Catalog v${overview?.catalogVersion ?? 1}`}
+              icon={<Layers className="w-3.5 h-3.5" />}
+              accent="indigo"
+            />
+          </div>
+
+          {/* 房间筛选 Tabs + 搜索栏 */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <Tabs
+              selectedKey={roomFilter}
+              onSelectionChange={(k) => setRoomFilter(String(k) as RoomFilter)}
+              className="max-w-full"
+            >
+              <Tabs.ListContainer>
+                <Tabs.List aria-label="房间模式筛选">
+                  <Tabs.Tab id="all" className="text-xs px-2.5">
+                    全部 ({rooms.length})
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                  <Tabs.Tab id="lobby" className="text-xs px-2.5">
+                    等待加入
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                  <Tabs.Tab id="duel" className="text-xs px-2.5">
+                    决斗中
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                  <Tabs.Tab id="tag" className="text-xs px-2.5">
+                    2v2 双打
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                  <Tabs.Tab id="random" className="text-xs px-2.5">
+                    随机盲盒
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                </Tabs.List>
+              </Tabs.ListContainer>
+            </Tabs>
+
+            <div className="flex items-center gap-2">
+              <SearchField
+                aria-label="搜索房间名或玩家"
+                variant="secondary"
+                value={roomKeyword}
+                onChange={setRoomKeyword}
+                className="flex-1 sm:w-48"
+              >
+                <SearchField.Group>
+                  <SearchField.SearchIcon />
+                  <SearchField.Input placeholder="搜房名或玩家..." className="text-xs" />
+                  <SearchField.ClearButton />
+                </SearchField.Group>
+              </SearchField>
+
+              <Tooltip delay={200}>
+                <Button isIconOnly size="sm" variant="secondary" aria-label="刷新房间列表" onPress={loadLobby}>
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </Button>
+                <Tooltip.Content>
+                  <p className="text-xs">刷新实时房间列表</p>
+                </Tooltip.Content>
+              </Tooltip>
             </div>
           </div>
-        )}
-      </header>
 
-      {authModalMode && (
-        <PortalAuthModal
-          mode={authModalMode}
-          currentUser={portalUser}
-          onSwitchMode={setAuthModalMode}
-          onClose={() => setAuthModalMode(null)}
-          onAuthenticated={(u, msg) => {
-            setPortalCsrfToken(u.csrfToken);
-            setPortalUser(u);
-            setAuthModalMode(null);
-            notify(msg);
-          }}
+          {/* 房间卡片网格 */}
+          {filteredRooms.length === 0 ? (
+            <Card className="rounded-xl p-10 text-center items-center space-y-2.5">
+              <Swords className="w-7 h-7 text-muted mx-auto" />
+              <Card.Title className="text-sm font-semibold">
+                {rooms.length === 0 ? '当前暂无活动房间' : '没有符合筛选条件的房间'}
+              </Card.Title>
+              <Card.Description className="text-xs max-w-md">
+                点击右上角「新建房间」一键选择盲盒、2v2 双打或 AI 斗蛐蛐模板开桌，或在游戏客户端直连{' '}
+                <code className="font-mono text-emerald-400">{fullServerAddr}</code> 输入口令建房。
+              </Card.Description>
+              <div className="flex items-center gap-2 pt-1">
+                <Button size="sm" variant="primary" onPress={openQuickCreateRoom}>
+                  <Plus className="w-3.5 h-3.5" /> 立即新建房间
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onPress={() => {
+                    setInspectorTab('guides');
+                    setInspectorOpen(true);
+                    setMobileInspectorOpen(true);
+                  }}
+                >
+                  查看规则口令表
+                </Button>
+              </div>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {filteredRooms.map((r) => {
+                const observers: any[] = r.observers || [];
+                const hostPw = r.hostPassword || r.roomName;
+                const isSelected = selectedRoom?.summary?.roomName === r.roomName;
+                const isTag = r.mode === 2;
+                return (
+                  <div
+                    key={r.roomName}
+                    onClick={() => openRoomDetail(r.roomName, true)}
+                    className="cursor-pointer transition active:scale-[0.996]"
+                  >
+                    <Card
+                      className={`rounded-xl p-3.5 space-y-2.5 transition ${
+                        isSelected
+                          ? 'border-accent ring-1 ring-accent/35'
+                          : 'hover:border-foreground/25'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className={`w-2 h-2 rounded-full shrink-0 ${
+                              r.state === 'Lobby' ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'
+                            }`}
+                          />
+                          <span className="font-bold text-sm text-foreground truncate">{r.roomName}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {r.randomDeckMode && r.randomDeckMode !== 'None' && (
+                            <Chip size="sm" variant="soft" className="h-5 px-2 text-[10px]">
+                              {r.randomDeckMode}
+                            </Chip>
+                          )}
+                          <Chip
+                            size="sm"
+                            variant="soft"
+                            color={r.state === 'Lobby' ? 'warning' : 'success'}
+                            className="h-5 px-2 text-[10px]"
+                          >
+                            {isTag ? '2v2 双打' : r.mode === 1 ? 'Match' : '1v1'} ·{' '}
+                            {r.state === 'Lobby' ? '待开局' : '决斗中'}
+                          </Chip>
+                        </div>
+                      </div>
+
+                      <LpVersusBar
+                        team0Lp={r.team0Lp}
+                        team1Lp={r.team1Lp}
+                        startLp={r.startLp}
+                        turnCount={r.turnCount}
+                        isTag={isTag}
+                      />
+
+                      <Surface variant="secondary" className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-xs border border-border/70">
+                        <span className="text-muted truncate">
+                          口令: <code className="text-emerald-400 font-mono font-bold">{hostPw}</code>
+                        </span>
+                        <QuickCopyPill
+                          text={hostPw}
+                          label="复制进房"
+                          onCopied={() => notify(`已复制房间主机密码：${hostPw}`)}
+                        />
+                      </Surface>
+
+                      <div className="grid grid-cols-2 gap-1.5 text-xs">
+                        {r.slots.map((s: any) => (
+                          <div
+                            key={s.seatIndex}
+                            className={`px-2.5 py-1.5 rounded-lg border flex items-center justify-between gap-1 ${
+                              s.playerName
+                                ? 'bg-surface-secondary border-border text-foreground'
+                                : 'bg-background/40 border-dashed border-border/70 text-muted'
+                            }`}
+                          >
+                            <span className="truncate">
+                              <span className="text-muted font-mono mr-1">#{s.seatIndex}</span>
+                              {s.playerName || '空席待入'}
+                            </span>
+                            {s.isHost ? (
+                              <span className="text-amber-400 text-[10px] shrink-0">房主</span>
+                            ) : s.playerName && r.state === 'Lobby' ? (
+                              <span className={`text-[10px] shrink-0 ${s.isReady ? 'text-emerald-400' : 'text-muted'}`}>
+                                {s.isReady ? '就绪' : '准备中'}
+                              </span>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="pt-2 border-t border-separator flex items-center justify-between gap-2 text-[11px] text-muted">
+                        <div className="flex items-center gap-1 truncate">
+                          <Eye className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                          <span>观众 {r.observerCount ?? observers.length}</span>
+                          {observers.length > 0 && (
+                            <span className="text-foreground/80 truncate">
+                              · {observers.map((o: any) => o.playerName).join('、')}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                          <span className="lg:hidden text-emerald-400 font-medium">查看实况 →</span>
+                          {portalUser &&
+                            r.ownerUsername &&
+                            portalUser.username.toLowerCase() === String(r.ownerUsername).toLowerCase() && (
+                              <Button
+                                size="sm"
+                                variant="danger-soft"
+                                className="h-6 px-2 text-[11px]"
+                                onPress={() => closeOwnRoom(r.roomName)}
+                              >
+                                关房
+                              </Button>
+                            )}
+                        </div>
+                      </div>
+                    </Card>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'ai_tokens' && (
+        <PortalAiTokenCenter
+          user={portalUser}
+          mcpPortHint={surfaceInfo.mcpPortHint}
+          onRequireAuth={() => setAuthModalMode('register')}
+          notify={notify}
         />
       )}
 
-      {/* 悬浮通知（手机端自动避让底部 Tab 栏） */}
-      {toast && (
-        <div
-          className={`fixed bottom-20 md:bottom-6 right-4 left-4 sm:left-auto z-50 px-4 py-3 rounded-2xl shadow-2xl border text-xs sm:text-sm font-medium backdrop-blur-xl animate-slide-up ${
-            toast.kind === 'ok'
-              ? 'bg-emerald-950/90 border-emerald-500/45 text-emerald-100'
-              : 'bg-rose-950/90 border-rose-500/45 text-rose-100'
-          }`}
-        >
-          {toast.text}
-        </div>
-      )}
-
-      {/* 手机端房间详情底部抽屉 */}
-      <MobileBottomSheet
-        open={mobileRoomSheetOpen && Boolean(selectedRoom)}
-        title={selectedRoom ? `房间实况 · ${selectedRoom.summary.roomName}` : '房间详情'}
-        subtitle={
-          selectedRoom
-            ? `${selectedRoom.summary.mode === 2 ? '2v2 双打' : selectedRoom.summary.mode === 1 ? 'Match BO3' : '1v1 单局'} · ${selectedRoom.summary.state}`
-            : undefined
-        }
-        onClose={() => setMobileRoomSheetOpen(false)}
-      >
-        {selectedRoom && (
-          <RoomDetailBody
-            room={selectedRoom}
-            portalUser={portalUser}
-            onRequireAuth={() => {
-              setMobileRoomSheetOpen(false);
-              setAuthModalMode('login');
-            }}
-            notify={notify}
-          />
-        )}
-      </MobileBottomSheet>
-
-      <main className="max-w-7xl w-full mx-auto px-3 sm:px-4 pt-4 sm:pt-6 pb-mobile-nav flex-1 space-y-5">
-        {tab === 'lobby' && (
-          <>
-            {/* 顶部四宫格状态卡片 */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
-              <StatBox
-                title="游戏联机地址"
-                value={overview?.maintenanceMode ? '维护拦截中' : fullServerAddr}
-                sub={overview?.maintenanceReason || '兼容 MDPro3 / YGOPro 直连'}
-                icon={<Gamepad2 className="w-4 h-4" />}
-                accent={overview?.maintenanceMode ? 'amber' : 'emerald'}
-              />
-              <StatBox
-                title="实时在线玩家"
-                value={`${overview?.clientCount ?? 0} 人`}
-                sub={`活动房间 ${overview?.roomCount ?? 0} 个`}
-                icon={<Users className="w-4 h-4" />}
-                accent="sky"
-              />
-              <StatBox
-                title="随机盲盒主题池"
-                value={`${overview?.presetDeckCount ?? 0} 套`}
-                sub="RD# 盲盒 · CHAOS# 混沌即玩"
-                icon={<Sparkles className="w-4 h-4" />}
-                accent="purple"
-              />
-              <StatBox
-                title="DIY 扩展卡库"
-                value={`${overview?.enabledDiyPackageCount ?? 0} 包启用`}
-                sub={`Catalog v${overview?.catalogVersion ?? 1}`}
-                icon={<Layers className="w-4 h-4" />}
-                accent="indigo"
-              />
-            </div>
-
-            {/* 建房配置面板（手机端默认折叠为醒目横幅，保证首屏直接看到房间列表） */}
-            {showConfigurator ? (
-              <RoomConfigurator
-                apiEndpoint="/api/portal/rooms"
-                theme="emerald"
-                canCreateOnServer={Boolean(portalUser)}
-                canIssueAiTokens={Boolean(portalUser?.allowedMcpRolesToIssue?.includes('player'))}
-                banlists={overview?.banlists || []}
-                onRequireAuth={() => setAuthModalMode('register')}
-                onCreated={(res) => {
-                  loadLobby();
-                  if (res?.room?.roomName) openRoomDetail(res.room.roomName, false);
-                }}
-                onClose={() => setShowConfigurator(false)}
+      {tab === 'replays' && (
+        <div className="space-y-4 animate-fade-in">
+          <div ref={replayTheaterRef}>
+            {selectedReplayDetail && (
+              <ReplayReviewPanel
+                detail={selectedReplayDetail}
+                onClose={() => setSelectedReplayDetail(null)}
                 notify={notify}
               />
-            ) : (
-              <div className="glass-card border border-emerald-500/30 rounded-2xl p-3.5 sm:px-5 sm:py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="space-y-0.5">
-                  <div className="font-bold text-sm text-emerald-300 flex items-center gap-1.5">
-                    <Sparkles className="w-4 h-4 text-amber-400" /> 想自己开一桌盲盒娱乐、2v2 双打或 AI 斗蛐蛐？
-                  </div>
-                  <div className="text-[11px] text-slate-400">
-                    支持一键选择玩法模板、自动生成进房口令，并顺带签发本房专属外部 AI 对战令牌
-                  </div>
-                </div>
-                <button
-                  onClick={() => setShowConfigurator(true)}
-                  className="w-full sm:w-auto min-h-[40px] px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white text-xs font-semibold flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-950/50 shrink-0 cursor-pointer"
-                >
-                  <Plus className="w-4 h-4" /> 创建房间 / 生成口令
-                </button>
-              </div>
             )}
+          </div>
 
-            {/* 可折叠客户端口令速查 */}
-            {overview?.ruleGuides && (
-              <div className="glass-card rounded-2xl px-4 py-3 space-y-3">
-                <button
-                  type="button"
-                  onClick={() => setShowRuleGuides((v) => !v)}
-                  className="w-full flex items-center justify-between text-xs font-semibold text-slate-200 cursor-pointer"
-                >
-                  <span className="flex items-center gap-2">
-                    <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 text-[11px]">速查</span>
-                    <span>客户端建房规则前缀口令表（免网页登录，直接粘贴到游戏主机密码框即可生效）</span>
-                  </span>
-                  {showRuleGuides ? (
-                    <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" />
-                  ) : (
-                    <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
-                  )}
-                </button>
-
-                {showRuleGuides && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 pt-1 animate-fade-in">
-                    {overview.ruleGuides.map((g: any) => (
-                      <div key={g.prefix} className="glass-subcard rounded-xl p-3 text-xs space-y-1">
-                        <div className="flex items-center justify-between">
-                          <span className="font-mono font-bold text-emerald-300">{g.prefix}</span>
-                          <SmallCopy text={g.prefix} onCopied={() => notify(`已复制口令模板：${g.prefix}`)} />
-                        </div>
-                        <div className="font-semibold text-slate-200">{g.title}</div>
-                        <div className="text-[11px] text-slate-400 leading-relaxed">{g.desc}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+          <Card className="rounded-xl p-4 sm:p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm sm:text-base font-bold flex items-center gap-2">
+                  <Video className="w-4 h-4 text-emerald-400" /> 全服历史对局战报 & AI 赛后复盘剧场
+                </h2>
+                <p className="text-[11px] text-muted mt-0.5">
+                  游戏客户端输入 <code className="text-emerald-400 font-mono">R#编号</code> 可直接观看云回放；点击「AI 复盘详情」查看 0~100 发挥评分与时间轴
+                </p>
               </div>
-            )}
-
-            {/* 房间列表 + 桌面端右侧常驻实况栏 */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-              <div className="lg:col-span-8 space-y-3">
-                {/* 筛选与搜索工具条 */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                  <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
-                    {(
-                      [
-                        ['all', `全部 (${rooms.length})`],
-                        ['lobby', '等待加入'],
-                        ['duel', '决斗中'],
-                        ['tag', '2v2 双打'],
-                        ['random', '随机盲盒']
-                      ] as [RoomFilter, string][]
-                    ).map(([key, label]) => (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => setRoomFilter(key)}
-                        className={`px-3 py-1.5 rounded-full text-xs font-medium shrink-0 transition cursor-pointer ${
-                          roomFilter === key
-                            ? 'bg-emerald-600 text-white shadow-sm'
-                            : 'glass-card text-slate-300 hover:text-white'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <div className="relative flex-1 sm:w-44">
-                      <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                      <input
-                        value={roomKeyword}
-                        onChange={(e) => setRoomKeyword(e.target.value)}
-                        placeholder="搜房名或玩家..."
-                        className="w-full pl-8 pr-3 py-1.5 text-xs input-modern"
-                      />
-                    </div>
-                    <button
-                      onClick={loadLobby}
-                      className="p-2 rounded-xl glass-card hover:bg-slate-800 text-slate-300 cursor-pointer"
-                      title="刷新房间列表"
-                    >
-                      <RefreshCw className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-
-                {filteredRooms.length === 0 ? (
-                  <div className="glass-card rounded-2xl p-10 text-center space-y-2">
-                    <Swords className="w-8 h-8 text-slate-600 mx-auto" />
-                    <div className="text-sm font-semibold text-slate-300">
-                      {rooms.length === 0 ? '当前暂无活动房间' : '没有符合筛选条件的房间'}
-                    </div>
-                    <div className="text-xs text-slate-400">
-                      可在上方一键创建房间，或在客户端连入{' '}
-                      <code className="font-mono text-emerald-300">{fullServerAddr}</code> 输入口令直接开房！
-                    </div>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {filteredRooms.map((r) => {
-                      const observers: any[] = r.observers || [];
-                      const hostPw = r.hostPassword || r.roomName;
-                      const isSelected = selectedRoom?.summary?.roomName === r.roomName;
-                      const isTag = r.mode === 2;
-                      return (
-                        <div
-                          key={r.roomName}
-                          onClick={() => openRoomDetail(r.roomName, true)}
-                          className={`glass-card rounded-2xl p-4 space-y-3 cursor-pointer transition active:scale-[0.995] ${
-                            isSelected
-                              ? 'border-emerald-500/70 ring-1 ring-emerald-500/30'
-                              : 'hover:border-emerald-500/40'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <span
-                                className={`w-2 h-2 rounded-full shrink-0 ${
-                                  r.state === 'Lobby' ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'
-                                }`}
-                              />
-                              <span className="font-bold text-sm text-slate-100 truncate">{r.roomName}</span>
-                            </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              {r.randomDeckMode && r.randomDeckMode !== 'None' && (
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-purple-500/20 border border-purple-500/30 text-purple-200">
-                                  {r.randomDeckMode}
-                                </span>
-                              )}
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
-                                {isTag ? '2v2 双打' : r.mode === 1 ? 'Match' : '1v1'} ·{' '}
-                                {r.state === 'Lobby' ? '待开局' : '决斗中'}
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* 直观双阵营 LP 血条 */}
-                          <LpVersusBar
-                            team0Lp={r.team0Lp}
-                            team1Lp={r.team1Lp}
-                            startLp={r.startLp}
-                            turnCount={r.turnCount}
-                            isTag={isTag}
-                          />
-
-                          {/* 一键复制进房口令条 */}
-                          <div className="flex items-center justify-between gap-2 glass-subcard px-3 py-1.5 rounded-xl text-xs">
-                            <span className="text-slate-400 truncate">
-                              口令: <code className="text-emerald-300 font-mono font-bold">{hostPw}</code>
-                            </span>
-                            <QuickCopyPill
-                              text={hostPw}
-                              label="复制进房"
-                              onCopied={() => notify(`已复制房间主机密码：${hostPw}`)}
-                            />
-                          </div>
-
-                          {/* 选手席位网格 */}
-                          <div className="grid grid-cols-2 gap-1.5 text-xs">
-                            {r.slots.map((s: any) => (
-                              <div
-                                key={s.seatIndex}
-                                className={`px-2.5 py-1.5 rounded-lg border flex items-center justify-between gap-1 ${
-                                  s.playerName
-                                    ? 'bg-slate-900/90 border-slate-800 text-slate-200'
-                                    : 'bg-slate-950/40 border-dashed border-slate-800/80 text-slate-500'
-                                }`}
-                              >
-                                <span className="truncate">
-                                  <span className="text-slate-500 font-mono mr-1">#{s.seatIndex}</span>
-                                  {s.playerName || '空席待入'}
-                                </span>
-                                {s.isHost ? (
-                                  <span className="text-amber-400 text-[10px] shrink-0">房主</span>
-                                ) : s.playerName && r.state === 'Lobby' ? (
-                                  <span className={`text-[10px] shrink-0 ${s.isReady ? 'text-emerald-400' : 'text-slate-500'}`}>
-                                    {s.isReady ? '就绪' : '准备中'}
-                                  </span>
-                                ) : null}
-                              </div>
-                            ))}
-                          </div>
-
-                          <div className="pt-2 border-t border-slate-800/70 flex items-center justify-between gap-2 text-[11px] text-slate-400">
-                            <div className="flex items-center gap-1 truncate">
-                              <Eye className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                              <span>观众 {r.observerCount ?? observers.length}</span>
-                              {observers.length > 0 && (
-                                <span className="text-slate-300 truncate">
-                                  · {observers.map((o: any) => o.playerName).join('、')}
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              <span className="lg:hidden text-emerald-400 font-medium">点开详情 →</span>
-                              {portalUser &&
-                                r.ownerUsername &&
-                                portalUser.username.toLowerCase() === String(r.ownerUsername).toLowerCase() && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      closeOwnRoom(r.roomName);
-                                    }}
-                                    className="text-rose-400 hover:underline cursor-pointer"
-                                  >
-                                    关房
-                                  </button>
-                                )}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* 桌面端右侧吸顶房间实况栏（手机端改为点击弹 BottomSheet，不占用流式高度） */}
-              <div className="hidden lg:block lg:col-span-4 lg:sticky lg:top-20 glass-card rounded-2xl p-4 space-y-3">
-                <h3 className="text-sm font-bold flex items-center gap-2">
-                  <Eye className="w-4 h-4 text-emerald-400" /> 房间实况 · 2v2 指挥 · 观众席
-                </h3>
-                {selectedRoom ? (
-                  <RoomDetailBody
-                    room={selectedRoom}
-                    portalUser={portalUser}
-                    onRequireAuth={() => setAuthModalMode('login')}
-                    notify={notify}
-                  />
-                ) : (
-                  <div className="text-xs text-slate-500 py-14 text-center space-y-2">
-                    <Eye className="w-7 h-7 text-slate-700 mx-auto" />
-                    <div>点击左侧任意房间卡片</div>
-                    <div className="text-[11px]">查看实时公开事件、聊天与 2v2 搭档战术盘</div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </>
-        )}
-
-        {tab === 'ai_tokens' && (
-          <PortalAiTokenCenter
-            user={portalUser}
-            mcpPortHint={surfaceInfo.mcpPortHint}
-            onRequireAuth={() => setAuthModalMode('register')}
-            notify={notify}
-          />
-        )}
-
-        {tab === 'replays' && (
-          <div className="space-y-4 animate-fade-in">
-            <div ref={replayTheaterRef}>
-              {selectedReplayDetail && (
-                <ReplayReviewPanel
-                  detail={selectedReplayDetail}
-                  onClose={() => setSelectedReplayDetail(null)}
-                  notify={notify}
-                />
-              )}
+              <SearchField
+                aria-label="筛选历史战报"
+                variant="secondary"
+                value={replayFilter}
+                onChange={setReplayFilter}
+                className="sm:w-60"
+              >
+                <SearchField.Group>
+                  <SearchField.SearchIcon />
+                  <SearchField.Input placeholder="按选手名或 R#编号 筛选..." className="text-xs" />
+                  <SearchField.ClearButton />
+                </SearchField.Group>
+              </SearchField>
             </div>
 
-            <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-sm sm:text-base font-bold flex items-center gap-2">
-                    <Video className="w-4 h-4 text-emerald-400" /> 全服历史对局战报 & AI 赛后复盘剧场
-                  </h2>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    游戏客户端输入 <code className="text-emerald-300 font-mono">R#编号</code> 可直接观看云回放；点击「AI 复盘详情」查看 0~100 发挥评分与时间轴
-                  </p>
-                </div>
-                <div className="relative sm:w-56">
-                  <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    value={replayFilter}
-                    onChange={(e) => setReplayFilter(e.target.value)}
-                    placeholder="按选手名或 R#编号 筛选..."
-                    className="w-full pl-8 pr-3 py-2 text-xs input-modern"
-                  />
-                </div>
-              </div>
-
-              {/* 手机端自适应卡片列表 (md:hidden) */}
-              <div className="md:hidden space-y-2.5">
-                {filteredReplays.map((r) => (
-                  <div
-                    key={r.id}
-                    onClick={() => openReplayDetail(r.id)}
-                    className={`glass-subcard rounded-2xl p-3.5 space-y-2.5 text-xs active:scale-[0.99] cursor-pointer ${
-                      selectedReplayDetail?.duelId === r.id ? 'border-emerald-500/60' : ''
-                    }`}
-                  >
+            {/* 移动端卡片列表 */}
+            <div className="md:hidden space-y-2.5">
+              {filteredReplays.map((r) => (
+                <Surface
+                  key={r.id}
+                  variant="secondary"
+                  className={`rounded-xl p-3.5 space-y-2.5 text-xs border ${
+                    selectedReplayDetail?.duelId === r.id ? 'border-accent' : 'border-border'
+                  }`}
+                >
+                  <div onClick={() => openReplayDetail(r.id)} className="space-y-2 cursor-pointer">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
-                        <span className="font-mono font-bold text-emerald-300 text-sm">{r.replayCode}</span>
-                        <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[10px] text-slate-300">
+                        <span className="font-mono font-bold text-emerald-400 text-sm">{r.replayCode}</span>
+                        <Chip size="sm" variant="soft" className="h-5 px-2 text-[10px]">
                           {r.mode === 2 ? '2v2 双打' : r.mode === 1 ? 'Match' : '1v1'} · {r.turnCount} 回合
-                        </span>
+                        </Chip>
                       </div>
-                      <span className="text-[11px] text-slate-500">{new Date(r.endedAt).toLocaleDateString()}</span>
+                      <span className="text-[11px] text-muted">{new Date(r.endedAt).toLocaleDateString()}</span>
                     </div>
 
-                    <div className="text-slate-200 font-medium leading-relaxed">
+                    <div className="text-foreground font-medium leading-relaxed">
                       {(r.players || []).map((p: any, idx: number) => (
                         <span key={idx}>
-                          {idx > 0 && <span className="text-slate-500 mx-1.5">vs</span>}
-                          <span className={p.isWinner ? 'text-emerald-300 font-bold' : 'text-slate-300'}>
+                          {idx > 0 && <span className="text-muted mx-1.5">vs</span>}
+                          <span className={p.isWinner ? 'text-emerald-400 font-bold' : 'text-foreground/85'}>
                             {p.playerName}
                             {p.isWinner ? ' (胜)' : ''}
                           </span>
                         </span>
                       ))}
                     </div>
+                  </div>
 
-                    <div className="flex items-center gap-2 pt-1" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        type="button"
-                        onClick={() => openReplayDetail(r.id)}
-                        className="flex-1 py-2 rounded-xl bg-emerald-600/25 border border-emerald-500/40 text-emerald-200 font-semibold text-center cursor-pointer"
+                  <div className="flex items-center gap-2 pt-1">
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      className="flex-1"
+                      isPending={loadingReplayId === r.id}
+                      onPress={() => openReplayDetail(r.id)}
+                    >
+                      {loadingReplayId === r.id ? '加载中...' : '打开 AI 复盘剧场'}
+                    </Button>
+                    <QuickCopyPill
+                      text={r.replayCode}
+                      label="复制口令"
+                      onCopied={() => notify(`已复制回放口令：${r.replayCode}`)}
+                    />
+                    {r.hasYrp && (
+                      <a
+                        href={`/api/portal/replays/${r.id}.yrp`}
+                        download
+                        className="px-3 py-1.5 rounded-lg bg-surface-tertiary text-sky-400 font-medium border border-border"
                       >
-                        {loadingReplayId === r.id ? '加载中...' : '打开 AI 复盘剧场'}
-                      </button>
-                      <QuickCopyPill
-                        text={r.replayCode}
-                        label="复制口令"
-                        onCopied={() => notify(`已复制回放口令：${r.replayCode}`)}
-                      />
-                      {r.hasYrp && (
-                        <a
-                          href={`/api/portal/replays/${r.id}.yrp`}
-                          download
-                          className="px-3 py-2 rounded-xl bg-slate-800 text-sky-300 font-medium"
+                        .yrp
+                      </a>
+                    )}
+                  </div>
+                </Surface>
+              ))}
+              {filteredReplays.length === 0 && (
+                <div className="py-10 text-center text-xs text-muted">暂无匹配的历史战报记录</div>
+              )}
+            </div>
+
+            {/* 桌面端数据表格 */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-xs text-left">
+                <thead className="text-muted border-b border-separator">
+                  <tr>
+                    <th className="py-2.5">回放口令</th>
+                    <th>房间</th>
+                    <th>模式</th>
+                    <th>对阵选手</th>
+                    <th>回合</th>
+                    <th>结束时间</th>
+                    <th className="text-right">复盘 & 录像</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-separator">
+                  {filteredReplays.map((r) => (
+                    <tr
+                      key={r.id}
+                      onClick={() => openReplayDetail(r.id)}
+                      className={`cursor-pointer transition hover:bg-surface-secondary/60 ${
+                        selectedReplayDetail?.duelId === r.id ? 'bg-surface-secondary' : ''
+                      }`}
+                    >
+                      <td className="py-3" onClick={(e) => e.stopPropagation()}>
+                        <QuickCopyPill
+                          text={r.replayCode}
+                          label={r.replayCode}
+                          onCopied={() => notify(`已复制回放主机密码：${r.replayCode}`)}
+                        />
+                      </td>
+                      <td className="font-semibold text-foreground">{r.roomName}</td>
+                      <td>
+                        <Chip size="sm" variant="soft" className="h-5 px-2 text-[11px]">
+                          {r.mode === 2 ? '2v2 Tag' : r.mode === 1 ? 'Match' : 'Single'}
+                        </Chip>
+                      </td>
+                      <td>
+                        {(r.players || []).map((p: any, idx: number) => (
+                          <span key={idx}>
+                            {idx > 0 && <span className="text-muted mx-1">vs</span>}
+                            <span className={p.isWinner ? 'text-emerald-400 font-semibold' : 'text-foreground/85'}>
+                              {p.playerName}
+                              {p.isWinner ? '(胜)' : ''}
+                            </span>
+                          </span>
+                        ))}
+                      </td>
+                      <td className="font-mono">{r.turnCount}</td>
+                      <td className="text-muted">{new Date(r.endedAt).toLocaleString()}</td>
+                      <td className="text-right space-x-2" onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isPending={loadingReplayId === r.id}
+                          onPress={() => openReplayDetail(r.id)}
                         >
-                          .yrp
-                        </a>
+                          {loadingReplayId === r.id ? '加载中...' : 'AI 复盘详情'}
+                        </Button>
+                        {r.hasYrp && (
+                          <a href={`/api/portal/replays/${r.id}.yrp`} download className="text-sky-400 hover:underline">
+                            下载 .yrp
+                          </a>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {filteredReplays.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="py-10 text-center text-muted">
+                        暂无已归档的历史对局录像
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {tab === 'diy_workshop' && (
+        <PortalDiyWorkshop diyPackages={diyPackages} portalUser={portalUser} notify={notify} />
+      )}
+
+      {tab === 'catalog' && (
+        <div className="space-y-4 animate-fade-in">
+          <DeckSixDimRadarSection chaosYdk={chaosDeck?.ydk} notify={notify} />
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <Card className="lg:col-span-2 rounded-xl p-4 sm:p-5 space-y-3.5">
+              <form onSubmit={runSearch} className="flex flex-col sm:flex-row sm:items-center gap-2.5">
+                <SearchField
+                  aria-label="检索卡密或卡名"
+                  variant="secondary"
+                  value={cardQuery}
+                  onChange={setCardQuery}
+                  className="flex-1"
+                >
+                  <SearchField.Group>
+                    <SearchField.SearchIcon />
+                    <SearchField.Input placeholder="输入卡密、卡名或效果关键字查卡..." className="text-xs" />
+                    <SearchField.ClearButton />
+                  </SearchField.Group>
+                </SearchField>
+
+                <div className="flex items-center justify-between sm:justify-end gap-3">
+                  <Switch size="sm" isSelected={diyOnlySearch} onChange={setDiyOnlySearch}>
+                    <Switch.Control>
+                      <Switch.Thumb />
+                    </Switch.Control>
+                    <Switch.Content>
+                      <Label className="text-xs">仅看 DIY 新卡</Label>
+                    </Switch.Content>
+                  </Switch>
+
+                  <Button type="submit" size="sm" variant="primary">
+                    <Search className="w-3.5 h-3.5" /> 检索卡片
+                  </Button>
+                </div>
+              </form>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-96 overflow-y-auto pr-0.5">
+                {cards.map((c) => (
+                  <Surface key={c.id} variant="secondary" className="rounded-lg p-3 text-xs space-y-1.5 border border-border">
+                    <div className="flex items-center justify-between gap-2 font-semibold">
+                      <span className="truncate text-foreground">
+                        {c.name} <span className="font-mono text-muted text-[11px]">#{c.id}</span>
+                      </span>
+                      {c.isDiy && (
+                        <Chip size="sm" variant="soft" color="accent" className="h-5 px-1.5 text-[10px] shrink-0">
+                          DIY
+                        </Chip>
                       )}
                     </div>
-                  </div>
+                    <div className="text-[11px] text-muted line-clamp-3 leading-relaxed">{c.desc}</div>
+                  </Surface>
                 ))}
-                {filteredReplays.length === 0 && (
-                  <div className="py-10 text-center text-xs text-slate-500">暂无匹配的历史战报记录</div>
+                {cards.length === 0 && (
+                  <div className="sm:col-span-2 py-8 text-center text-xs text-muted">
+                    输入关键词点击「检索卡片」查看卡表详情
+                  </div>
                 )}
               </div>
+            </Card>
 
-              {/* 桌面端精致数据表格 (hidden md:block) */}
-              <div className="hidden md:block overflow-x-auto">
-                <table className="w-full text-xs text-left">
-                  <thead className="text-slate-400 border-b border-slate-800">
-                    <tr>
-                      <th className="py-2.5">回放口令</th>
-                      <th>房间</th>
-                      <th>模式</th>
-                      <th>对阵选手</th>
-                      <th>回合</th>
-                      <th>结束时间</th>
-                      <th className="text-right">复盘 & 录像</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/60">
-                    {filteredReplays.map((r) => (
-                      <tr
-                        key={r.id}
-                        onClick={() => openReplayDetail(r.id)}
-                        className={`cursor-pointer transition hover:bg-slate-800/40 ${
-                          selectedReplayDetail?.duelId === r.id ? 'bg-emerald-950/30' : ''
-                        }`}
-                      >
-                        <td className="py-3" onClick={(e) => e.stopPropagation()}>
-                          <QuickCopyPill
-                            text={r.replayCode}
-                            label={r.replayCode}
-                            onCopied={() => notify(`已复制回放主机密码：${r.replayCode}`)}
-                          />
-                        </td>
-                        <td className="font-semibold text-slate-200">{r.roomName}</td>
-                        <td>
-                          <span className="px-2 py-0.5 rounded-full bg-slate-800 text-[11px]">
-                            {r.mode === 2 ? '2v2 Tag' : r.mode === 1 ? 'Match' : 'Single'}
-                          </span>
-                        </td>
-                        <td>
-                          {(r.players || []).map((p: any, idx: number) => (
-                            <span key={idx}>
-                              {idx > 0 && <span className="text-slate-500 mx-1">vs</span>}
-                              <span className={p.isWinner ? 'text-emerald-300 font-semibold' : 'text-slate-300'}>
-                                {p.playerName}
-                                {p.isWinner ? '(胜)' : ''}
-                              </span>
-                            </span>
-                          ))}
-                        </td>
-                        <td className="font-mono">{r.turnCount}</td>
-                        <td className="text-slate-400">{new Date(r.endedAt).toLocaleString()}</td>
-                        <td className="text-right space-x-2" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            type="button"
-                            onClick={() => openReplayDetail(r.id)}
-                            className="px-3 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/35 border border-emerald-500/40 text-emerald-200 font-medium cursor-pointer"
-                          >
-                            {loadingReplayId === r.id ? '加载中...' : 'AI 复盘详情'}
-                          </button>
-                          {r.hasYrp && (
-                            <a href={`/api/portal/replays/${r.id}.yrp`} download className="text-sky-400 hover:underline">
-                              下载 .yrp
-                            </a>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                    {filteredReplays.length === 0 && (
-                      <tr>
-                        <td colSpan={7} className="py-10 text-center text-slate-500">
-                          暂无已归档的历史对局录像
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {tab === 'diy_workshop' && (
-          <PortalDiyWorkshop diyPackages={diyPackages} portalUser={portalUser} notify={notify} />
-        )}
-
-        {tab === 'catalog' && (
-          <div className="space-y-5 animate-fade-in">
-            <DeckSixDimRadarSection chaosYdk={chaosDeck?.ydk} notify={notify} />
-
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              <div className="lg:col-span-2 glass-card rounded-2xl p-4 sm:p-5 space-y-3.5">
-                <form onSubmit={runSearch} className="flex flex-col sm:flex-row gap-2">
-                  <input
-                    value={cardQuery}
-                    onChange={(e) => setCardQuery(e.target.value)}
-                    placeholder="输入卡密、卡名或效果关键字查卡..."
-                    className="flex-1 px-3.5 py-2 text-xs input-modern"
-                  />
-                  <div className="flex items-center justify-between sm:justify-end gap-2">
-                    <label className="flex items-center gap-1.5 text-xs text-slate-300 px-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={diyOnlySearch}
-                        onChange={(e) => setDiyOnlySearch(e.target.checked)}
-                        className="w-4 h-4 rounded accent-emerald-500"
-                      />
-                      仅看 DIY 新卡
-                    </label>
-                    <button className="min-h-[38px] px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer">
-                      <Search className="w-3.5 h-3.5" /> 检索卡片
-                    </button>
-                  </div>
-                </form>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-96 overflow-y-auto pr-0.5">
-                  {cards.map((c) => (
-                    <div key={c.id} className="glass-subcard rounded-xl p-3 text-xs space-y-1.5">
-                      <div className="flex items-center justify-between gap-2 font-semibold">
-                        <span className="truncate text-slate-100">
-                          {c.name} <span className="font-mono text-slate-400 text-[11px]">#{c.id}</span>
-                        </span>
-                        {c.isDiy && (
-                          <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] shrink-0">
-                            DIY
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-[11px] text-slate-400 line-clamp-3 leading-relaxed">{c.desc}</div>
-                    </div>
-                  ))}
-                  {cards.length === 0 && (
-                    <div className="sm:col-span-2 py-8 text-center text-xs text-slate-500">
-                      输入关键词点击「检索卡片」查看卡表详情
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-3 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-sm">混沌随机组卡试抽</span>
-                  <button
-                    onClick={drawChaos}
-                    className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold cursor-pointer"
-                  >
-                    试抽一套
-                  </button>
-                </div>
+            <Card className="rounded-xl p-4 sm:p-5 space-y-3 text-xs">
+              <Card.Header className="p-0 flex-row items-center justify-between">
+                <Card.Title className="font-bold text-sm">混沌随机组卡试抽</Card.Title>
+                <Button size="sm" variant="secondary" onPress={drawChaos}>
+                  <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                  试抽一套
+                </Button>
+              </Card.Header>
+              <Card.Content className="p-0">
                 {chaosDeck ? (
-                  <div className="space-y-2.5 glass-subcard p-3.5 rounded-xl">
+                  <Surface variant="secondary" className="space-y-2.5 p-3.5 rounded-lg border border-border">
                     <div className="flex justify-between items-center">
-                      <span className="text-purple-300 font-semibold">
+                      <span className="text-purple-400 font-semibold">
                         主卡组 {chaosDeck.mainCount} + 额外 {chaosDeck.extraCount}
                       </span>
                       <SmallCopy text={chaosDeck.ydk} label="复制 .ydk" onCopied={() => notify('已复制 .ydk 卡组内容')} />
                     </div>
-                    <div className="text-[11px] text-slate-400 leading-relaxed">
+                    <div className="text-[11px] text-muted leading-relaxed">
                       抽样：{chaosDeck.sampleMainCards.map((x: any) => x.name).join('、')}
                     </div>
-                  </div>
+                  </Surface>
                 ) : (
-                  <div className="text-slate-500 py-10 text-center glass-subcard rounded-xl">
+                  <Surface variant="secondary" className="text-muted py-10 px-4 text-center rounded-lg border border-border">
                     点击右上角「试抽一套」生成平衡混沌卡组，支持直接送入上方六维雷达剖析
-                  </div>
+                  </Surface>
                 )}
-              </div>
-            </div>
+              </Card.Content>
+            </Card>
+          </div>
 
-            {/* 玩家自助服务：昵称防冒用保护 ($vpass) + 赛事自助交牌 (.ydk) */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs">
-              <form onSubmit={submitVpass} className="glass-card rounded-2xl p-5 space-y-3.5">
-                <h3 className="text-sm font-bold text-emerald-300 flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4" /> 游戏昵称防冒用保护 ($vpass)
-                </h3>
-                <p className="text-slate-400 leading-relaxed">
-                  绑定专属口令后，客户端输入 <code className="text-emerald-300 font-mono">昵称$口令</code> 即可受保护登录，防止他人冒名顶替。
-                </p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <input
-                    value={vpassName}
-                    onChange={(e) => setVpassName(e.target.value)}
-                    placeholder="你的游戏昵称 (如 Kaiba)"
-                    className="w-full px-3.5 py-2.5 input-modern"
-                    required
-                  />
-                  <input
-                    type="password"
-                    value={vpassCode}
-                    onChange={(e) => setVpassCode(e.target.value)}
-                    placeholder="设置保护口令 (4~32位)"
-                    className="w-full px-3.5 py-2.5 input-modern"
-                    required
-                  />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs">
+            <Card className="rounded-xl p-5">
+              <form onSubmit={submitVpass} className="space-y-3.5">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-bold text-emerald-400 flex items-center gap-1.5">
+                    <ShieldCheck className="w-4 h-4" /> 游戏昵称防冒用保护 ($vpass)
+                  </h3>
+                  <p className="text-muted leading-relaxed">
+                    绑定专属口令后，客户端输入 <code className="text-emerald-400 font-mono">昵称$口令</code> 即可受保护登录，防止他人冒名顶替。
+                  </p>
                 </div>
-                <button className="w-full min-h-[42px] py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <TextField fullWidth isRequired value={vpassName} onChange={setVpassName}>
+                    <Label className="text-xs">游戏昵称</Label>
+                    <Input variant="secondary" placeholder="如 Kaiba" />
+                  </TextField>
+                  <TextField fullWidth isRequired type="password" value={vpassCode} onChange={setVpassCode}>
+                    <Label className="text-xs">保护口令 (4~32位)</Label>
+                    <Input variant="secondary" placeholder="设置专属口令" />
+                  </TextField>
+                </div>
+                <Button type="submit" variant="primary" fullWidth>
                   绑定 / 验证昵称口令
-                </button>
+                </Button>
                 {vpassResult && (
-                  <div className="p-3 rounded-xl glass-subcard border border-emerald-500/40 font-mono flex justify-between items-center gap-2">
+                  <Surface variant="secondary" className="p-3 rounded-lg border border-emerald-500/40 font-mono flex justify-between items-center gap-2">
                     <span className="truncate">客户端填：{vpassResult}</span>
                     <SmallCopy text={vpassResult} onCopied={() => notify('已复制登录格式')} />
-                  </div>
+                  </Surface>
                 )}
               </form>
+            </Card>
 
-              <form onSubmit={submitTournamentDeck} className="glass-card rounded-2xl p-5 space-y-3">
-                <h3 className="text-sm font-bold text-sky-300">赛事选手自助交牌 (.ydk)</h3>
-                <div className="grid grid-cols-2 gap-2.5">
-                  <input
-                    value={tTag}
-                    onChange={(e) => setTTag(e.target.value)}
-                    placeholder="赛事标识 (weekly)"
-                    className="px-3 py-2 input-modern"
-                    required
-                  />
-                  <input
-                    value={tPlayer}
-                    onChange={(e) => setTPlayer(e.target.value)}
-                    placeholder="参赛游戏昵称"
-                    className="px-3 py-2 input-modern"
-                    required
-                  />
+            <Card className="rounded-xl p-5">
+              <form onSubmit={submitTournamentDeck} className="space-y-3">
+                <h3 className="text-sm font-bold text-sky-400">赛事选手自助交牌 (.ydk)</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <TextField fullWidth isRequired value={tTag} onChange={setTTag}>
+                    <Label className="text-xs">赛事标识</Label>
+                    <Input variant="secondary" placeholder="weekly" />
+                  </TextField>
+                  <TextField fullWidth isRequired value={tPlayer} onChange={setTPlayer}>
+                    <Label className="text-xs">参赛游戏昵称</Label>
+                    <Input variant="secondary" placeholder="输入参赛昵称" />
+                  </TextField>
                 </div>
                 <CodeMirrorEditor
                   value={tYdk}
@@ -1263,47 +1411,19 @@ export function UserPortalApp({
                   maxHeight="220px"
                   compact
                 />
-                <button className="w-full min-h-[42px] py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold cursor-pointer">
+                <Button type="submit" variant="secondary" fullWidth>
                   提交比赛卡组并获取校验码
-                </button>
+                </Button>
                 {tResultHash && (
-                  <div className="p-2.5 rounded-xl glass-subcard border border-sky-500/40 font-mono text-[11px] break-all">
+                  <Surface variant="secondary" className="p-2.5 rounded-lg border border-sky-500/40 font-mono text-[11px] break-all">
                     SHA-256 凭证：{tResultHash}
-                  </div>
+                  </Surface>
                 )}
               </form>
-            </div>
+            </Card>
           </div>
-        )}
-      </main>
-
-      {/* 手机端原生体验底部固定 Tab 导航栏 (md:hidden) */}
-      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-slate-950/92 backdrop-blur-xl border-t border-white/[0.08] pb-safe">
-        <div className="grid grid-cols-5 h-14">
-          {navItems.map((item) => {
-            const active = tab === item.key;
-            return (
-              <button
-                key={item.key}
-                type="button"
-                onClick={() => {
-                  setTab(item.key);
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }}
-                className={`relative flex flex-col items-center justify-center gap-0.5 text-[10px] font-semibold transition cursor-pointer ${
-                  active ? 'text-emerald-300' : 'text-slate-400 active:text-slate-200'
-                }`}
-              >
-                {active && (
-                  <span className="absolute top-0 w-7 h-0.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]" />
-                )}
-                {item.icon}
-                <span>{item.shortLabel}</span>
-              </button>
-            );
-          })}
         </div>
-      </nav>
-    </div>
+      )}
+    </WorkspaceShell>
   );
 }

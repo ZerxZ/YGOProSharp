@@ -12,6 +12,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           'vendor-react': ['react', 'react-dom', 'lucide-react'],
+          'vendor-heroui': ['@heroui/react'],
           'vendor-codemirror': [
             'codemirror',
             '@codemirror/state',

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Sparkles } from 'lucide-react';
+import { Button, Card, Chip, Spinner, Surface, Tabs } from '@heroui/react';
+import { Radar, Sparkles } from 'lucide-react';
 import { apiFetch } from '../api';
 import { QuickCopyPill } from '../RoomConfigurator';
 import { CodeMirrorEditor } from '../components/CodeMirrorEditor';
@@ -16,7 +17,7 @@ const SIX_DIM_AXES: { key: string; label: string }[] = [
 function SixDimRadarSvg({ dimensions }: { dimensions: Record<string, number> | null | undefined }) {
   const cx = 145;
   const cy = 135;
-  const radius = 86;
+  const radius = 84;
   const levels = [25, 50, 75, 100];
 
   const pointAt = (axisIdx: number, val0To100: number) => {
@@ -35,14 +36,7 @@ function SixDimRadarSvg({ dimensions }: { dimensions: Record<string, number> | n
   });
 
   return (
-    <svg viewBox="0 0 290 270" className="w-full max-w-[280px] mx-auto select-none">
-      <defs>
-        <linearGradient id="radarGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#10b981" stopOpacity="0.42" />
-          <stop offset="100%" stopColor="#06b6d4" stopOpacity="0.22" />
-        </linearGradient>
-      </defs>
-
+    <svg viewBox="0 0 290 270" className="w-full max-w-[276px] mx-auto select-none">
       {levels.map((lv) => {
         const ring = SIX_DIM_AXES.map((_, i) => {
           const p = pointAt(i, lv);
@@ -53,22 +47,23 @@ function SixDimRadarSvg({ dimensions }: { dimensions: Record<string, number> | n
             key={lv}
             points={ring}
             fill="none"
-            stroke={lv === 100 ? '#334155' : '#1e293b'}
-            strokeWidth={lv === 100 ? 1.4 : 1}
+            stroke="var(--border)"
+            strokeOpacity={lv === 100 ? 0.95 : 0.55}
+            strokeWidth={lv === 100 ? 1.3 : 1}
           />
         );
       })}
 
       {SIX_DIM_AXES.map((axis, i) => {
         const outer = pointAt(i, 100);
-        return <line key={axis.key} x1={cx} y1={cy} x2={outer.x} y2={outer.y} stroke="#334155" strokeWidth="1" />;
+        return <line key={axis.key} x1={cx} y1={cy} x2={outer.x} y2={outer.y} stroke="var(--border)" strokeWidth="1" />;
       })}
 
       <polygon
         points={dataPoints.join(' ')}
-        fill={dimensions ? 'url(#radarGrad)' : 'rgba(100, 116, 139, 0.16)'}
-        stroke={dimensions ? '#34d399' : '#64748b'}
-        strokeWidth="2.2"
+        fill={dimensions ? 'color-mix(in oklab, var(--accent) 26%, transparent)' : 'color-mix(in oklab, var(--muted) 14%, transparent)'}
+        stroke={dimensions ? 'var(--accent)' : 'var(--muted)'}
+        strokeWidth="2"
       />
 
       {SIX_DIM_AXES.map((axis, i) => {
@@ -77,13 +72,14 @@ function SixDimRadarSvg({ dimensions }: { dimensions: Record<string, number> | n
         const labelPos = pointAt(i, 125);
         return (
           <g key={axis.key}>
-            <circle cx={dot.x} cy={dot.y} r="4" fill={dimensions ? '#6ee7b7' : '#94a3b8'} />
+            <circle cx={dot.x} cy={dot.y} r="3.8" fill={dimensions ? 'var(--accent)' : 'var(--muted)'} />
             <text
               x={labelPos.x}
               y={labelPos.y - 4}
               textAnchor="middle"
               dominantBaseline="middle"
-              className="fill-slate-200 text-[10px] font-semibold"
+              fill="var(--foreground)"
+              className="text-[10px] font-semibold"
             >
               {axis.label}
             </text>
@@ -92,7 +88,8 @@ function SixDimRadarSvg({ dimensions }: { dimensions: Record<string, number> | n
               y={labelPos.y + 9}
               textAnchor="middle"
               dominantBaseline="middle"
-              className="fill-emerald-300 text-[10px] font-mono font-bold"
+              fill={dimensions ? 'var(--accent)' : 'var(--muted)'}
+              className="text-[10px] font-mono font-bold"
             >
               {dimensions ? `${val}` : '--'}
             </text>
@@ -174,49 +171,49 @@ export function DeckSixDimRadarSection({
     : '';
 
   return (
-    <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-4 text-xs">
+    <Card className="rounded-xl p-4 sm:p-5 space-y-4 text-xs">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
         <div>
-          <h2 className="text-sm sm:text-base font-bold flex items-center gap-2 text-emerald-300">
-            <Sparkles className="w-4 h-4" /> 卡组静态特征剖析器 & 0~100 六维能力雷达
+          <h2 className="text-sm sm:text-base font-bold flex items-center gap-2 text-foreground">
+            <Radar className="w-4 h-4 text-accent" /> 卡组静态特征剖析器 & 0~100 六维能力雷达
           </h2>
-          <p className="text-[11px] text-slate-400 mt-0.5">
+          <p className="text-[11px] text-muted mt-0.5">
             确定性统计怪魔陷曲线、字段与效果词频，结合外部 MCP AI 提交的 0~100 六维评分渲染雷达图与套路图鉴
           </p>
         </div>
+
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="inline-flex p-0.5 rounded-xl bg-slate-950 border border-slate-800">
-            <button
-              type="button"
-              onClick={() => setInputMode('preset')}
-              className={`px-3 py-1.5 rounded-lg font-medium transition cursor-pointer ${
-                inputMode === 'preset' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              预设卡组库 ({presets.length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setInputMode('ydk')}
-              className={`px-3 py-1.5 rounded-lg font-medium transition cursor-pointer ${
-                inputMode === 'ydk' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              粘贴 .ydk 文本
-            </button>
-          </div>
+          <Tabs
+            selectedKey={inputMode}
+            onSelectionChange={(k) => setInputMode(String(k) as 'preset' | 'ydk')}
+          >
+            <Tabs.ListContainer>
+              <Tabs.List aria-label="构筑输入来源切换">
+                <Tabs.Tab id="preset" className="text-xs px-3">
+                  预设卡组库 ({presets.length})
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+                <Tabs.Tab id="ydk" className="text-xs px-3">
+                  粘贴 .ydk 文本
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+              </Tabs.List>
+            </Tabs.ListContainer>
+          </Tabs>
+
           {chaosYdk && (
-            <button
-              type="button"
-              onClick={() => {
+            <Button
+              size="sm"
+              variant="secondary"
+              onPress={() => {
                 setInputMode('ydk');
                 setYdkInput(chaosYdk);
                 runAnalyze(undefined, chaosYdk);
               }}
-              className="px-3 py-1.5 rounded-xl bg-purple-600/25 border border-purple-500/40 text-purple-200 font-medium cursor-pointer"
             >
+              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
               剖析刚抽的混沌卡组
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -227,7 +224,7 @@ export function DeckSixDimRadarSection({
             <select
               value={selectedPreset}
               onChange={(e) => setSelectedPreset(e.target.value)}
-              className="w-full px-3.5 py-2.5 input-modern"
+              className="w-full h-9 px-3 text-xs input-modern"
             >
               {presets.length === 0 && <option value="">（暂无预设卡组，请切换至「粘贴 .ydk 文本」）</option>}
               {presets.map((d) => (
@@ -250,61 +247,63 @@ export function DeckSixDimRadarSection({
             />
           )}
         </div>
-        <button
-          type="button"
-          disabled={loading}
-          onClick={() => runAnalyze()}
-          className="min-h-[42px] px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 font-semibold text-white shadow-lg shadow-emerald-950/50 shrink-0 cursor-pointer"
+
+        <Button
+          variant="primary"
+          isPending={loading}
+          onPress={() => runAnalyze()}
+          className="shrink-0"
         >
-          {loading ? '剖析中...' : '静态剖析 & 点亮雷达'}
-        </button>
+          {loading && <Spinner color="current" size="sm" />}
+          <span>{loading ? '剖析中...' : '静态剖析 & 点亮雷达'}</span>
+        </Button>
       </div>
 
       {recentEvals.length > 0 && (
-        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
-          <span className="text-[11px] text-slate-400 shrink-0">近期高光评测：</span>
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+          <span className="text-[11px] text-muted shrink-0">近期高光评测:</span>
           {recentEvals.map((ev) => (
             <button
               key={ev.id}
               type="button"
               onClick={() => runAnalyze(undefined, undefined, ev.deckHash)}
-              className="px-2.5 py-1 rounded-full glass-subcard hover:border-emerald-500/40 text-[11px] flex items-center gap-1.5 shrink-0 cursor-pointer"
+              className="px-2.5 py-1 rounded-md bg-surface-secondary border border-border hover:border-accent/50 text-[11px] flex items-center gap-1.5 shrink-0 cursor-pointer transition"
             >
-              <span className="font-bold text-amber-300 font-mono">[{ev.overallTier}]</span>
-              <span className="text-slate-200">{ev.archetypeTitle || ev.deckName}</span>
+              <span className="font-bold text-amber-400 font-mono">[{ev.overallTier}]</span>
+              <span className="text-foreground">{ev.archetypeTitle || ev.deckName}</span>
             </button>
           ))}
         </div>
       )}
 
       {analysis && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 pt-3 border-t border-slate-800/80 animate-fade-in">
-          <div className="lg:col-span-7 glass-subcard rounded-2xl p-4 space-y-3.5">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 pt-3 border-t border-separator animate-fade-in">
+          <Surface variant="secondary" className="lg:col-span-7 rounded-xl p-4 space-y-3.5 border border-border">
             {profile ? (
               <>
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div>
-                    <span className="font-bold text-sm text-slate-100">{profile.deckName}</span>
-                    <span className="ml-2 text-slate-400">
+                    <span className="font-bold text-sm text-foreground">{profile.deckName}</span>
+                    <span className="ml-2 text-muted">
                       主 {profile.mainCount} / 额外 {profile.extraCount} / 副 {profile.sideCount}（去重 {profile.distinctCardCount} 种）
                     </span>
                   </div>
-                  <span className="font-mono text-[10px] text-slate-500">Hash: {profile.deckHash.slice(0, 14)}...</span>
+                  <span className="font-mono text-[10px] text-muted">Hash: {profile.deckHash.slice(0, 14)}...</span>
                 </div>
 
                 <div className="grid grid-cols-3 gap-2 text-center">
-                  <div className="bg-slate-900/90 p-2.5 rounded-xl border border-slate-800">
-                    <div className="text-slate-400 text-[11px]">怪兽配比</div>
-                    <div className="font-mono font-bold text-amber-300 text-base">
+                  <div className="bg-background p-2.5 rounded-lg border border-border">
+                    <div className="text-muted text-[11px]">怪兽配比</div>
+                    <div className="font-mono font-bold text-amber-400 text-base">
                       {(profile.lowLevelMonsterCopies ?? 0) + (profile.highLevelMonsterCopies ?? 0)}
                     </div>
-                    <div className="text-[10px] text-slate-500">
+                    <div className="text-[10px] text-muted">
                       下级 {profile.lowLevelMonsterCopies} · 高星 {profile.highLevelMonsterCopies}
                     </div>
                   </div>
-                  <div className="bg-slate-900/90 p-2.5 rounded-xl border border-slate-800">
-                    <div className="text-slate-400 text-[11px]">魔法配比</div>
-                    <div className="font-mono font-bold text-emerald-300 text-base">
+                  <div className="bg-background p-2.5 rounded-lg border border-border">
+                    <div className="text-muted text-[11px]">魔法配比</div>
+                    <div className="font-mono font-bold text-emerald-400 text-base">
                       {(profile.normalSpellCopies ?? 0) +
                         (profile.quickPlaySpellCopies ?? 0) +
                         (profile.continuousSpellCopies ?? 0) +
@@ -312,21 +311,21 @@ export function DeckSixDimRadarSection({
                         (profile.equipSpellCopies ?? 0) +
                         (profile.ritualSpellCopies ?? 0)}
                     </div>
-                    <div className="text-[10px] text-slate-500">
+                    <div className="text-[10px] text-muted">
                       通常 {profile.normalSpellCopies} · 速攻 {profile.quickPlaySpellCopies}
                     </div>
                   </div>
-                  <div className="bg-slate-900/90 p-2.5 rounded-xl border border-slate-800">
-                    <div className="text-slate-400 text-[11px]">陷阱 & DIY</div>
-                    <div className="font-mono font-bold text-pink-300 text-base">
+                  <div className="bg-background p-2.5 rounded-lg border border-border">
+                    <div className="text-muted text-[11px]">陷阱 & DIY</div>
+                    <div className="font-mono font-bold text-pink-400 text-base">
                       {(profile.normalTrapCopies ?? 0) + (profile.continuousTrapCopies ?? 0) + (profile.counterTrapCopies ?? 0)}
                     </div>
-                    <div className="text-[10px] text-slate-500">DIY 卡 {profile.diyCardCopies} 张</div>
+                    <div className="text-[10px] text-muted">DIY 卡 {profile.diyCardCopies} 张</div>
                   </div>
                 </div>
 
-                <div className="text-[11px] text-slate-300 bg-slate-900/60 px-3 py-1.5 rounded-lg border border-slate-800/80">
-                  额外轴分布：融合 <b>{profile.fusionCopies}</b> · 同调 <b>{profile.synchroCopies}</b> · 超量 <b>{profile.xyzCopies}</b> · 连接 <b>{profile.linkCopies}</b> · 调整怪兽 <b>{profile.tunerCopies}</b>
+                <div className="text-[11px] text-muted bg-background px-3 py-1.5 rounded-lg border border-border">
+                  额外轴分布：融合 <b className="text-foreground">{profile.fusionCopies}</b> · 同调 <b className="text-foreground">{profile.synchroCopies}</b> · 超量 <b className="text-foreground">{profile.xyzCopies}</b> · 连接 <b className="text-foreground">{profile.linkCopies}</b> · 调整怪兽 <b className="text-foreground">{profile.tunerCopies}</b>
                 </div>
 
                 {profile.keywordStats && (
@@ -343,104 +342,104 @@ export function DeckSixDimRadarSection({
                     ].map(([label, cnt]) => (
                       <span
                         key={String(label)}
-                        className="px-2.5 py-1 rounded-lg bg-slate-900/90 border border-slate-800 text-[11px] text-slate-300"
+                        className="px-2.5 py-1 rounded-md bg-background border border-border text-[11px] text-muted"
                       >
-                        {label}: <b className="text-emerald-300 font-mono">{cnt}</b>
+                        {label}: <b className="text-foreground font-mono">{cnt}</b>
                       </span>
                     ))}
                   </div>
                 )}
               </>
             ) : (
-              <div className="text-slate-400 py-6 text-center">当前展示按 DeckHash 归档的六维评测百科</div>
+              <div className="text-muted py-6 text-center">当前展示按 DeckHash 归档的六维评测百科</div>
             )}
 
             {evaluation?.routines && (
-              <div className="space-y-2 pt-2.5 border-t border-slate-800/80 leading-relaxed">
+              <div className="space-y-2 pt-2.5 border-t border-separator leading-relaxed">
                 {Array.isArray(evaluation.routines.starters) && evaluation.routines.starters.length > 0 && (
-                  <div className="text-[11px] text-amber-200">
+                  <div className="text-[11px] text-foreground/90">
                     <span className="font-semibold text-amber-400">起手初动：</span>
                     {evaluation.routines.starters.join(' ｜ ')}
                   </div>
                 )}
                 {Array.isArray(evaluation.routines.coreRoutines) && evaluation.routines.coreRoutines.length > 0 && (
-                  <div className="text-[11px] text-emerald-200">
+                  <div className="text-[11px] text-foreground/90">
                     <span className="font-semibold text-emerald-400">核心套路：</span>
                     {evaluation.routines.coreRoutines.join(' ｜ ')}
                   </div>
                 )}
                 {Array.isArray(evaluation.routines.targetEndboard) && evaluation.routines.targetEndboard.length > 0 && (
-                  <div className="text-[11px] text-indigo-200">
+                  <div className="text-[11px] text-foreground/90">
                     <span className="font-semibold text-indigo-400">标准终场：</span>
                     {evaluation.routines.targetEndboard.join(' ｜ ')}
                   </div>
                 )}
                 {Array.isArray(evaluation.routines.grindLoop) && evaluation.routines.grindLoop.length > 0 && (
-                  <div className="text-[11px] text-teal-200">
+                  <div className="text-[11px] text-foreground/90">
                     <span className="font-semibold text-teal-400">续航回收：</span>
                     {evaluation.routines.grindLoop.join('；')}
                   </div>
                 )}
                 {Array.isArray(evaluation.routines.chokepoints) && evaluation.routines.chokepoints.length > 0 && (
-                  <div className="text-[11px] text-orange-200">
+                  <div className="text-[11px] text-foreground/90">
                     <span className="font-semibold text-orange-400">怕吃坑点：</span>
                     {evaluation.routines.chokepoints.join('；')}
                   </div>
                 )}
                 {Array.isArray(evaluation.routines.strengths) && evaluation.routines.strengths.length > 0 && (
-                  <div className="text-[11px] text-sky-200">
+                  <div className="text-[11px] text-foreground/90">
                     <span className="font-semibold text-sky-400">构筑优势：</span>
                     {evaluation.routines.strengths.join('；')}
                   </div>
                 )}
                 {Array.isArray(evaluation.routines.weaknesses) && evaluation.routines.weaknesses.length > 0 && (
-                  <div className="text-[11px] text-rose-200">
+                  <div className="text-[11px] text-foreground/90">
                     <span className="font-semibold text-rose-400">构筑短板：</span>
                     {evaluation.routines.weaknesses.join('；')}
                   </div>
                 )}
                 {Array.isArray(evaluation.routines.upgradeSuggestions) && evaluation.routines.upgradeSuggestions.length > 0 && (
-                  <div className="text-[11px] text-purple-200">
+                  <div className="text-[11px] text-foreground/90">
                     <span className="font-semibold text-purple-400">改构建议：</span>
                     {evaluation.routines.upgradeSuggestions.join('；')}
                   </div>
                 )}
               </div>
             )}
-          </div>
+          </Surface>
 
-          <div className="lg:col-span-5 glass-subcard rounded-2xl p-4 flex flex-col justify-between space-y-3">
+          <Surface variant="secondary" className="lg:col-span-5 rounded-xl p-4 border border-border flex flex-col justify-between space-y-3">
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
-                <div className="font-bold text-sm text-emerald-300 truncate">
+                <div className="font-bold text-sm text-foreground truncate">
                   {evaluation ? evaluation.archetypeTitle : '待外部 AI 提交六维评分'}
                 </div>
-                {evaluation && <div className="text-[11px] text-slate-400">评测员: {evaluation.evaluatorName}</div>}
+                {evaluation && <div className="text-[11px] text-muted">评测员: {evaluation.evaluatorName}</div>}
               </div>
               {evaluation && (
-                <div className="px-3 py-1 rounded-xl bg-amber-500/20 border border-amber-400/50 text-amber-300 font-bold text-sm font-mono shrink-0">
+                <Chip size="sm" variant="soft" color="warning" className="h-6 px-2.5 font-bold font-mono text-xs shrink-0">
                   Tier {evaluation.overallTier}
-                </div>
+                </Chip>
               )}
             </div>
 
             <SixDimRadarSvg dimensions={evaluation?.dimensions} />
 
             {evaluation?.commentary ? (
-              <p className="text-[11px] text-slate-200 bg-slate-900/90 p-3 rounded-xl border border-slate-800 leading-relaxed">
+              <p className="text-[11px] text-foreground/90 bg-background p-3 rounded-lg border border-border leading-relaxed">
                 {evaluation.commentary}
               </p>
             ) : (
               evalPrompt && (
-                <div className="flex items-center justify-between gap-2 bg-slate-900/90 p-2.5 rounded-xl border border-slate-800">
-                  <span className="text-[11px] text-slate-400 truncate">发给外部 MCP AI 即可生成 0~100 六维雷达评分</span>
+                <div className="flex items-center justify-between gap-2 bg-background p-2.5 rounded-lg border border-border">
+                  <span className="text-[11px] text-muted truncate">发给外部 MCP AI 生成六维评分</span>
                   <QuickCopyPill text={evalPrompt} label="复制评测指令" onCopied={() => notify('已复制六维评测提示词')} />
                 </div>
               )
             )}
-          </div>
+          </Surface>
         </div>
       )}
-    </div>
+    </Card>
   );
 }

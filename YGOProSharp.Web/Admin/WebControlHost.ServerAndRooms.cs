@@ -64,7 +64,7 @@ public sealed partial class WebControlHost
         string? level,
         string? search)
     {
-        if (principal.IsStreamerOnly)
+        if (!principal.CanViewSystemLogs)
             return Results.Ok(new { entries = Array.Empty<BufferedLogEntry>(), redactedForStreamer = true });
 
         IReadOnlyList<BufferedLogEntry> entries = _logBuffer.GetRecent(limit ?? 150, level, search);
@@ -557,7 +557,7 @@ public sealed partial class WebControlHost
             raw.BanlistName,
             raw.NoCheckDeck,
             raw.NoShuffleDeck,
-            joinPassword = principal.IsStreamerOnly ? null : raw.JoinPassword,
+            joinPassword = principal.CanViewPrivateRoomSecrets(raw.OwnerUsername) ? raw.JoinPassword : null,
             hostPassword = principal.IsStreamerOnly ? null : raw.RoomName,
             fullHostPassword = principal.IsStreamerOnly ? null : raw.FullHostPassword,
             raw.OwnerUsername,

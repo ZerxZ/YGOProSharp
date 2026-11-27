@@ -11,9 +11,14 @@ public sealed record AuthenticatedPrincipal(
     bool MustChangePassword,
     string CsrfToken,
     IReadOnlyList<string> RoleCodes,
-    IReadOnlySet<string> EffectivePermissions)
+    IReadOnlySet<string> EffectivePermissions,
+    string SessionTokenPrefix = "")
 {
     public bool HasPermission(string permission) => RbacPolicyEvaluator.HasPermission(EffectivePermissions, permission);
+
+    public bool IsPortalSessionOnly =>
+        !string.IsNullOrWhiteSpace(SessionTokenPrefix) &&
+        SessionTokenPrefix.StartsWith("ygp_usr_sess", StringComparison.OrdinalIgnoreCase);
 
     public bool IsStreamerOnly =>
         RoleCodes.Count > 0 &&
@@ -21,7 +26,27 @@ public sealed record AuthenticatedPrincipal(
         !HasPermission(RbacPermissions.RoomViewIp);
 
     public bool CanViewIp => HasPermission(RbacPermissions.RoomViewIp) && !IsStreamerOnly;
+
+    public bool CanViewSystemLogs =>
+        !IsStreamerOnly &&
+        (HasPermission(RbacPermissions.AuditViewAll) ||
+         HasPermission(RbacPermissions.ServerStop) ||
+         HasPermission(RbacPermissions.RoomViewIp));
+
+    public bool CanViewPrivateRoomSecrets(string? ownerUsername) =>
+        !IsStreamerOnly &&
+        (CanViewIp ||
+         HasPermission(RbacPermissions.RoomEditRules) ||
+         HasPermission(RbacPermissions.RoomClose) ||
+         (!string.IsNullOrWhiteSpace(ownerUsername) &&
+          string.Equals(Username, ownerUsername, StringComparison.OrdinalIgnoreCase)));
 }
+
+public sealed record LocalConsoleAdminResetResult(
+    string Username,
+    string EffectivePassword,
+    bool MustChangePassword,
+    int RevokedSessionCount);
 
 public sealed record LoginResult(
     bool Success,

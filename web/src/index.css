@@ -1,10 +1,115 @@
 @import "tailwindcss";
+@import "@heroui/styles";
 
-@layer base {
+@layer theme {
   :root {
-    color-scheme: dark;
+    --radius: 0.5rem;
+    --field-radius: 0.5rem;
+    --field-border-width: 1px;
   }
 
+  :root,
+  .light,
+  [data-theme="light"] {
+    color-scheme: light;
+    --sidebar-bg: oklch(0.968 0.003 285);
+    --console-bg: oklch(0.958 0.004 285);
+    --background: oklch(0.988 0.002 285);
+    --foreground: oklch(0.185 0.01 285);
+    --surface: oklch(1 0 0);
+    --surface-foreground: var(--foreground);
+    --surface-secondary: oklch(0.962 0.003 285);
+    --surface-secondary-foreground: var(--foreground);
+    --surface-tertiary: oklch(0.938 0.004 285);
+    --surface-tertiary-foreground: var(--foreground);
+    --overlay: oklch(1 0 0);
+    --overlay-foreground: var(--foreground);
+    --backdrop: oklch(0.15 0.01 285 / 0.45);
+    --muted: oklch(0.51 0.012 285);
+    --default: oklch(0.942 0.004 285);
+    --default-foreground: var(--foreground);
+    --segment: oklch(1 0 0);
+    --segment-foreground: var(--foreground);
+    --border: oklch(0.895 0.005 285);
+    --separator: oklch(0.922 0.004 285);
+    --field-background: oklch(1 0 0);
+    --field-foreground: var(--foreground);
+    --field-placeholder: oklch(0.56 0.01 285);
+    --field-border: oklch(0.875 0.006 285);
+    --accent: oklch(0.58 0.165 162);
+    --accent-foreground: var(--snow);
+    --focus: var(--accent);
+    --surface-shadow: 0 1px 2px 0 rgba(9, 9, 11, 0.04);
+    --overlay-shadow: 0 16px 40px -10px rgba(9, 9, 11, 0.16), 0 0 0 1px rgba(9, 9, 11, 0.06);
+    --field-shadow: 0 0 0 0 transparent;
+  }
+
+  .dark,
+  [data-theme="dark"] {
+    color-scheme: dark;
+    /* T3 Code / Linear 风格纯净哑光碳黑中性色阶 (Carbon Obsidian, Hue 285, 低色度) */
+    --sidebar-bg: oklch(0.136 0.004 285);
+    --console-bg: oklch(0.126 0.004 285);
+    --background: oklch(0.152 0.004 285);
+    --foreground: oklch(0.965 0.003 285);
+    --surface: oklch(0.182 0.005 285);
+    --surface-foreground: var(--foreground);
+    --surface-secondary: oklch(0.212 0.006 285);
+    --surface-secondary-foreground: var(--foreground);
+    --surface-tertiary: oklch(0.242 0.007 285);
+    --surface-tertiary-foreground: var(--foreground);
+    --overlay: oklch(0.188 0.006 285);
+    --overlay-foreground: var(--foreground);
+    --backdrop: oklch(0.06 0.004 285 / 0.72);
+    --muted: oklch(0.665 0.01 285);
+    --default: oklch(0.235 0.006 285);
+    --default-foreground: var(--snow);
+    --segment: oklch(0.258 0.007 285);
+    --segment-foreground: var(--foreground);
+    --border: oklch(0.258 0.006 285);
+    --separator: oklch(0.228 0.005 285);
+    --field-background: oklch(0.162 0.005 285);
+    --field-foreground: var(--foreground);
+    --field-placeholder: oklch(0.52 0.008 285);
+    --field-border: oklch(0.275 0.006 285);
+    --accent: oklch(0.696 0.165 162.48);
+    --accent-foreground: oklch(0.145 0.025 165);
+    --success: oklch(0.735 0.175 156);
+    --success-foreground: oklch(0.145 0.025 160);
+    --warning: oklch(0.815 0.145 78);
+    --warning-foreground: oklch(0.18 0.03 78);
+    --danger: oklch(0.625 0.205 22);
+    --danger-foreground: var(--snow);
+    --focus: var(--accent);
+    --surface-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.03);
+    --overlay-shadow:
+      0 20px 48px -12px rgba(0, 0, 0, 0.82),
+      0 0 0 1px rgba(255, 255, 255, 0.07);
+    --field-shadow: 0 0 0 0 transparent;
+  }
+
+  /* 前台决斗工作台语义主色：极光青绿 */
+  .portal-theme {
+    --accent: oklch(0.685 0.165 162.48);
+    --accent-foreground: oklch(0.14 0.025 165);
+    --focus: var(--accent);
+  }
+
+  .light .portal-theme,
+  [data-theme="light"] .portal-theme {
+    --accent: oklch(0.56 0.16 162.48);
+    --accent-foreground: var(--snow);
+  }
+
+  /* 后台控制工作台语义主色：星云紫靛 */
+  .admin-theme {
+    --accent: oklch(0.615 0.2 276);
+    --accent-foreground: var(--snow);
+    --focus: var(--accent);
+  }
+}
+
+@layer base {
   html {
     -webkit-tap-highlight-color: transparent;
     scroll-behavior: smooth;
@@ -12,11 +117,11 @@
 
   body {
     font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-    background-color: #020617;
-    color: #f1f5f9;
+    background-color: var(--background);
+    color: var(--foreground);
   }
 
-  /* 防止 iOS Safari 点击小字号输入框时自动放大页面 */
+  /* 防止移动端点击小字号输入框时浏览器自动缩放视口 */
   @media (max-width: 639px) {
     input,
     select,
@@ -25,15 +130,15 @@
     }
   }
 
-  /* 现代纤细滚动条 */
+  /* 极简纤细滚动条 */
   * {
     scrollbar-width: thin;
-    scrollbar-color: rgba(71, 85, 105, 0.55) transparent;
+    scrollbar-color: color-mix(in oklab, var(--foreground) 18%, transparent) transparent;
   }
 
   *::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
   }
 
   *::-webkit-scrollbar-track {
@@ -41,65 +146,71 @@
   }
 
   *::-webkit-scrollbar-thumb {
-    background: rgba(71, 85, 105, 0.55);
+    background: color-mix(in oklab, var(--foreground) 18%, transparent);
     border-radius: 9999px;
   }
 
   *::-webkit-scrollbar-thumb:hover {
-    background: rgba(100, 116, 139, 0.8);
+    background: color-mix(in oklab, var(--foreground) 32%, transparent);
   }
 }
 
-/* 氛围背景光晕：前台青翠决斗场 / 后台靛紫控制面 */
+@layer components {
+  .card {
+    border: 1px solid var(--border);
+    box-shadow: var(--surface-shadow);
+  }
+
+  .card--transparent {
+    @apply border-none shadow-none;
+  }
+
+  .button {
+    @apply font-medium;
+  }
+}
+
+/* 保持微克制的顶光氛围，不破坏纯净碳黑对比度 */
 .portal-ambient-bg {
-  background-image:
-    radial-gradient(ellipse 80% 50% at 50% -15%, rgba(16, 185, 129, 0.16), transparent 70%),
-    radial-gradient(ellipse 55% 40% at 90% 10%, rgba(14, 165, 233, 0.1), transparent 65%);
+  background-image: radial-gradient(ellipse 70% 32% at 50% -12%, rgba(16, 185, 129, 0.06), transparent 70%);
 }
 
 .admin-ambient-bg {
-  background-image:
-    radial-gradient(ellipse 80% 50% at 50% -15%, rgba(99, 102, 241, 0.18), transparent 70%),
-    radial-gradient(ellipse 55% 40% at 88% 12%, rgba(168, 85, 247, 0.1), transparent 65%);
+  background-image: radial-gradient(ellipse 70% 32% at 50% -12%, rgba(99, 102, 241, 0.07), transparent 70%);
 }
 
-/* 现代毛玻璃表面卡片与表单控件 */
+/* 兼容现有所有业务子面板的卡片与输入框样式（自动跟随 Carbon Dark / Crisp Light） */
 .glass-card {
-  background: rgba(15, 23, 42, 0.76);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border: 1px solid rgba(148, 163, 184, 0.12);
-  box-shadow: 0 10px 30px -12px rgba(2, 6, 23, 0.65), inset 0 1px 0 0 rgba(255, 255, 255, 0.04);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--surface-shadow);
 }
 
 .glass-subcard {
-  background: rgba(2, 6, 23, 0.65);
-  border: 1px solid rgba(148, 163, 184, 0.1);
+  background: var(--surface-secondary);
+  border: 1px solid color-mix(in oklab, var(--border) 82%, transparent);
 }
 
 .input-modern {
-  background-color: rgba(2, 6, 23, 0.8);
-  border: 1px solid rgba(71, 85, 105, 0.65);
-  border-radius: 0.625rem;
-  color: #f1f5f9;
-  transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+  background-color: var(--field-background);
+  border: 1px solid var(--field-border);
+  border-radius: var(--field-radius);
+  color: var(--field-foreground);
+  transition: border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease;
 }
 
 .input-modern:focus {
   outline: none;
-  border-color: rgba(52, 211, 153, 0.75);
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.16);
-  background-color: rgba(2, 6, 23, 0.95);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 22%, transparent);
 }
 
 .input-modern-indigo:focus {
   outline: none;
-  border-color: rgba(129, 140, 248, 0.8);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
-  background-color: rgba(2, 6, 23, 0.95);
+  border-color: oklch(0.64 0.19 276);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.22);
 }
 
-/* 隐藏横向胶囊导航滚动条但保留滑动手势 */
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
@@ -109,26 +220,24 @@
   display: none;
 }
 
-/* 移动端刘海屏与底部 Home Indicator 安全区 */
 .pb-safe {
   padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
 }
 
 .pb-mobile-nav {
-  padding-bottom: calc(5.25rem + env(safe-area-inset-bottom));
+  padding-bottom: calc(4.5rem + env(safe-area-inset-bottom));
 }
 
 @media (min-width: 768px) {
   .pb-mobile-nav {
-    padding-bottom: 2rem;
+    padding-bottom: 1.5rem;
   }
 }
 
-/* 柔和动效 */
 @keyframes fadeIn {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(3px);
   }
   to {
     opacity: 1;
@@ -139,7 +248,7 @@
 @keyframes slideUpSheet {
   from {
     opacity: 0;
-    transform: translateY(28px);
+    transform: translateY(20px);
   }
   to {
     opacity: 1;
@@ -148,9 +257,9 @@
 }
 
 .animate-fade-in {
-  animation: fadeIn 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: fadeIn 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .animate-slide-up {
-  animation: slideUpSheet 240ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: slideUpSheet 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }

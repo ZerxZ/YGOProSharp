@@ -1,6 +1,18 @@
-import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
-  AlertTriangle,
+  Alert,
+  Button,
+  Card,
+  Chip,
+  Input,
+  Label,
+  SearchField,
+  Spinner,
+  Surface,
+  Switch,
+  Tabs
+} from '@heroui/react';
+import {
   CheckCircle2,
   Code2,
   CopyPlus,
@@ -49,6 +61,7 @@ import {
 type StudioWorkspace = 'workbench' | 'proposals' | 'pool_catalog';
 type InspectorTab = 'stats' | 'text' | 'script';
 type ExplorerFilter = 'all' | 'monster' | 'spell' | 'trap' | 'no_script' | 'no_image';
+type MobileIdePane = 'explorer' | 'preview' | 'editor';
 
 function createInitialDraft(id = 99000001): EditableDiyCard {
   return {
@@ -60,8 +73,8 @@ function createInitialDraft(id = 99000001): EditableDiyCard {
     level: 8,
     lScale: 0,
     rScale: 0,
-    race: 0x2000, // 龙族
-    attribute: 0x10, // 光
+    race: 0x2000,
+    attribute: 0x10,
     attack: 3000,
     defense: 2500,
     linkMarker: 0,
@@ -82,6 +95,7 @@ function parseProposalDiff(diffJson: string): any | null {
 export function StudioView({ user, notify }: { user: AuthUser; notify: (t: string, k?: 'ok' | 'err') => void }) {
   const [workspace, setWorkspace] = useState<StudioWorkspace>('workbench');
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('stats');
+  const [mobilePane, setMobilePane] = useState<MobileIdePane>('editor');
 
   const [packages, setPackages] = useState<any[]>([]);
   const [trash, setTrash] = useState<string[]>([]);
@@ -125,8 +139,6 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
   const [explorerModalTitle, setExplorerModalTitle] = useState('');
   const [explorerModalReport, setExplorerModalReport] = useState<YpkInspectionReport | null>(null);
   const [explorerModalResolver, setExplorerModalResolver] = useState<YpkEntryResolver | null>(null);
-
-  const stageRef = useRef<HTMLDivElement | null>(null);
 
   const loadPackageCards = useCallback(
     async (pkgId: string) => {
@@ -173,12 +185,6 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
     loadAll();
   }, [loadAll]);
 
-  const scrollStageOnMobile = () => {
-    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
-      setTimeout(() => stageRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
-    }
-  };
-
   const selectCardForEdit = async (pkgId: string, cardId: number) => {
     try {
       const res = await apiFetch(`/api/v1/diy/packages/${encodeURIComponent(pkgId)}/cards/${cardId}`);
@@ -205,7 +211,7 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
       setLuaScript(res.detail.scriptContent || generateSmartLuaTemplate(loaded));
       setHasCardImage(Boolean(res.detail.hasImage));
       setSandboxResult(null);
-      scrollStageOnMobile();
+      setMobilePane('editor');
     } catch (err) {
       notify(err instanceof Error ? err.message : '加载卡片详情失败', 'err');
     }
@@ -220,11 +226,14 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
     setHasCardImage(false);
     setSandboxResult(null);
     setInspectorTab('stats');
-    scrollStageOnMobile();
+    setMobilePane('editor');
   };
 
   const cloneCurrentCard = () => {
-    const nextId = pkgCards.length > 0 ? Math.max(...pkgCards.map((x: any) => Number(x.card.id)), Number(editingCard.id)) + 1 : Number(editingCard.id) + 1;
+    const nextId =
+      pkgCards.length > 0
+        ? Math.max(...pkgCards.map((x: any) => Number(x.card.id)), Number(editingCard.id)) + 1
+        : Number(editingCard.id) + 1;
     const cloned: EditableDiyCard = {
       ...editingCard,
       id: nextId,
@@ -239,7 +248,7 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
   const saveCardDirect = useCallback(
     async (autoReload: boolean) => {
       if (!selectedPkgId) {
-        notify('请先在左上角选择或新建一个受管 DIY 包', 'err');
+        notify('请先在上方选择或新建一个受管 DIY 包', 'err');
         setShowNewPkgForm(true);
         return;
       }
@@ -274,7 +283,6 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
     [selectedPkgId, editingCard, luaScript, notify, loadAll]
   );
 
-  // 支持 Ctrl+S / Cmd+S 快捷原子保存
   useEffect(() => {
     if (workspace !== 'workbench' || !hasPerm(user, 'diy:edit')) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -537,8 +545,8 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
     }
   };
 
-  const searchCards = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const searchCards = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     try {
       const res = await apiFetch(`/api/v1/cards/search?q=${encodeURIComponent(cardQuery)}&limit=30`);
       setCards(res.cards || []);
@@ -588,90 +596,74 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
           setExplorerModalResolver(null);
         }}
       />
-      {/* 顶层三工作面导航条 + 全局热重载 */}
-      <div className="glass-card rounded-2xl p-3 sm:px-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
-        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-          <button
-            type="button"
-            onClick={() => setWorkspace('workbench')}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 transition cursor-pointer ${
-              workspace === 'workbench'
-                ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-950/60'
-                : 'glass-subcard text-slate-300 hover:text-white'
-            }`}
-          >
-            <Palette className="w-4 h-4" />
-            <span>DIY 制卡 IDE 工作台</span>
-          </button>
 
-          <button
-            type="button"
-            onClick={() => setWorkspace('proposals')}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 transition cursor-pointer ${
-              workspace === 'proposals'
-                ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-950/60'
-                : 'glass-subcard text-slate-300 hover:text-white'
-            }`}
-          >
-            <FileCheck2 className="w-4 h-4" />
-            <span>提案审批中心</span>
-            {pendingProposalCount > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full bg-amber-500 text-slate-950 text-[10px] font-black">
-                {pendingProposalCount}
-              </span>
-            )}
-          </button>
+      {/* 顶层三工作面 Tabs + 全局热重载 */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-2.5">
+        <Tabs
+          selectedKey={workspace}
+          onSelectionChange={(k) => setWorkspace(String(k) as StudioWorkspace)}
+          className="max-w-full"
+        >
+          <Tabs.ListContainer>
+            <Tabs.List aria-label="工作台主视图切换">
+              <Tabs.Tab id="workbench" className="text-xs px-3 gap-1.5">
+                <Palette className="w-3.5 h-3.5" />
+                <span>DIY 制卡 IDE 工作台</span>
+                <Tabs.Indicator />
+              </Tabs.Tab>
+              <Tabs.Tab id="proposals" className="text-xs px-3 gap-1.5">
+                <FileCheck2 className="w-3.5 h-3.5" />
+                <span>提案审批中心</span>
+                {pendingProposalCount > 0 && (
+                  <Chip size="sm" variant="soft" color="warning" className="h-4 px-1.5 text-[10px] font-bold">
+                    {pendingProposalCount}
+                  </Chip>
+                )}
+                <Tabs.Indicator />
+              </Tabs.Tab>
+              <Tabs.Tab id="pool_catalog" className="text-xs px-3 gap-1.5">
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>随机盲盒池 & 六维卡查</span>
+                <Tabs.Indicator />
+              </Tabs.Tab>
+            </Tabs.List>
+          </Tabs.ListContainer>
+        </Tabs>
 
-          <button
-            type="button"
-            onClick={() => setWorkspace('pool_catalog')}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 transition cursor-pointer ${
-              workspace === 'pool_catalog'
-                ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-lg shadow-indigo-950/60'
-                : 'glass-subcard text-slate-300 hover:text-white'
-            }`}
-          >
-            <Sparkles className="w-4 h-4" />
-            <span>随机盲盒池 & 六维卡查</span>
-          </button>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
           {packages.some((p) => p.manifest?.enabled) && (
             <a
               href="/api/v1/diy/export-all.ypk"
               download
-              className="min-h-[34px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 text-xs font-medium hover:bg-emerald-600/30"
-              title="将所有已启用 DIY 包按优先级合并打包为单个客户端 .ypk"
+              className="button button--secondary h-8 inline-flex items-center gap-1.5 px-3 rounded-lg text-xs"
             >
-              <Download className="w-3.5 h-3.5" /> 导出全服合集 .ypk
+              <Download className="w-3.5 h-3.5 text-emerald-400" /> 导出全服合集 .ypk
             </a>
           )}
 
           {hasPerm(user, 'diy:reload') && (
-            <button
-              type="button"
-              onClick={async () => {
+            <Button
+              size="sm"
+              variant="primary"
+              onPress={async () => {
                 const r = await apiFetch('/api/v1/diy/reload', { method: 'POST', body: '{}' });
                 notify(`已热重载至 Catalog v${r.reload.catalogVersion}（进行中对局零中断）`);
                 loadAll();
               }}
-              className="min-h-[34px] px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" /> 免重启热重载
-            </button>
+            </Button>
           )}
         </div>
       </div>
 
-      {/* ==================== 工作面 1：DataEditorY + YGODIY 风格三栏制卡 IDE ==================== */}
+      {/* ==================== 工作面 1：三栏制卡 IDE + 移动端单屏窗格切换 ==================== */}
       {workspace === 'workbench' && (
         <>
-          {/* 受管 DIY 包工具带 */}
-          <div className="glass-card rounded-2xl p-3.5 space-y-3">
+          <Card className="rounded-xl p-3.5 space-y-3 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-2.5">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
+                <span className="font-semibold text-foreground flex items-center gap-1.5 shrink-0">
                   <Layers className="w-4 h-4 text-indigo-400" /> 工作包:
                 </span>
                 <select
@@ -680,7 +672,7 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                     setSelectedPkgId(e.target.value);
                     loadPackageCards(e.target.value);
                   }}
-                  className="w-full sm:w-auto px-3 py-1.5 text-xs font-mono input-modern input-modern-indigo"
+                  className="w-full sm:w-auto h-8 px-3 text-xs font-mono input-modern input-modern-indigo"
                 >
                   {packages.length === 0 && <option value="">-- 请先新建或导入 .ypk 扩展包 --</option>}
                   {packages.map((p) => (
@@ -691,58 +683,50 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                 </select>
 
                 {hasPerm(user, 'diy:edit') && (
-                  <button
-                    type="button"
-                    onClick={() => {
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onPress={() => {
                       setShowNewPkgForm((v) => !v);
                       setShowYpkImporter(false);
                     }}
-                    className="min-h-[32px] px-2.5 py-1 rounded-xl glass-subcard hover:border-indigo-400/50 text-xs text-slate-200 flex items-center gap-1 cursor-pointer"
                   >
                     <FolderPlus className="w-3.5 h-3.5 text-indigo-400" /> 新建包
-                  </button>
+                  </Button>
                 )}
 
                 {(hasPerm(user, 'diy:upload') || hasPerm(user, 'diy:edit')) && (
-                  <button
-                    type="button"
-                    onClick={() => {
+                  <Button
+                    size="sm"
+                    variant={showYpkImporter ? 'primary' : 'secondary'}
+                    onPress={() => {
                       setShowYpkImporter((v) => !v);
                       setShowNewPkgForm(false);
                     }}
-                    className={`min-h-[32px] inline-flex items-center gap-1.5 px-3 py-1 rounded-xl border text-xs font-semibold cursor-pointer transition ${
-                      showYpkImporter
-                        ? 'bg-purple-600 border-purple-400 text-white'
-                        : 'bg-purple-600/20 border-purple-500/40 text-purple-200 hover:bg-purple-600/30'
-                    }`}
                   >
                     <FolderUp className="w-3.5 h-3.5" /> 导入 .ypk 整包
-                  </button>
+                  </Button>
                 )}
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
                 {selectedPkgId && (
                   <>
-                    <button
-                      type="button"
-                      onClick={() => openInstalledPkgInspector(selectedPkgId)}
-                      className="min-h-[32px] inline-flex items-center gap-1 px-3 py-1 rounded-xl bg-indigo-500/15 border border-indigo-500/35 text-indigo-200 text-xs font-medium hover:bg-indigo-500/25 cursor-pointer"
-                    >
-                      <Eye className="w-3.5 h-3.5" /> 包内文件与可视化
-                    </button>
+                    <Button size="sm" variant="secondary" onPress={() => openInstalledPkgInspector(selectedPkgId)}>
+                      <Eye className="w-3.5 h-3.5 text-indigo-400" /> 包内文件树
+                    </Button>
                     <a
                       href={`/api/v1/diy/packages/${encodeURIComponent(selectedPkgId)}/export.ypk`}
                       download
-                      className="min-h-[32px] inline-flex items-center gap-1 px-3 py-1 rounded-xl bg-sky-600/20 border border-sky-500/40 text-sky-300 text-xs font-medium hover:bg-sky-600/30"
+                      className="button button--secondary h-8 inline-flex items-center gap-1 px-3 rounded-lg text-xs"
                     >
-                      <Download className="w-3.5 h-3.5" /> 导出本包 .ypk
+                      <Download className="w-3.5 h-3.5 text-sky-400" /> 导出 .ypk
                     </a>
                   </>
                 )}
 
                 {selectedPkgId && hasPerm(user, 'diy:upload') && (
-                  <label className="min-h-[32px] inline-flex items-center gap-1 px-3 py-1 rounded-xl glass-subcard hover:border-indigo-400/50 text-slate-300 text-xs cursor-pointer">
+                  <label className="button button--secondary h-8 inline-flex items-center gap-1 px-3 rounded-lg text-xs cursor-pointer">
                     <Upload className="w-3.5 h-3.5 text-indigo-400" /> 批量导入文件
                     <input
                       type="file"
@@ -758,96 +742,95 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                 )}
 
                 {selectedPkgId && hasPerm(user, 'diy:edit') && (
-                  <button
-                    type="button"
-                    onClick={async () => {
+                  <Button
+                    size="sm"
+                    variant="danger-soft"
+                    onPress={async () => {
                       await apiFetch(`/api/v1/diy/packages/${encodeURIComponent(selectedPkgId)}`, { method: 'DELETE' });
                       setSelectedPkgId('');
                       setPkgCards([]);
                       notify('包已安全移入 .trash 回收站，随时可恢复');
                       loadAll();
                     }}
-                    className="min-h-[32px] px-2.5 py-1 rounded-xl bg-rose-950/60 border border-rose-500/30 text-rose-300 text-xs cursor-pointer"
                   >
                     卸载入回收站
-                  </button>
+                  </Button>
                 )}
               </div>
             </div>
 
             {showNewPkgForm && (
-              <form
-                onSubmit={createPackage}
-                className="glass-subcard rounded-xl p-3 border border-indigo-500/35 flex flex-wrap items-center gap-2 text-xs animate-fade-in"
-              >
-                <span className="font-semibold text-indigo-300">新建受管 DIY 包：</span>
-                <input
-                  value={newPkgId}
-                  onChange={(e) => setNewPkgId(e.target.value)}
-                  placeholder="包英文标识 (如 starlight-pack)"
-                  className="flex-1 min-w-44 px-3 py-1.5 font-mono input-modern input-modern-indigo"
-                  required
-                />
-                <input
-                  value={newPkgName}
-                  onChange={(e) => setNewPkgName(e.target.value)}
-                  placeholder="中文显示名称 (如 星辉试作卡包)"
-                  className="flex-1 min-w-44 px-3 py-1.5 input-modern input-modern-indigo"
-                />
-                <button className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold cursor-pointer">
-                  立即创建
-                </button>
-              </form>
+              <Surface variant="secondary" className="rounded-lg p-3 border border-border animate-fade-in">
+                <form onSubmit={createPackage} className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-indigo-400">新建受管 DIY 包：</span>
+                  <Input
+                    variant="secondary"
+                    value={newPkgId}
+                    onChange={(e) => setNewPkgId(e.target.value)}
+                    placeholder="包英文标识 (如 starlight-pack)"
+                    className="flex-1 min-w-44 font-mono text-xs"
+                    required
+                  />
+                  <Input
+                    variant="secondary"
+                    value={newPkgName}
+                    onChange={(e) => setNewPkgName(e.target.value)}
+                    placeholder="中文显示名称 (如 星辉试作卡包)"
+                    className="flex-1 min-w-44 text-xs"
+                  />
+                  <Button type="submit" size="sm" variant="primary">
+                    立即创建
+                  </Button>
+                </form>
+              </Surface>
             )}
 
             {showYpkImporter && (
-              <div className="glass-subcard rounded-2xl p-4 border border-purple-500/35 space-y-3.5 text-xs animate-fade-in">
-                <div className="font-semibold text-purple-200 flex items-center justify-between">
-                  <span>透视 & 导入标准 .ypk / .zip 扩展包（支持 256MB 大包，先查看包内文件树与卡片再一键入库）</span>
-                  <button
-                    type="button"
-                    onClick={() => setShowYpkImporter(false)}
-                    className="text-slate-400 hover:text-white cursor-pointer"
-                  >
+              <Surface variant="secondary" className="rounded-xl p-4 border border-border space-y-3.5 animate-fade-in">
+                <div className="font-semibold text-foreground flex items-center justify-between">
+                  <span>透视 & 导入标准 .ypk / .zip 扩展包（最大 256MB，先查看包内文件树与卡片再一键入库）</span>
+                  <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onPress={() => setShowYpkImporter(false)}>
                     收起
-                  </button>
+                  </Button>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 items-center">
-                  <input
+                  <Input
+                    variant="secondary"
                     value={ypkTargetId}
                     onChange={(e) => setYpkTargetId(e.target.value)}
-                    placeholder="目标包 ID（留空自动按文件名生成）"
-                    className="px-3 py-2 input-modern input-modern-indigo font-mono"
+                    placeholder="目标包 ID（留空自动生成）"
+                    className="font-mono text-xs"
                   />
-                  <input
+                  <Input
+                    variant="secondary"
                     value={ypkTargetName}
                     onChange={(e) => setYpkTargetName(e.target.value)}
-                    placeholder="包显示名（留空自动读取原包名）"
-                    className="px-3 py-2 input-modern input-modern-indigo"
+                    placeholder="包显示名（留空取原包名）"
+                    className="text-xs"
                   />
                   <div className="flex flex-wrap items-center gap-3 px-1">
-                    <label className="inline-flex items-center gap-1.5 text-slate-300 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={ypkMergeMode}
-                        onChange={(e) => setYpkMergeMode(e.target.checked)}
-                        className="w-4 h-4 rounded accent-indigo-500"
-                      />
-                      同名包增量合并
-                    </label>
-                    <label className="inline-flex items-center gap-1.5 text-slate-300 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={ypkAutoReload}
-                        onChange={(e) => setYpkAutoReload(e.target.checked)}
-                        className="w-4 h-4 rounded accent-emerald-500"
-                      />
-                      自动热重载
-                    </label>
+                    <Switch size="sm" isSelected={ypkMergeMode} onChange={setYpkMergeMode}>
+                      <Switch.Control>
+                        <Switch.Thumb />
+                      </Switch.Control>
+                      <Switch.Content>
+                        <Label className="text-xs">增量合并</Label>
+                      </Switch.Content>
+                    </Switch>
+
+                    <Switch size="sm" isSelected={ypkAutoReload} onChange={setYpkAutoReload}>
+                      <Switch.Control>
+                        <Switch.Thumb />
+                      </Switch.Control>
+                      <Switch.Content>
+                        <Label className="text-xs">自动热重载</Label>
+                      </Switch.Content>
+                    </Switch>
                   </div>
+
                   <label
-                    className={`min-h-[38px] inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold shadow-md cursor-pointer ${
+                    className={`button button--primary h-9 inline-flex items-center justify-center gap-1.5 px-4 rounded-lg text-xs cursor-pointer ${
                       ypkUploadProg ? 'opacity-60 pointer-events-none' : ''
                     }`}
                   >
@@ -873,13 +856,13 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
 
                 {ypkUploadProg && (
                   <div className="space-y-1">
-                    <div className="h-2 rounded-full bg-slate-900 overflow-hidden border border-slate-800">
+                    <div className="h-2 rounded-full bg-background overflow-hidden border border-border">
                       <div
-                        className="h-full bg-gradient-to-r from-purple-500 to-indigo-400 transition-all duration-150"
+                        className="h-full bg-accent transition-all duration-150"
                         style={{ width: `${ypkUploadProg.percent}%` }}
                       />
                     </div>
-                    <div className="text-[11px] font-mono text-indigo-200">
+                    <div className="text-[11px] font-mono text-muted">
                       {ypkUploadProg.percent}% · {formatBytes(ypkUploadProg.loaded)} / {formatBytes(ypkUploadProg.total)}
                     </div>
                   </div>
@@ -892,48 +875,54 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                     accent="indigo"
                     actionFooter={
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <span className="text-slate-300">
+                        <span className="text-muted">
                           核对包内文件、卡面与脚本无误后，点击右侧按钮立即原子导入至受管包{' '}
-                          <code className="text-indigo-300 font-mono">{ypkTargetId || ypkPreviewReport.archiveName}</code>
+                          <code className="text-indigo-400 font-mono">{ypkTargetId || ypkPreviewReport.archiveName}</code>
                         </span>
-                        <button
-                          type="button"
-                          disabled={!ypkPreviewReport.isSafe || ypkImporting}
-                          onClick={confirmImportPreviewedYpk}
-                          className="min-h-[38px] px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-45 text-white font-bold shrink-0 cursor-pointer"
+                        <Button
+                          variant="primary"
+                          isDisabled={!ypkPreviewReport.isSafe}
+                          isPending={ypkImporting}
+                          onPress={confirmImportPreviewedYpk}
+                          className="shrink-0"
                         >
-                          {ypkImporting ? '正在原子写入...' : '确认原子导入此 .ypk 扩展包'}
-                        </button>
+                          {ypkImporting && <Spinner color="current" size="sm" />}
+                          <span>{ypkImporting ? '正在原子写入...' : '确认原子导入此 .ypk 扩展包'}</span>
+                        </Button>
                       </div>
                     }
                   />
                 )}
-              </div>
+              </Surface>
             )}
 
             {conflicts?.conflicts?.length > 0 && (
-              <div className="px-3 py-2 rounded-xl bg-amber-950/50 border border-amber-500/30 text-xs text-amber-200 flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>
-                  冲突提示：共 {conflicts.conflicts.length} 张卡覆盖了基础卡库或跨包重复定义（
-                  {conflicts.conflicts
-                    .slice(0, 5)
-                    .map((c: any) => `#${c.cardId} ${c.cardName}`)
-                    .join('、')}
-                  ）
-                </span>
-              </div>
+              <Alert status="warning">
+                <Alert.Indicator />
+                <Alert.Content>
+                  <Alert.Description className="text-xs">
+                    冲突提示：共 {conflicts.conflicts.length} 张卡覆盖了基础卡库或跨包重复定义（
+                    {conflicts.conflicts
+                      .slice(0, 5)
+                      .map((c: any) => `#${c.cardId} ${c.cardName}`)
+                      .join('、')}
+                    ）
+                  </Alert.Description>
+                </Alert.Content>
+              </Alert>
             )}
 
             {trash.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800/80 text-xs">
-                <span className="text-slate-400">回收站 (.trash)：</span>
+              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-separator">
+                <span className="text-muted">回收站 (.trash)：</span>
                 {trash.map((t) => (
-                  <span key={t} className="inline-flex items-center gap-1.5 glass-subcard px-2.5 py-1 rounded-lg">
+                  <Surface key={t} variant="secondary" className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md border border-border">
                     <span className="font-mono text-[11px]">{t}</span>
-                    <button
-                      type="button"
-                      onClick={async () => {
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-5 px-1.5 text-[11px] text-emerald-400"
+                      onPress={async () => {
                         await apiFetch(`/api/v1/diy/trash/${encodeURIComponent(t)}/restore`, {
                           method: 'POST',
                           body: '{}'
@@ -941,44 +930,72 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                         notify('已从回收站恢复扩展包');
                         loadAll();
                       }}
-                      className="text-emerald-400 hover:underline cursor-pointer"
                     >
                       恢复
-                    </button>
-                  </span>
+                    </Button>
+                  </Surface>
                 ))}
               </div>
             )}
+          </Card>
+
+          {/* 移动端专属 IDE 窗格切换条 (lg:hidden)，彻底消除手机端三栏纵向长滚 */}
+          <div className="lg:hidden">
+            <Tabs
+              selectedKey={mobilePane}
+              onSelectionChange={(k) => setMobilePane(String(k) as MobileIdePane)}
+              className="w-full"
+            >
+              <Tabs.ListContainer>
+                <Tabs.List aria-label="移动端制卡 IDE 窗格切换" className="w-full">
+                  <Tabs.Tab id="explorer" className="flex-1 text-xs">
+                    卡表目录 ({pkgCards.length})
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                  <Tabs.Tab id="preview" className="flex-1 text-xs">
+                    实时卡面 & 保存
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                  <Tabs.Tab id="editor" className="flex-1 text-xs">
+                    属性 & Lua 沙盒
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                </Tabs.List>
+              </Tabs.ListContainer>
+            </Tabs>
           </div>
 
           {/* 核心三栏 IDE：左卡表导航 (3) + 中实时实体卡面预览台 (4) + 右结构化属性/Lua 沙盒检视器 (5) */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
             {/* 左栏：色彩编码卡片资源管理器 */}
-            <div className="lg:col-span-3 glass-card rounded-2xl p-3.5 space-y-3 flex flex-col">
+            <Card
+              className={`lg:col-span-3 rounded-xl p-3.5 space-y-3 flex-col ${
+                mobilePane === 'explorer' ? 'flex' : 'hidden lg:flex'
+              }`}
+            >
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-bold text-slate-200">
+                <span className="text-xs font-bold text-foreground">
                   卡表目录 ({filteredPkgCards.length}/{pkgCards.length})
                 </span>
                 {hasPerm(user, 'diy:edit') && (
-                  <button
-                    type="button"
-                    onClick={startNewCardDraft}
-                    className="px-2.5 py-1 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1 cursor-pointer"
-                  >
+                  <Button size="sm" variant="primary" className="h-7 px-2.5 text-xs" onPress={startNewCardDraft}>
                     <Plus className="w-3.5 h-3.5" /> 新建单卡
-                  </button>
+                  </Button>
                 )}
               </div>
 
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  value={cardFilter}
-                  onChange={(e) => setCardFilter(e.target.value)}
-                  placeholder="搜卡名、卡密或效果词..."
-                  className="w-full pl-8 pr-3 py-1.5 text-xs input-modern input-modern-indigo"
-                />
-              </div>
+              <SearchField
+                aria-label="搜包内卡片"
+                variant="secondary"
+                value={cardFilter}
+                onChange={setCardFilter}
+              >
+                <SearchField.Group>
+                  <SearchField.SearchIcon />
+                  <SearchField.Input placeholder="搜卡名、卡密或效果词..." className="text-xs" />
+                  <SearchField.ClearButton />
+                </SearchField.Group>
+              </SearchField>
 
               <div className="flex items-center gap-1 overflow-x-auto no-scrollbar pb-0.5">
                 {(
@@ -995,10 +1012,10 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                     key={k}
                     type="button"
                     onClick={() => setExplorerFilter(k)}
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-medium shrink-0 cursor-pointer ${
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-medium shrink-0 cursor-pointer border transition ${
                       explorerFilter === k
-                        ? 'bg-indigo-600 text-white'
-                        : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+                        ? 'bg-surface-secondary border-accent text-foreground font-semibold'
+                        : 'bg-background border-border text-muted hover:text-foreground'
                     }`}
                   >
                     {label}
@@ -1006,7 +1023,7 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                 ))}
               </div>
 
-              <div className="space-y-1.5 max-h-64 lg:max-h-[540px] overflow-y-auto pr-0.5">
+              <div className="space-y-1.5 max-h-[520px] overflow-y-auto pr-0.5">
                 {filteredPkgCards.map((item: any) => {
                   const c = item.card;
                   const fTheme = resolveCardFrameTheme(Number(c.type || 0));
@@ -1017,21 +1034,21 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                     <div
                       key={c.id}
                       onClick={() => selectCardForEdit(selectedPkgId, c.id)}
-                      className={`p-2.5 rounded-xl border text-xs cursor-pointer transition ${
+                      className={`p-2.5 rounded-lg border text-xs cursor-pointer transition ${
                         isSelected
-                          ? 'bg-indigo-950/65 border-indigo-400 shadow-sm'
-                          : 'glass-subcard hover:border-slate-700'
+                          ? 'bg-surface-secondary border-accent shadow-2xs'
+                          : 'bg-background/60 border-border hover:border-foreground/25'
                       }`}
                     >
                       <div className="flex items-center justify-between gap-1.5">
                         <div className="flex items-center gap-2 min-w-0">
-                          <span className={`w-2.5 h-2.5 rounded-sm shrink-0 ${fTheme.dotColor}`} title={fTheme.kindLabel} />
-                          <span className="font-semibold text-slate-100 truncate">{c.name || '<未命名>'}</span>
+                          <span className={`w-2.5 h-2.5 rounded-xs shrink-0 ${fTheme.dotColor}`} title={fTheme.kindLabel} />
+                          <span className="font-semibold text-foreground truncate">{c.name || '<未命名>'}</span>
                         </div>
-                        <span className="font-mono text-[10px] text-slate-400 shrink-0">#{c.id}</span>
+                        <span className="font-mono text-[10px] text-muted shrink-0">#{c.id}</span>
                       </div>
 
-                      <div className="flex items-center justify-between gap-2 mt-1 text-[10px] text-slate-400">
+                      <div className="flex items-center justify-between gap-2 mt-1 text-[10px] text-muted">
                         <span className="truncate">
                           {fTheme.kindLabel}
                           {!fTheme.isSpell && !fTheme.isTrap
@@ -1043,14 +1060,14 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                         <span className="flex items-center gap-1 shrink-0">
                           <span
                             className={`px-1 rounded ${
-                              item.hasScript ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'
+                              item.hasScript ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'
                             }`}
                           >
                             Lua
                           </span>
                           <span
                             className={`px-1 rounded ${
-                              item.hasImage ? 'bg-sky-500/15 text-sky-300' : 'bg-slate-800 text-slate-500'
+                              item.hasImage ? 'bg-sky-500/15 text-sky-400' : 'bg-surface-tertiary text-muted'
                             }`}
                           >
                             图
@@ -1062,7 +1079,7 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                 })}
 
                 {filteredPkgCards.length === 0 && (
-                  <div className="py-10 text-center text-xs text-slate-500 space-y-1">
+                  <div className="py-10 text-center text-xs text-muted space-y-1">
                     <div>{pkgCards.length === 0 ? '当前工作包尚无卡片' : '无符合筛选条件的卡片'}</div>
                     <div className="text-[11px]">点击右上角「新建单卡」或上方「导入 .ypk 整包」</div>
                   </div>
@@ -1070,23 +1087,19 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
               </div>
 
               {selectedPkgId && (
-                <div className="pt-2.5 border-t border-slate-800/80 space-y-2">
+                <div className="pt-2.5 border-t border-separator space-y-2">
                   <div className="flex items-center justify-between text-xs">
                     <button
                       type="button"
                       onClick={() => setShowStringsPanel((v) => !v)}
-                      className="text-slate-300 font-semibold hover:text-white cursor-pointer"
+                      className="text-foreground font-semibold hover:text-accent cursor-pointer"
                     >
                       {showStringsPanel ? '▾' : '▸'} 本包自定义字段 (strings.conf)
                     </button>
                     {showStringsPanel && hasPerm(user, 'diy:edit') && (
-                      <button
-                        type="button"
-                        onClick={saveStringsConf}
-                        className="text-indigo-400 hover:underline cursor-pointer"
-                      >
+                      <Button size="sm" variant="ghost" className="h-6 px-2 text-xs text-indigo-400" onPress={saveStringsConf}>
                         保存配置
-                      </button>
+                      </Button>
                     )}
                   </div>
                   {showStringsPanel && (
@@ -1103,16 +1116,20 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                   )}
                 </div>
               )}
-            </div>
+            </Card>
 
-            {/* 中栏：实时动态游戏王实体卡面预览台 + 快捷保存底座 */}
-            <div ref={stageRef} className="lg:col-span-4 lg:sticky lg:top-20 space-y-3">
-              <div className="glass-card rounded-2xl p-4 bg-[radial-gradient(circle_at_50%_20%,rgba(99,102,241,0.16),transparent_70%)] space-y-3.5">
+            {/* 中栏：实时实体卡面预览台 + 快捷保存底座 */}
+            <div
+              className={`lg:col-span-4 lg:sticky lg:top-4 space-y-3 ${
+                mobilePane === 'preview' ? 'block' : 'hidden lg:block'
+              }`}
+            >
+              <Card className="rounded-xl p-4 space-y-3.5">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="font-bold text-slate-200 flex items-center gap-1.5">
+                  <span className="font-bold text-foreground flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5 text-amber-400" /> 实时卡面渲染预览
                   </span>
-                  <span className="text-[10px] text-slate-400">点击或拖拽图片至卡图框即可上传</span>
+                  <span className="text-[10px] text-muted">点击或拖拽上传卡图</span>
                 </div>
 
                 <YgoCardVisualPreview
@@ -1124,76 +1141,83 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
 
                 {hasPerm(user, 'diy:edit') && (
                   <div className="space-y-2 pt-1">
-                    <button
-                      type="button"
-                      disabled={savingCard}
-                      onClick={() => saveCardDirect(true)}
-                      className="w-full min-h-[42px] py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 disabled:opacity-50 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-950/60 cursor-pointer"
+                    <Button
+                      variant="primary"
+                      fullWidth
+                      isPending={savingCard}
+                      onPress={() => saveCardDirect(true)}
                     >
-                      <Save className="w-4 h-4" />
+                      {savingCard ? <Spinner color="current" size="sm" /> : <Save className="w-4 h-4" />}
                       <span>{savingCard ? '正在校验保存...' : '原子保存并热重载 (Ctrl+S)'}</span>
-                    </button>
+                    </Button>
 
-                    <div className="grid grid-cols-4 gap-1.5 text-[11px]">
-                      <button
-                        type="button"
-                        onClick={() => saveCardDirect(false)}
-                        className="py-1.5 rounded-xl glass-subcard hover:border-slate-600 text-slate-300 font-medium cursor-pointer"
-                        title="仅原子写入包目录，暂不刷新对局服"
+                    <div className="grid grid-cols-4 gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="px-1 text-[11px]"
+                        onPress={() => saveCardDirect(false)}
                       >
                         仅存包内
-                      </button>
-                      <button
-                        type="button"
-                        onClick={submitAsProposal}
-                        className="py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-200 font-medium cursor-pointer"
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="px-1 text-[11px] text-amber-300"
+                        onPress={submitAsProposal}
                       >
                         转交提案
-                      </button>
-                      <button
-                        type="button"
-                        onClick={cloneCurrentCard}
-                        className="py-1.5 rounded-xl glass-subcard hover:border-indigo-400/50 text-indigo-200 flex items-center justify-center gap-1 cursor-pointer"
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="px-1 text-[11px]"
+                        onPress={cloneCurrentCard}
                       >
                         <CopyPlus className="w-3 h-3" /> 克隆
-                      </button>
-                      <button
-                        type="button"
-                        onClick={deleteCurrentCard}
-                        className="py-1.5 rounded-xl bg-rose-950/50 hover:bg-rose-900/60 border border-rose-500/30 text-rose-300 flex items-center justify-center gap-1 cursor-pointer"
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger-soft"
+                        className="px-1 text-[11px]"
+                        onPress={deleteCurrentCard}
                       >
                         <Trash2 className="w-3 h-3" /> 删除
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 )}
-              </div>
+              </Card>
             </div>
 
             {/* 右栏：结构化属性检视器 & CodeMirror Lua 引擎沙盒 */}
-            <div className="lg:col-span-5 glass-card rounded-2xl p-4 space-y-4">
-              <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-950/90 border border-slate-800 overflow-x-auto no-scrollbar">
-                {(
-                  [
-                    ['stats', '1. 卡面与数值'],
-                    ['text', '2. 效果与提示串'],
-                    ['script', '3. Lua 脚本 & 沙盒']
-                  ] as [InspectorTab, string][]
-                ).map(([key, label]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setInspectorTab(key)}
-                    className={`flex-1 py-2 px-3 rounded-lg text-xs font-semibold shrink-0 transition cursor-pointer ${
-                      inspectorTab === key
-                        ? 'bg-indigo-600 text-white shadow'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+            <Card
+              className={`lg:col-span-5 rounded-xl p-4 space-y-4 ${
+                mobilePane === 'editor' ? 'flex flex-col' : 'hidden lg:flex lg:flex-col'
+              }`}
+            >
+              <Tabs
+                selectedKey={inspectorTab}
+                onSelectionChange={(k) => setInspectorTab(String(k) as InspectorTab)}
+                className="w-full"
+              >
+                <Tabs.ListContainer>
+                  <Tabs.List aria-label="单卡属性与脚本检视器" className="w-full">
+                    <Tabs.Tab id="stats" className="flex-1 text-xs">
+                      1. 卡面与数值
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                    <Tabs.Tab id="text" className="flex-1 text-xs">
+                      2. 效果与提示串
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                    <Tabs.Tab id="script" className="flex-1 text-xs">
+                      3. Lua 脚本 & 沙盒
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                  </Tabs.List>
+                </Tabs.ListContainer>
+              </Tabs>
 
               {inspectorTab === 'stats' && (
                 <CardBaseStatsInspector
@@ -1216,27 +1240,27 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
               {inspectorTab === 'script' && (
                 <div className="space-y-3 text-xs">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onPress={() => {
                         setLuaScript(generateSmartLuaTemplate(editingCard));
-                        notify('已按当前卡片种类（超量/同调/连接/灵摆/魔陷）生成对应 OCGCore 脚本骨架');
+                        notify('已按当前卡片种类生成对应 OCGCore 脚本骨架');
                       }}
-                      className="min-h-[34px] px-3 py-1.5 rounded-xl glass-subcard hover:border-indigo-400/60 text-indigo-200 font-medium flex items-center gap-1.5 cursor-pointer"
                     >
-                      <Wand2 className="w-3.5 h-3.5 text-amber-400" /> 按当前卡种生成 Lua 骨架
-                    </button>
+                      <Wand2 className="w-3.5 h-3.5 text-amber-400" /> 按当前卡种生成骨架
+                    </Button>
 
                     {hasPerm(user, 'diy:sandbox_test') && (
-                      <button
-                        type="button"
-                        onClick={runSandbox}
-                        disabled={sandboxRunning}
-                        className="min-h-[34px] px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold flex items-center gap-1.5 shadow cursor-pointer"
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        isPending={sandboxRunning}
+                        onPress={runSandbox}
                       >
-                        <Play className="w-3.5 h-3.5" />
+                        {sandboxRunning ? <Spinner color="current" size="sm" /> : <Play className="w-3.5 h-3.5" />}
                         <span>{sandboxRunning ? '沙盒试跑中...' : '运行 ocgcore 情景沙盒'}</span>
-                      </button>
+                      </Button>
                     )}
                   </div>
 
@@ -1251,69 +1275,80 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                   />
 
                   {sandboxResult && (
-                    <div
-                      className={`p-3.5 rounded-2xl border space-y-1.5 animate-fade-in ${
-                        sandboxResult.success
-                          ? 'bg-emerald-950/45 border-emerald-500/40 text-emerald-200'
-                          : 'bg-rose-950/55 border-rose-500/40 text-rose-200'
-                      }`}
-                    >
-                      <div className="font-bold flex flex-wrap items-center justify-between gap-2">
-                        <span className="flex items-center gap-1.5">
-                          {sandboxResult.success ? (
-                            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                          ) : (
-                            <XCircle className="w-4 h-4 text-rose-400" />
+                    <Alert status={sandboxResult.success ? 'success' : 'danger'} className="animate-fade-in">
+                      <Alert.Indicator>
+                        {sandboxResult.success ? (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                        ) : (
+                          <XCircle className="w-4 h-4 text-rose-400" />
+                        )}
+                      </Alert.Indicator>
+                      <Alert.Content className="space-y-1">
+                        <Alert.Title className="text-xs font-bold flex flex-wrap items-center justify-between gap-2">
+                          <span>
+                            {sandboxResult.success ? 'ocgcore 引擎沙盒预检通过' : '沙盒拦截：发现错误'} · {sandboxResult.elapsedMs} ms
+                          </span>
+                          <span className="font-mono text-[11px]">
+                            可通召:{sandboxResult.summonableCount} · 可发动:{sandboxResult.activatableCount} · P0 LP:{sandboxResult.postPlayer0Lp}
+                          </span>
+                        </Alert.Title>
+                        <Alert.Description className="space-y-1 text-[11px]">
+                          {sandboxResult.staticAuditViolations?.length > 0 && (
+                            <div className="font-mono break-all">静态安全拦截：{sandboxResult.staticAuditViolations.join(' | ')}</div>
                           )}
-                          {sandboxResult.success ? 'ocgcore 引擎沙盒预检通过' : '沙盒拦截：发现错误'} ·{' '}
-                          {sandboxResult.elapsedMs} ms
-                        </span>
-                        <span className="font-mono text-[11px]">
-                          可通召:{sandboxResult.summonableCount} · 可发动:{sandboxResult.activatableCount} · P0 LP:{' '}
-                          {sandboxResult.postPlayer0Lp}
-                        </span>
-                      </div>
-                      {sandboxResult.staticAuditViolations?.length > 0 && (
-                        <div className="font-mono text-[11px] break-all">
-                          静态安全拦截：{sandboxResult.staticAuditViolations.join(' | ')}
-                        </div>
-                      )}
-                      {sandboxResult.luaErrors?.length > 0 && (
-                        <div className="font-mono text-[11px] break-all">
-                          Lua 运行时异常：{sandboxResult.luaErrors.join(' | ')}
-                        </div>
-                      )}
-                      {sandboxResult.observedMessages?.length > 0 && (
-                        <div className="text-[11px] text-slate-300">
-                          引擎消息流：{sandboxResult.observedMessages.join(' → ')}
-                        </div>
-                      )}
-                    </div>
+                          {sandboxResult.luaErrors?.length > 0 && (
+                            <div className="font-mono break-all">Lua 运行时异常：{sandboxResult.luaErrors.join(' | ')}</div>
+                          )}
+                          {sandboxResult.observedMessages?.length > 0 && (
+                            <div>引擎消息流：{sandboxResult.observedMessages.join(' → ')}</div>
+                          )}
+                        </Alert.Description>
+                      </Alert.Content>
+                    </Alert>
                   )}
                 </div>
               )}
-            </div>
+
+              {/* 移动端底部快捷保存条 */}
+              {hasPerm(user, 'diy:edit') && (
+                <div className="lg:hidden pt-2 border-t border-separator flex items-center gap-2">
+                  <Button size="sm" variant="secondary" onPress={() => setMobilePane('preview')}>
+                    查看卡面
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    className="flex-1"
+                    isPending={savingCard}
+                    onPress={() => saveCardDirect(true)}
+                  >
+                    <Save className="w-3.5 h-3.5" /> 原子保存并热重载
+                  </Button>
+                </div>
+              )}
+            </Card>
           </div>
         </>
       )}
 
-      {/* ==================== 工作面 2：可视化提案审批中心 (Proposals) ==================== */}
+      {/* ==================== 工作面 2：可视化提案审批中心 ==================== */}
       {workspace === 'proposals' && (
-        <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-4 text-xs animate-fade-in">
+        <Card className="rounded-xl p-4 sm:p-5 space-y-4 text-xs animate-fade-in">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 className="text-sm sm:text-base font-bold flex items-center gap-2">
                 <FileCheck2 className="w-4 h-4 text-indigo-400" /> DIY 社区投稿与外部 MCP 提案审批门禁
               </h2>
-              <p className="text-[11px] text-slate-400 mt-0.5">
-                审阅玩家或受限 AI 提交的单卡 / <code className="font-mono text-indigo-300">.ypk</code> 整包变更，点击批准即可自动落盘并热重载全服卡库
+              <p className="text-[11px] text-muted mt-0.5">
+                审阅玩家或受限 AI 提交的单卡 / <code className="font-mono text-indigo-400">.ypk</code> 整包变更，批准后自动原子落盘并热重载全服卡库
               </p>
             </div>
-            <input
+            <Input
+              variant="secondary"
               value={reviewComment}
               onChange={(e) => setReviewComment(e.target.value)}
               placeholder="统一填写可选审批意见备注..."
-              className="w-full sm:w-72 px-3 py-2 input-modern input-modern-indigo"
+              className="w-full sm:w-72 text-xs"
             />
           </div>
 
@@ -1326,33 +1361,29 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
               const stagedYpk: string | undefined = parsed?.StagedYpkFileName || parsed?.stagedYpkFileName;
 
               return (
-                <div key={p.id} className="glass-subcard rounded-2xl p-4 space-y-3">
+                <Surface key={p.id} variant="secondary" className="rounded-xl p-4 space-y-3 border border-border">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <span className="font-bold text-sm text-slate-100">{p.title}</span>{' '}
-                      <span className="px-2 py-0.5 rounded-md bg-indigo-500/15 border border-indigo-500/30 font-mono text-[11px] text-indigo-300">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-sm text-foreground">{p.title}</span>
+                      <Chip size="sm" variant="soft" color="accent" className="h-5 px-2 font-mono text-[10px]">
                         目标包: {p.packageId}
-                      </span>
+                      </Chip>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-[11px] text-slate-400">
+                      <span className="text-[11px] text-muted">
                         投稿人: {p.proposerName || '匿名'} · {new Date(p.createdAt).toLocaleString()}
                       </span>
-                      <span
-                        className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
-                          p.status === 'approved'
-                            ? 'bg-emerald-500/20 text-emerald-300'
-                            : p.status === 'rejected'
-                              ? 'bg-rose-500/20 text-rose-300'
-                              : 'bg-amber-500/20 text-amber-300'
-                        }`}
+                      <Chip
+                        size="sm"
+                        variant="soft"
+                        color={p.status === 'approved' ? 'success' : p.status === 'rejected' ? 'danger' : 'warning'}
+                        className="h-5 px-2 text-[10px]"
                       >
                         {p.status === 'pending' ? '待审阅' : p.status === 'approved' ? '已批准' : '已驳回'}
-                      </span>
+                      </Chip>
                     </div>
                   </div>
 
-                  {/* 可视化渲染提案内卡片摘要 */}
                   {cardsInProp.length > 0 && (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       {cardsInProp.slice(0, 6).map((ci: any, idx: number) => {
@@ -1371,36 +1402,36 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                         const ft = resolveCardFrameTheme(ctype);
 
                         return (
-                          <div key={`${cid}-${idx}`} className="rounded-xl bg-slate-950/85 border border-slate-800 p-3 space-y-2">
+                          <div key={`${cid}-${idx}`} className="rounded-lg bg-background border border-border p-3 space-y-2">
                             <div className="flex items-start gap-3">
                               {imgB64 && (
                                 <img
                                   src={`data:image/png;base64,${imgB64}`}
                                   alt={cname}
-                                  className="w-14 h-14 rounded-lg object-cover border border-slate-700 shrink-0"
+                                  className="w-14 h-14 rounded-md object-cover border border-border shrink-0"
                                 />
                               )}
                               <div className="min-w-0 flex-1 space-y-1">
                                 <div className="flex items-center justify-between gap-2">
-                                  <span className="font-bold text-slate-100 flex items-center gap-1.5 truncate">
-                                    <span className={`w-2.5 h-2.5 rounded-sm ${ft.dotColor}`} />
+                                  <span className="font-bold text-foreground flex items-center gap-1.5 truncate">
+                                    <span className={`w-2.5 h-2.5 rounded-xs ${ft.dotColor}`} />
                                     {cname}
                                   </span>
-                                  <span className="font-mono text-[11px] text-slate-400">#{cid}</span>
+                                  <span className="font-mono text-[11px] text-muted">#{cid}</span>
                                 </div>
-                                <div className="text-[11px] text-indigo-300 font-mono">
+                                <div className="text-[11px] text-indigo-400 font-mono">
                                   {ft.kindLabel}
                                   {!ft.isSpell && !ft.isTrap ? ` · ATK ${formatStatDisplay(catk)} / DEF ${formatStatDisplay(cdef)}` : ''}
                                 </div>
-                                <div className="text-[11px] text-slate-300 line-clamp-3 whitespace-pre-wrap">{cdesc}</div>
+                                <div className="text-[11px] text-muted line-clamp-3 whitespace-pre-wrap">{cdesc}</div>
                               </div>
                             </div>
                             {lua && (
                               <details className="text-[11px]">
-                                <summary className="text-emerald-300 cursor-pointer flex items-center gap-1">
+                                <summary className="text-emerald-400 cursor-pointer flex items-center gap-1">
                                   <Code2 className="w-3.5 h-3.5" /> 展开审阅配套 Lua 脚本 (c{cid}.lua)
                                 </summary>
-                                <pre className="mt-1.5 p-2.5 rounded-lg bg-slate-900 text-emerald-200 font-mono text-[10.5px] max-h-44 overflow-auto">
+                                <pre className="mt-1.5 p-2.5 rounded-lg bg-[var(--console-bg)] border border-border text-foreground/90 font-mono text-[10.5px] max-h-44 overflow-auto">
                                   {lua}
                                 </pre>
                               </details>
@@ -1412,7 +1443,7 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                   )}
 
                   {(cardsInProp.length > 6 || decksInProp.length > 0) && (
-                    <div className="text-[11px] text-slate-400">
+                    <div className="text-[11px] text-muted">
                       共包含卡片 {cardsInProp.length} 张 · 卡图 {imagesInProp.length} 张 · 主题卡组 {decksInProp.length} 套
                     </div>
                   )}
@@ -1420,121 +1451,127 @@ export function StudioView({ user, notify }: { user: AuthUser; notify: (t: strin
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                     <div>
                       {stagedYpk && (
-                        <button
-                          type="button"
-                          onClick={() => openProposalYpkInspector(p.id, p.title)}
-                          className="min-h-[34px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/35 text-indigo-200 font-semibold cursor-pointer"
-                        >
-                          <Eye className="w-3.5 h-3.5" /> 透视查看待审 .ypk 全部文件树与卡片画廊
-                        </button>
+                        <Button size="sm" variant="secondary" onPress={() => openProposalYpkInspector(p.id, p.title)}>
+                          <Eye className="w-3.5 h-3.5 text-indigo-400" /> 透视查看待审 .ypk 全部文件树与卡片画廊
+                        </Button>
                       )}
                     </div>
 
                     {p.status === 'pending' && hasPerm(user, 'diy:review_proposal') && (
                       <div className="flex justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => reviewProposal(p.id, false)}
-                          className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-rose-600/80 hover:bg-rose-600 text-white font-medium cursor-pointer"
-                        >
+                        <Button size="sm" variant="danger-soft" onPress={() => reviewProposal(p.id, false)}>
                           驳回提案
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => reviewProposal(p.id, true)}
-                          className="min-h-[36px] px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold cursor-pointer"
-                        >
+                        </Button>
+                        <Button size="sm" variant="primary" onPress={() => reviewProposal(p.id, true)}>
                           批准写入并热重载生效
-                        </button>
+                        </Button>
                       </div>
                     )}
                   </div>
-                </div>
+                </Surface>
               );
             })}
 
             {proposals.length === 0 && (
-              <div className="py-12 text-center text-slate-500">当前暂无待审阅或历史 DIY 提案</div>
+              <div className="py-12 text-center text-muted">当前暂无待审阅或历史 DIY 提案</div>
             )}
           </div>
-        </div>
+        </Card>
       )}
 
       {/* ==================== 工作面 3：随机盲盒池 & 六维卡查 ==================== */}
       {workspace === 'pool_catalog' && (
-        <div className="space-y-5 animate-fade-in">
+        <div className="space-y-4 animate-fade-in">
           <DeckSixDimRadarSection apiPrefix="/api/v1" chaosYdk={chaosPreview?.ydk} notify={notify} />
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-4">
+            <Card className="rounded-xl p-4 sm:p-5 space-y-3.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-sm font-bold flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-purple-400" /> 随机盲盒池 ({poolDecks.length} 套) & 混沌组卡试抽
                 </h2>
-                <button
-                  type="button"
-                  onClick={runChaosPreview}
-                  className="min-h-[34px] px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold cursor-pointer"
-                >
+                <Button size="sm" variant="secondary" onPress={runChaosPreview}>
                   试抽一套 40+15 混沌卡组
-                </button>
+                </Button>
               </div>
 
               {chaosPreview && (
-                <div className="glass-subcard p-3.5 rounded-xl border border-purple-500/30 text-xs space-y-1.5">
-                  <div className="font-semibold text-purple-300">
+                <Surface variant="secondary" className="p-3.5 rounded-lg border border-border text-xs space-y-1.5">
+                  <div className="font-semibold text-purple-400">
                     平衡配比结果：下级怪 {chaosPreview.breakdown.lowLevelMonsters} · 上级怪{' '}
                     {chaosPreview.breakdown.highLevelMonsters} · 魔法 {chaosPreview.breakdown.spells} · 陷阱{' '}
                     {chaosPreview.breakdown.traps} · 额外 {chaosPreview.extraCount}
                   </div>
-                  <div className="text-[11px] text-slate-400 line-clamp-2">
+                  <div className="text-[11px] text-muted line-clamp-2">
                     主卡组抽样：{chaosPreview.sampleMainCards.map((c: any) => c.name).join('、')}
                   </div>
-                </div>
+                </Surface>
               )}
 
-              <div className="max-h-56 overflow-y-auto space-y-1.5 text-xs">
+              <div className="max-h-60 overflow-y-auto space-y-1.5 text-xs pr-0.5">
                 {poolDecks.map((d) => (
-                  <div key={d.id} className="flex items-center justify-between glass-subcard px-3 py-2 rounded-xl">
-                    <span className="truncate">
-                      {d.name} {d.hasDiyCards && <span className="text-purple-400">[DIY]</span>}
+                  <Surface
+                    key={d.id}
+                    variant="secondary"
+                    className="flex items-center justify-between px-3 py-2 rounded-lg border border-border"
+                  >
+                    <span className="truncate font-medium text-foreground">
+                      {d.name}{' '}
+                      {d.hasDiyCards && (
+                        <Chip size="sm" variant="soft" color="accent" className="h-4 px-1.5 text-[9px] ml-1">
+                          DIY
+                        </Chip>
+                      )}
                     </span>
-                    <span className="text-slate-400 font-mono shrink-0">
+                    <span className="text-muted font-mono shrink-0">
                       M:{d.mainCount} E:{d.extraCount} S:{d.sideCount}
                     </span>
-                  </div>
+                  </Surface>
                 ))}
               </div>
-            </div>
+            </Card>
 
-            <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-3">
+            <Card className="rounded-xl p-4 sm:p-5 space-y-3.5">
               <form onSubmit={searchCards} className="flex gap-2">
-                <input
+                <SearchField
+                  aria-label="检索卡库"
+                  variant="secondary"
                   value={cardQuery}
-                  onChange={(e) => setCardQuery(e.target.value)}
-                  placeholder="输入卡密或卡名/效果关键字检索卡库..."
-                  className="flex-1 min-w-0 px-3 py-2 text-xs input-modern input-modern-indigo"
-                />
-                <button className="min-h-[38px] px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shrink-0 cursor-pointer">
-                  检索卡库
-                </button>
+                  onChange={setCardQuery}
+                  className="flex-1"
+                >
+                  <SearchField.Group>
+                    <SearchField.SearchIcon />
+                    <SearchField.Input placeholder="输入卡密或卡名/效果关键字检索卡库..." className="text-xs" />
+                    <SearchField.ClearButton />
+                  </SearchField.Group>
+                </SearchField>
+                <Button type="submit" size="sm" variant="primary" className="shrink-0">
+                  <Search className="w-3.5 h-3.5" /> 检索卡库
+                </Button>
               </form>
-              {cards.length > 0 && (
-                <div className="grid grid-cols-1 gap-2 max-h-60 overflow-y-auto">
-                  {cards.map((c) => (
-                    <div key={c.id} className="glass-subcard p-3 rounded-xl text-xs space-y-1">
-                      <div className="flex items-center justify-between gap-2 font-semibold">
-                        <span className="truncate">
-                          {c.name} <span className="text-slate-400 font-mono">#{c.id}</span>
-                        </span>
-                        {c.isDiy && <span className="text-purple-400 text-[11px] shrink-0">DIY (ot=4)</span>}
-                      </div>
-                      <div className="text-[11px] text-slate-400 line-clamp-2">{c.desc}</div>
+
+              <div className="grid grid-cols-1 gap-2 max-h-64 overflow-y-auto pr-0.5">
+                {cards.map((c) => (
+                  <Surface key={c.id} variant="secondary" className="p-3 rounded-lg border border-border text-xs space-y-1">
+                    <div className="flex items-center justify-between gap-2 font-semibold">
+                      <span className="truncate text-foreground">
+                        {c.name} <span className="text-muted font-mono">#{c.id}</span>
+                      </span>
+                      {c.isDiy && (
+                        <Chip size="sm" variant="soft" color="accent" className="h-5 px-1.5 text-[10px] shrink-0">
+                          DIY (ot=4)
+                        </Chip>
+                      )}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                    <div className="text-[11px] text-muted line-clamp-2">{c.desc}</div>
+                  </Surface>
+                ))}
+                {cards.length === 0 && (
+                  <div className="py-10 text-center text-xs text-muted">输入关键词点击「检索卡库」查看卡片数据</div>
+                )}
+              </div>
+            </Card>
           </div>
         </div>
       )}

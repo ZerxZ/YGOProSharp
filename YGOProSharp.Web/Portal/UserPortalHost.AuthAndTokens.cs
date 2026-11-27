@@ -89,7 +89,13 @@ public sealed partial class UserPortalHost
     {
         string? ip = http.GetRemoteIpNormalized();
         string? ua = http.Request.Headers.UserAgent.ToString();
-        LoginResult res = await _store.LoginAsync(body.Username ?? string.Empty, body.Password ?? string.Empty, ip, ua, ct).ConfigureAwait(false);
+        LoginResult res = await _store.LoginAsync(
+            body.Username ?? string.Empty,
+            body.Password ?? string.Empty,
+            ip,
+            ua,
+            ct,
+            tokenPrefixTag: "ygp_usr_sess").ConfigureAwait(false);
 
         if (!res.Success || res.SessionToken is null || res.Principal is null)
         {

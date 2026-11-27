@@ -1,4 +1,15 @@
 import React, { useMemo, useState } from 'react';
+import {
+  Button,
+  Card,
+  Chip,
+  Input,
+  Label,
+  Spinner,
+  Surface,
+  Tabs,
+  TextField
+} from '@heroui/react';
 import { Download, Eye, FolderUp, Palette, Send, Sparkles, Wand2 } from 'lucide-react';
 import { apiFetch, apiUploadWithProgress, UploadProgressInfo } from '../api';
 import { CodeMirrorEditor } from '../components/CodeMirrorEditor';
@@ -36,13 +47,11 @@ export function PortalDiyWorkshop({
   const [targetPkg, setTargetPkg] = useState('community-diy');
   const [submitting, setSubmitting] = useState(false);
 
-  // 本地 .ypk 上传透视状态
   const [uploadProgress, setUploadProgress] = useState<UploadProgressInfo | null>(null);
   const [previewToken, setPreviewToken] = useState<string | null>(null);
   const [previewReport, setPreviewReport] = useState<YpkInspectionReport | null>(null);
   const [confirmingYpk, setConfirmingYpk] = useState(false);
 
-  // 已启用扩展包弹窗查看器状态
   const [installedModalPkgId, setInstalledModalPkgId] = useState<string | null>(null);
   const [installedModalReport, setInstalledModalReport] = useState<YpkInspectionReport | null>(null);
   const [loadingInstalledPkg, setLoadingInstalledPkg] = useState<string | null>(null);
@@ -213,7 +222,7 @@ export function PortalDiyWorkshop({
   };
 
   return (
-    <div className="space-y-5 animate-fade-in">
+    <div className="space-y-4 animate-fade-in">
       <YpkExplorerModal
         open={Boolean(installedModalPkgId && installedModalReport)}
         title={`扩展包内部文件与卡片透视 · ${installedModalPkgId}`}
@@ -226,149 +235,147 @@ export function PortalDiyWorkshop({
         }}
       />
 
-      {/* 1. 本服 DIY 扩展包画廊与一键下载 .ypk */}
-      <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      {/* 1. 本服 DIY 扩展包展厅 (.ypk 透视与导出) */}
+      <Card className="rounded-xl p-4 sm:p-5 space-y-4">
+        <Card.Header className="p-0 flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h2 className="text-sm sm:text-base font-bold flex items-center gap-2 text-emerald-300">
+            <Card.Title className="text-sm sm:text-base font-bold flex items-center gap-2 text-emerald-400">
               <Download className="w-4 h-4" /> 本服 DIY 扩展卡包展厅 (.ypk 透视与导出)
-            </h2>
-            <p className="text-[11px] text-slate-400 mt-0.5">
-              支持在线查看每个 <code className="text-emerald-300 font-mono">.ypk</code> 包内的文件树、卡片画廊与脚本，或一键下载放入客户端{' '}
-              <code className="text-slate-300 font-mono">expansions/</code>
-            </p>
+            </Card.Title>
+            <Card.Description className="text-[11px] mt-0.5">
+              在线透视每个 <code className="text-emerald-400 font-mono">.ypk</code> 包内的文件树、卡片画廊与脚本，或一键下载放入客户端{' '}
+              <code className="text-foreground font-mono">expansions/</code>
+            </Card.Description>
           </div>
 
           {diyPackages.length > 0 && (
             <a
               href="/api/portal/diy/export-all.ypk"
               download
-              className="min-h-[38px] inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white text-xs font-semibold shadow-lg shadow-emerald-950/50 shrink-0"
+              className="button button--primary h-8 inline-flex items-center justify-center gap-1.5 px-3.5 rounded-lg text-xs shrink-0"
             >
-              <Download className="w-3.5 h-3.5" /> 一键导出全服整合包 (.ypk)
+              <Download className="w-3.5 h-3.5" /> 导出全服整合包 (.ypk)
             </a>
           )}
-        </div>
+        </Card.Header>
 
-        {diyPackages.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {diyPackages.map((pkg) => (
-              <div
-                key={pkg.id}
-                className="glass-subcard rounded-2xl p-4 space-y-3 text-xs flex flex-col justify-between"
-              >
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-bold text-sm text-slate-100 truncate">{pkg.name}</span>
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 font-mono text-[10px] text-emerald-300 shrink-0">
-                      {pkg.cardCount} 张卡 · v{pkg.version}
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-slate-400">
-                    包标识: <code className="font-mono text-slate-300">{pkg.id}</code> · 作者: {pkg.author || '服主'}
-                  </div>
-                  {(pkg.sampleCards || []).length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 pt-0.5">
-                      {(pkg.sampleCards || []).slice(0, 5).map((sc: any) => (
-                        <span
-                          key={sc.id}
-                          className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-800 text-[10px] text-slate-300"
-                        >
-                          {sc.name}
-                        </span>
-                      ))}
+        <Card.Content className="p-0">
+          {diyPackages.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {diyPackages.map((pkg) => (
+                <Surface
+                  key={pkg.id}
+                  variant="secondary"
+                  className="rounded-xl p-4 space-y-3 text-xs border border-border flex flex-col justify-between"
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-sm text-foreground truncate">{pkg.name}</span>
+                      <Chip size="sm" variant="soft" color="accent" className="h-5 px-2 font-mono text-[10px] shrink-0">
+                        {pkg.cardCount} 卡 · v{pkg.version}
+                      </Chip>
                     </div>
-                  )}
-                </div>
+                    <div className="text-[11px] text-muted">
+                      包标识: <code className="font-mono text-foreground">{pkg.id}</code> · 作者: {pkg.author || '服主'}
+                    </div>
+                    {(pkg.sampleCards || []).length > 0 && (
+                      <div className="flex flex-wrap gap-1 pt-0.5">
+                        {(pkg.sampleCards || []).slice(0, 5).map((sc: any) => (
+                          <Chip key={sc.id} size="sm" variant="soft" className="h-5 px-1.5 text-[10px]">
+                            {sc.name}
+                          </Chip>
+                        ))}
+                      </div>
+                    )}
+                  </div>
 
-                <div className="grid grid-cols-2 gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => openInstalledPackageExplorer(pkg.id)}
-                    className="inline-flex items-center justify-center gap-1.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-emerald-300 font-semibold cursor-pointer"
-                  >
-                    <Eye className="w-3.5 h-3.5" />
-                    <span>{loadingInstalledPkg === pkg.id ? '加载中...' : '查看包内文件'}</span>
-                  </button>
-                  <a
-                    href={`/api/portal/diy/packages/${encodeURIComponent(pkg.id)}/export.ypk`}
-                    download
-                    className="inline-flex items-center justify-center gap-1.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition"
-                  >
-                    <Download className="w-3.5 h-3.5" /> 下载 .ypk
-                  </a>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="glass-subcard rounded-2xl py-8 text-center text-xs text-slate-500">
-            本服当前暂未启用自定义 DIY 扩展包，欢迎在下方可视化制卡工坊制作或导入你的第一个 .ypk 扩展包！
-          </div>
-        )}
-      </div>
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      isPending={loadingInstalledPkg === pkg.id}
+                      onPress={() => openInstalledPackageExplorer(pkg.id)}
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>{loadingInstalledPkg === pkg.id ? '加载中...' : '查看包内文件'}</span>
+                    </Button>
+                    <a
+                      href={`/api/portal/diy/packages/${encodeURIComponent(pkg.id)}/export.ypk`}
+                      download
+                      className="button button--primary h-8 inline-flex items-center justify-center gap-1.5 rounded-lg text-xs"
+                    >
+                      <Download className="w-3.5 h-3.5" /> 下载 .ypk
+                    </a>
+                  </div>
+                </Surface>
+              ))}
+            </div>
+          ) : (
+            <Surface variant="secondary" className="rounded-xl py-8 px-4 text-center text-xs text-muted border border-border">
+              本服当前暂未启用自定义 DIY 扩展包，欢迎在下方工作台在线制作新卡或导入本地 .ypk 扩展包！
+            </Surface>
+          )}
+        </Card.Content>
+      </Card>
 
-      {/* 2. 可视化在线制卡器 & .ypk 透视导入工坊 */}
-      <div className="glass-card rounded-2xl p-4 sm:p-5 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3.5">
+      {/* 2. 可视化在线制卡器 & .ypk 透视导入工作台 */}
+      <Card className="rounded-xl p-4 sm:p-5 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-separator pb-3.5">
           <div>
-            <h2 className="text-sm sm:text-base font-bold flex items-center gap-2 text-amber-300">
-              <Palette className="w-4 h-4" /> 社区 DIY 制卡工坊 · 实时卡面预览与 .ypk 透视投稿
+            <h2 className="text-sm sm:text-base font-bold flex items-center gap-2 text-foreground">
+              <Palette className="w-4 h-4 text-amber-400" /> 社区 DIY 制卡工作台 · 实时卡面渲染与 .ypk 透视投稿
             </h2>
-            <p className="text-[11px] text-slate-400 mt-0.5">
-              支持单卡在线制卡，或选择本地 <code className="text-amber-300 font-mono">.ypk</code>（最大 256MB）先在线可视化查看包内文件、卡面与 Lua 脚本再一键投递
+            <p className="text-[11px] text-muted mt-0.5">
+              支持单卡可视化制作，或上传本地 <code className="text-amber-400 font-mono">.ypk</code>（最大 256MB）先浏览包内全部文件树、卡面与 Lua 源码再零重传投递
             </p>
           </div>
 
-          <div className="inline-flex p-1 rounded-xl bg-slate-950 border border-slate-800 text-xs self-start sm:self-auto">
-            <button
-              type="button"
-              onClick={() => setMode('visual')}
-              className={`px-3 py-1.5 rounded-lg font-semibold flex items-center gap-1.5 transition cursor-pointer ${
-                mode === 'visual' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Sparkles className="w-3.5 h-3.5" /> 可视化在线制卡
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode('ypk')}
-              className={`px-3 py-1.5 rounded-lg font-semibold flex items-center gap-1.5 transition cursor-pointer ${
-                mode === 'ypk' ? 'bg-amber-500 text-slate-950 shadow' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <FolderUp className="w-3.5 h-3.5" /> 透视 & 导入 .ypk 整包
-            </button>
-          </div>
+          <Tabs
+            selectedKey={mode}
+            onSelectionChange={(k) => setMode(String(k) as 'visual' | 'ypk')}
+            className="self-start sm:self-auto"
+          >
+            <Tabs.ListContainer>
+              <Tabs.List aria-label="制卡或整包导入切换">
+                <Tabs.Tab id="visual" className="text-xs px-3 gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>可视化在线制卡</span>
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+                <Tabs.Tab id="ypk" className="text-xs px-3 gap-1.5">
+                  <FolderUp className="w-3.5 h-3.5" />
+                  <span>透视 & 导入 .ypk</span>
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+              </Tabs.List>
+            </Tabs.ListContainer>
+          </Tabs>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-          <div>
-            <label className="block text-[11px] text-slate-400 mb-1">创作者署名</label>
-            <input
-              value={authorName}
-              onChange={(e) => setAuthorName(e.target.value)}
+          <TextField fullWidth value={authorName} onChange={setAuthorName}>
+            <Label className="text-xs">创作者署名</Label>
+            <Input
+              variant="secondary"
               placeholder={portalUser ? `默认使用登录账号 (${portalUser.username})` : '填写你的创作者昵称'}
-              className="w-full px-3.5 py-2 input-modern"
             />
-          </div>
-          <div>
-            <label className="block text-[11px] text-slate-400 mb-1">投稿目标扩展包 ID</label>
-            <input
-              value={targetPkg}
-              onChange={(e) => setTargetPkg(e.target.value)}
-              placeholder="如 community-diy"
-              className="w-full px-3.5 py-2 input-modern font-mono"
-            />
-          </div>
+          </TextField>
+
+          <TextField fullWidth value={targetPkg} onChange={setTargetPkg}>
+            <Label className="text-xs">投稿目标扩展包 ID</Label>
+            <Input variant="secondary" placeholder="如 community-diy" className="font-mono" />
+          </TextField>
         </div>
 
         {mode === 'visual' ? (
-          <form onSubmit={submitVisualCardProposal} className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start pt-1">
-            <div className="lg:col-span-5 lg:sticky lg:top-20 glass-subcard rounded-2xl p-4 space-y-3.5 bg-[radial-gradient(circle_at_50%_20%,rgba(16,185,129,0.14),transparent_72%)]">
+          <form onSubmit={submitVisualCardProposal} className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start pt-1">
+            <Surface
+              variant="secondary"
+              className="lg:col-span-5 lg:sticky lg:top-4 rounded-xl p-4 space-y-3.5 border border-border"
+            >
               <div className="flex items-center justify-between text-xs">
-                <span className="font-bold text-emerald-300">实时卡面效果预览</span>
-                <span className="text-[10px] text-slate-400">点击卡图框上传 PNG / JPG</span>
+                <span className="font-semibold text-foreground">实时卡面效果预览</span>
+                <span className="text-[11px] text-muted">点击卡图框上传 PNG / JPG</span>
               </div>
 
               <YgoCardVisualPreview
@@ -378,36 +385,35 @@ export function PortalDiyWorkshop({
                 onSelectImageFiles={handleSelectLocalArtwork}
               />
 
-              <button
-                disabled={submitting}
-                className="w-full min-h-[44px] py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 disabled:opacity-50 text-slate-950 font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-lg shadow-amber-950/50 cursor-pointer"
-              >
-                <Send className="w-4 h-4" />
+              <Button type="submit" variant="primary" fullWidth isPending={submitting}>
+                {submitting ? <Spinner color="current" size="sm" /> : <Send className="w-3.5 h-3.5" />}
                 <span>{submitting ? '正在执行安全预检并投递...' : '提交单卡（含卡图与 Lua）至审批队列'}</span>
-              </button>
-            </div>
+              </Button>
+            </Surface>
 
-            <div className="lg:col-span-7 space-y-4">
-              <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-950 border border-slate-800">
-                {(
-                  [
-                    ['stats', '1. 卡种 / 属性 / 箭头刻度'],
-                    ['text', '2. 效果文本 & 提示串'],
-                    ['script', '3. Lua 脚本编写']
-                  ] as [MakerTab, string][]
-                ).map(([k, label]) => (
-                  <button
-                    key={k}
-                    type="button"
-                    onClick={() => setMakerTab(k)}
-                    className={`flex-1 py-2 px-2.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
-                      makerTab === k ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+            <div className="lg:col-span-7 space-y-3.5">
+              <Tabs
+                selectedKey={makerTab}
+                onSelectionChange={(k) => setMakerTab(String(k) as MakerTab)}
+                className="w-full"
+              >
+                <Tabs.ListContainer>
+                  <Tabs.List aria-label="卡片属性与脚本分栏" className="w-full">
+                    <Tabs.Tab id="stats" className="flex-1 text-xs">
+                      1. 卡种 / 属性 / 箭头刻度
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                    <Tabs.Tab id="text" className="flex-1 text-xs">
+                      2. 效果文本 & 提示串
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                    <Tabs.Tab id="script" className="flex-1 text-xs">
+                      3. Lua 脚本编写
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                  </Tabs.List>
+                </Tabs.ListContainer>
+              </Tabs>
 
               {makerTab === 'stats' && (
                 <CardBaseStatsInspector card={draftCard} onChange={setDraftCard} accent="emerald" />
@@ -425,19 +431,19 @@ export function PortalDiyWorkshop({
               {makerTab === 'script' && (
                 <div className="space-y-3 text-xs">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-slate-400">
-                      支持完整 <code className="text-emerald-300 font-mono">Duel.* / Effect.*</code> 自动补全与安全检查
+                    <span className="text-muted">
+                      支持完整 <code className="text-emerald-400 font-mono">Duel.* / Effect.*</code> 自动补全与安全检查
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => {
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onPress={() => {
                         setLuaScript(generateSmartLuaTemplate(draftCard));
                         notify('已按当前选定卡种生成标准 Lua 脚本骨架');
                       }}
-                      className="px-3 py-1.5 rounded-xl glass-subcard hover:border-emerald-400/50 text-emerald-200 font-medium flex items-center gap-1.5 cursor-pointer"
                     >
                       <Wand2 className="w-3.5 h-3.5 text-amber-400" /> 按当前卡种生成 Lua 骨架
-                    </button>
+                    </Button>
                   </div>
 
                   <CodeMirrorEditor
@@ -455,17 +461,20 @@ export function PortalDiyWorkshop({
           </form>
         ) : (
           <div className="space-y-4">
-            <div className="glass-subcard rounded-2xl p-5 border border-dashed border-amber-500/40 text-center space-y-3">
-              <div className="text-sm font-bold text-slate-100">
-                选择本地 <code className="text-amber-300 font-mono">.ypk / .zip</code> 扩展包 · 先透视预览包内文件与实体卡面，再一键投稿
+            <Surface
+              variant="secondary"
+              className="rounded-xl p-5 border border-dashed border-border text-center space-y-3"
+            >
+              <div className="text-sm font-bold text-foreground">
+                选择本地 <code className="text-amber-400 font-mono">.ypk / .zip</code> 扩展包 · 先透视预览包内文件与实体卡面，再一键投稿
               </div>
-              <p className="text-xs text-slate-400">
-                支持最大 256MB 大容量客户端卡包（含高清卡图、多脚本、主题卡组与音效文档），选择后将展示包内完整目录树与卡片画廊
+              <p className="text-xs text-muted">
+                支持最大 256MB 大容量客户端卡包（含高清卡图、多脚本、主题卡组与音效文档），选择后立即解析包内完整目录树与卡片画廊
               </p>
 
               <div className="flex flex-wrap items-center justify-center gap-3">
                 <label
-                  className={`inline-flex min-h-[44px] items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs sm:text-sm font-black shadow-lg cursor-pointer ${
+                  className={`button button--primary h-9 px-5 rounded-lg inline-flex items-center justify-center gap-2 text-xs cursor-pointer ${
                     uploadProgress ? 'opacity-60 pointer-events-none' : ''
                   }`}
                 >
@@ -491,18 +500,18 @@ export function PortalDiyWorkshop({
 
               {uploadProgress && (
                 <div className="max-w-md mx-auto space-y-1 pt-1">
-                  <div className="h-2 rounded-full bg-slate-900 overflow-hidden border border-slate-800">
+                  <div className="h-2 rounded-full bg-background overflow-hidden border border-border">
                     <div
-                      className="h-full bg-gradient-to-r from-amber-500 to-emerald-400 transition-all duration-150"
+                      className="h-full bg-accent transition-all duration-150"
                       style={{ width: `${uploadProgress.percent}%` }}
                     />
                   </div>
-                  <div className="text-[11px] font-mono text-amber-200">
+                  <div className="text-[11px] font-mono text-muted">
                     {uploadProgress.percent}% · {formatBytes(uploadProgress.loaded)} / {formatBytes(uploadProgress.total)}
                   </div>
                 </div>
               )}
-            </div>
+            </Surface>
 
             {previewReport && previewResolver && (
               <YpkPackageExplorer
@@ -511,26 +520,27 @@ export function PortalDiyWorkshop({
                 accent="emerald"
                 actionFooter={
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <span className="text-slate-300">
+                    <span className="text-muted">
                       已缓存就绪：点击右侧按钮即可将整包（含全部 {previewReport.cardCount} 张卡、{previewReport.scriptCount} 个脚本与{' '}
                       {previewReport.imageCount} 张卡图）零重传投递至后台审批队列
                     </span>
-                    <button
-                      type="button"
-                      disabled={!previewReport.isSafe || confirmingYpk}
-                      onClick={confirmSubmitInspectedYpk}
-                      className="min-h-[40px] px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 disabled:opacity-45 text-white font-bold flex items-center justify-center gap-1.5 shadow-lg shrink-0 cursor-pointer"
+                    <Button
+                      variant="primary"
+                      isDisabled={!previewReport.isSafe}
+                      isPending={confirmingYpk}
+                      onPress={confirmSubmitInspectedYpk}
+                      className="shrink-0"
                     >
-                      <Send className="w-4 h-4" />
+                      {confirmingYpk ? <Spinner color="current" size="sm" /> : <Send className="w-3.5 h-3.5" />}
                       <span>{confirmingYpk ? '正在入队...' : '确认投递此 .ypk 整包至审批中心'}</span>
-                    </button>
+                    </Button>
                   </div>
                 }
               />
             )}
           </div>
         )}
-      </div>
+      </Card>
     </div>
   );
 }

@@ -123,7 +123,7 @@ public sealed class WebEventHub : IDisposable
                 continue;
             }
 
-            if (sub.Principal.IsStreamerOnly || !sub.Principal.HasPermission(RbacPermissions.DashboardView))
+            if (!sub.Principal.CanViewSystemLogs || !sub.Principal.HasPermission(RbacPermissions.DashboardView))
                 continue;
 
             _ = SendRawSafeAsync(pair.Key, sub, serialized);

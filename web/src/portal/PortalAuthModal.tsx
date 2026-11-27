@@ -1,5 +1,16 @@
 import React, { useState } from 'react';
-import { Eye, EyeOff, Lock, X } from 'lucide-react';
+import {
+  Alert,
+  Button,
+  Description,
+  Input,
+  Label,
+  Modal,
+  Spinner,
+  Tabs,
+  TextField
+} from '@heroui/react';
+import { Eye, EyeOff, Lock } from 'lucide-react';
 import { apiFetch } from '../api';
 import type { PortalUser } from './portalTypes';
 
@@ -80,172 +91,182 @@ export function PortalAuthModal({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4"
-      onClick={onClose}
+    <Modal.Backdrop
+      isOpen
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      className="portal-theme"
     >
-      <form
-        onClick={(e) => e.stopPropagation()}
-        onSubmit={submit}
-        className="w-full sm:max-w-md bg-slate-900 border-t sm:border border-slate-700/80 rounded-t-3xl sm:rounded-2xl p-6 pb-safe shadow-2xl space-y-4 text-xs animate-slide-up"
-      >
-        <div className="sm:hidden flex justify-center -mt-2 mb-1">
-          <div className="w-10 h-1 rounded-full bg-slate-700" />
-        </div>
+      <Modal.Container placement="auto" size="sm">
+        <Modal.Dialog className="sm:max-w-md border border-border">
+          <Modal.CloseTrigger aria-label="关闭认证弹窗" />
+          <Modal.Header>
+            <Modal.Icon className="bg-accent-soft text-accent-soft-foreground">
+              <Lock className="size-4" />
+            </Modal.Icon>
+            <Modal.Heading className="text-base font-bold">
+              {mode === 'register'
+                ? '注册玩家通行证'
+                : mode === 'login'
+                  ? '玩家账号登录'
+                  : `账号与密码设置 (${currentUser?.username})`}
+            </Modal.Heading>
+          </Modal.Header>
 
-        <div className="flex items-center justify-between">
-          <div className="font-bold text-base flex items-center gap-2 text-emerald-300">
-            <div className="w-8 h-8 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center">
-              <Lock className="w-4 h-4" />
-            </div>
-            <span>
-              {mode === 'register' ? '注册玩家通行证' : mode === 'login' ? '玩家账号登录' : `账号设置 (${currentUser?.username})`}
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {mode !== 'password' && (
-          <div className="grid grid-cols-2 gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
-            <button
-              type="button"
-              onClick={() => {
-                setError('');
-                onSwitchMode('login');
-              }}
-              className={`py-2 rounded-lg font-semibold transition cursor-pointer ${
-                mode === 'login' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              已有账号登录
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setError('');
-                onSwitchMode('register');
-              }}
-              className={`py-2 rounded-lg font-semibold transition cursor-pointer ${
-                mode === 'register' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              10 秒免费注册
-            </button>
-          </div>
-        )}
-
-        {error && (
-          <div className="p-3 rounded-xl bg-rose-950/70 border border-rose-500/40 text-rose-200 leading-relaxed">{error}</div>
-        )}
-
-        {mode === 'password' ? (
-          <div className="space-y-3">
-            <div>
-              <label className="block text-slate-400 mb-1">当前原密码（必填校验）</label>
-              <input
-                type={showPw ? 'text' : 'password'}
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                className="w-full px-3.5 py-2.5 input-modern"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-slate-400 mb-1">自定义新用户名（选填，留空保持 {currentUser?.username}）</label>
-              <input
-                value={newUsername}
-                onChange={(e) => setNewUsername(e.target.value)}
-                placeholder={`留空保持 ${currentUser?.username}`}
-                className="w-full px-3.5 py-2.5 input-modern"
-              />
-            </div>
-            <div>
-              <label className="block text-slate-400 mb-1">自定义新密码（最少 6 位，留空保持原密码）</label>
-              <div className="relative">
-                <input
-                  type={showPw ? 'text' : 'password'}
-                  minLength={6}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="至少 6 位字符"
-                  className="w-full px-3.5 py-2.5 pr-10 input-modern"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPw((v) => !v)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-200 cursor-pointer"
-                >
-                  {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <div>
-              <label className="block text-slate-400 mb-1">玩家用户名（2~32 位字符）</label>
-              <input
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="如 Duelist_Yugi"
-                minLength={2}
-                maxLength={32}
-                autoFocus
-                className="w-full px-3.5 py-2.5 input-modern"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-slate-400 mb-1">登录密码（最少 6 位字符，Argon2id 加密存储）</label>
-              <div className="relative">
-                <input
-                  type={showPw ? 'text' : 'password'}
-                  minLength={6}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="至少 6 位字符"
-                  className="w-full px-3.5 py-2.5 pr-10 input-modern"
-                  required
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPw((v) => !v)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-200 cursor-pointer"
-                >
-                  {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-            {mode === 'register' && (
-              <div>
-                <label className="block text-slate-400 mb-1">确认密码</label>
-                <input
-                  type={showPw ? 'text' : 'password'}
-                  minLength={6}
-                  value={confirmPw}
-                  onChange={(e) => setConfirmPw(e.target.value)}
-                  placeholder="再次输入密码"
-                  className="w-full px-3.5 py-2.5 input-modern"
-                  required
-                />
-              </div>
+          <Modal.Body className="space-y-4 pt-1">
+            {mode !== 'password' && (
+              <Tabs
+                selectedKey={mode}
+                onSelectionChange={(k) => {
+                  setError('');
+                  onSwitchMode(String(k) as 'login' | 'register');
+                }}
+                className="w-full"
+              >
+                <Tabs.ListContainer>
+                  <Tabs.List aria-label="选择登录或注册" className="w-full">
+                    <Tabs.Tab id="login" className="flex-1 text-xs font-semibold">
+                      已有账号登录
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                    <Tabs.Tab id="register" className="flex-1 text-xs font-semibold">
+                      10 秒免费注册
+                      <Tabs.Indicator />
+                    </Tabs.Tab>
+                  </Tabs.List>
+                </Tabs.ListContainer>
+              </Tabs>
             )}
-          </div>
-        )}
 
-        <button
-          disabled={loading}
-          className="w-full min-h-[44px] py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 disabled:opacity-50 font-semibold text-sm text-white shadow-lg shadow-emerald-950/50 cursor-pointer"
-        >
-          {loading ? '正在提交...' : mode === 'register' ? '立即注册并登录' : mode === 'login' ? '安全登录' : '保存账号设置'}
-        </button>
-      </form>
-    </div>
+            {error && (
+              <Alert status="danger">
+                <Alert.Indicator />
+                <Alert.Content>
+                  <Alert.Description className="text-xs">{error}</Alert.Description>
+                </Alert.Content>
+              </Alert>
+            )}
+
+            <form id="portal-auth-form" onSubmit={submit} className="space-y-3.5 text-xs">
+              {mode === 'password' ? (
+                <>
+                  <TextField
+                    fullWidth
+                    isRequired
+                    type={showPw ? 'text' : 'password'}
+                    value={currentPassword}
+                    onChange={setCurrentPassword}
+                  >
+                    <Label className="text-xs">当前原密码（必填校验）</Label>
+                    <Input variant="secondary" placeholder="输入当前原密码" />
+                  </TextField>
+
+                  <TextField fullWidth value={newUsername} onChange={setNewUsername}>
+                    <Label className="text-xs">自定义新用户名（选填）</Label>
+                    <Input variant="secondary" placeholder={`留空保持 ${currentUser?.username}`} />
+                  </TextField>
+
+                  <div className="space-y-1">
+                    <TextField
+                      fullWidth
+                      type={showPw ? 'text' : 'password'}
+                      value={password}
+                      onChange={setPassword}
+                    >
+                      <div className="flex items-center justify-between">
+                        <Label className="text-xs">自定义新密码（选填）</Label>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          isIconOnly
+                          aria-label={showPw ? '隐藏密码' : '显示密码'}
+                          className="h-6 w-6 min-w-0"
+                          onPress={() => setShowPw((v) => !v)}
+                        >
+                          {showPw ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </Button>
+                      </div>
+                      <Input variant="secondary" placeholder="至少 6 位字符，留空保持原密码" />
+                    </TextField>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <TextField
+                    fullWidth
+                    isRequired
+                    value={username}
+                    onChange={setUsername}
+                  >
+                    <Label className="text-xs">玩家用户名（2~32 位字符）</Label>
+                    <Input autoFocus variant="secondary" placeholder="如 Duelist_Yugi" />
+                  </TextField>
+
+                  <TextField
+                    fullWidth
+                    isRequired
+                    type={showPw ? 'text' : 'password'}
+                    value={password}
+                    onChange={setPassword}
+                  >
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs">登录密码</Label>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        isIconOnly
+                        aria-label={showPw ? '隐藏密码' : '显示密码'}
+                        className="h-6 w-6 min-w-0"
+                        onPress={() => setShowPw((v) => !v)}
+                      >
+                        {showPw ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </Button>
+                    </div>
+                    <Input variant="secondary" placeholder="至少 6 位字符" />
+                    <Description className="text-[11px]">采用 Argon2id 单向慢哈希保护存储</Description>
+                  </TextField>
+
+                  {mode === 'register' && (
+                    <TextField
+                      fullWidth
+                      isRequired
+                      type={showPw ? 'text' : 'password'}
+                      value={confirmPw}
+                      onChange={setConfirmPw}
+                    >
+                      <Label className="text-xs">确认密码</Label>
+                      <Input variant="secondary" placeholder="再次输入密码" />
+                    </TextField>
+                  )}
+                </>
+              )}
+            </form>
+          </Modal.Body>
+
+          <Modal.Footer className="gap-2">
+            <Button variant="tertiary" onPress={onClose}>
+              取消
+            </Button>
+            <Button
+              type="submit"
+              form="portal-auth-form"
+              variant="primary"
+              isPending={loading}
+              className="flex-1"
+            >
+              {loading && <Spinner color="current" size="sm" />}
+              {loading
+                ? '正在提交...'
+                : mode === 'register'
+                  ? '立即注册并登录'
+                  : mode === 'login'
+                    ? '安全登录'
+                    : '保存账号设置'}
+            </Button>
+          </Modal.Footer>
+        </Modal.Dialog>
+      </Modal.Container>
+    </Modal.Backdrop>
   );
 }

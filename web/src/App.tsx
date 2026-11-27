@@ -1,4 +1,16 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import {
+  Alert,
+  Button,
+  Card,
+  Chip,
+  Description,
+  Input,
+  Label,
+  Spinner,
+  TextField,
+  Tooltip
+} from '@heroui/react';
 import {
   Activity,
   EyeOff,
@@ -15,6 +27,7 @@ import { SurfaceInfo, UserPortalApp } from './PortalView';
 import { DashboardView, RoomsView } from './admin/AdminDashboardAndRooms';
 import { StudioView } from './admin/AdminStudioView';
 import { McpHubView, SecurityView } from './admin/AdminMcpAndSecurity';
+import { ConsoleLogEntry, WorkspaceShell } from './components/WorkspaceShell';
 
 type TabKey = 'dashboard' | 'rooms' | 'studio' | 'mcp' | 'security';
 
@@ -26,6 +39,8 @@ export default function App() {
   const [adminAuthChecked, setAdminAuthChecked] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
   const [toast, setToast] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null);
+  const [adminLogs, setAdminLogs] = useState<ConsoleLogEntry[]>([]);
+  const wsRef = useRef<WebSocket | null>(null);
 
   const isAdminRoute = pathname === '/admin' || pathname.startsWith('/admin/');
 
@@ -89,6 +104,36 @@ export default function App() {
     refreshMe();
   }, [surfaceChecked, shouldRenderPortal, refreshMe]);
 
+  useEffect(() => {
+    if (shouldRenderPortal || !user || user.mustChangePassword) return;
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws/events`);
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        const now = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+        setAdminLogs((prev) =>
+          [
+            {
+              id: `${Date.now()}-${Math.random()}`,
+              time: now,
+              level: 'info' as const,
+              source: String(msg.type || 'event'),
+              message: JSON.stringify(msg.payload ?? msg).slice(0, 180)
+            },
+            ...prev
+          ].slice(0, 50)
+        );
+      } catch {
+        // ignore malformed frames
+      }
+    };
+    wsRef.current = ws;
+    return () => {
+      wsRef.current?.close();
+    };
+  }, [shouldRenderPortal, user]);
+
   const handleLogout = async () => {
     try {
       await apiFetch('/api/v1/auth/logout', { method: 'POST', body: '{}' });
@@ -101,8 +146,9 @@ export default function App() {
 
   if (!surfaceChecked) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm">
-        正在加载页面...
+      <div className="min-h-screen flex items-center justify-center gap-2.5 bg-background text-muted text-xs">
+        <Spinner size="sm" />
+        <span>正在初始化工作台...</span>
       </div>
     );
   }
@@ -118,8 +164,9 @@ export default function App() {
 
   if (!adminAuthChecked) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-950 admin-ambient-bg text-slate-400 text-sm">
-        正在验证管理控制面会话...
+      <div className="admin-theme min-h-screen flex items-center justify-center gap-2.5 bg-background admin-ambient-bg text-muted text-xs">
+        <Spinner size="sm" />
+        <span>正在验证管理控制面会话...</span>
       </div>
     );
   }
@@ -159,178 +206,150 @@ export default function App() {
       key: 'dashboard',
       label: '总览与缓存',
       shortLabel: '总览',
-      icon: <Activity className="w-4 h-4" />,
+      icon: <Activity className="w-3.5 h-3.5" />,
       show: hasPerm(user, 'dashboard:view')
     },
     {
       key: 'rooms',
       label: '房间 / 裁判 / 录像',
       shortLabel: '房间',
-      icon: <Gamepad2 className="w-4 h-4" />,
+      icon: <Gamepad2 className="w-3.5 h-3.5" />,
       show: hasPerm(user, 'room:view')
     },
     {
       key: 'studio',
       label: '卡组池 & DIY 工作台',
       shortLabel: '工作台',
-      icon: <Layers className="w-4 h-4" />,
+      icon: <Layers className="w-3.5 h-3.5" />,
       show: hasPerm(user, 'deck_pool:view') || hasPerm(user, 'diy:view') || hasPerm(user, 'card:search')
     },
     {
       key: 'mcp',
       label: 'MCP 接入中心',
       shortLabel: 'MCP',
-      icon: <KeyRound className="w-4 h-4" />,
+      icon: <KeyRound className="w-3.5 h-3.5" />,
       show: hasPerm(user, 'mcp_token:issue_self') || hasPerm(user, 'mcp_token:manage_all')
     },
     {
       key: 'security',
       label: '用户 / 封禁 / 审计',
       shortLabel: '安全',
-      icon: <Shield className="w-4 h-4" />,
+      icon: <Shield className="w-3.5 h-3.5" />,
       show: true
     }
   ];
 
   const visibleTabs = tabs.filter((t) => t.show);
+  const currentTabObj = visibleTabs.find((t) => t.key === activeTab) || visibleTabs[0];
 
   return (
-    <div className="min-h-screen bg-slate-950 admin-ambient-bg text-slate-100 flex flex-col">
-      {/* 顶部毛玻璃导航栏 */}
-      <header className="border-b border-white/[0.08] bg-slate-950/80 backdrop-blur-xl sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-3 sm:px-4 h-14 sm:h-16 flex items-center justify-between gap-2 sm:gap-4">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center font-black text-white shadow-lg shadow-indigo-950/60 shrink-0">
-              Y
-            </div>
-            <div className="min-w-0">
-              <div className="font-bold text-sm sm:text-base flex items-center gap-1.5 sm:gap-2">
-                <span className="truncate">管理后台</span>
-                <span className="px-1.5 py-0.5 rounded-md text-[10px] font-mono bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shrink-0">
-                  /admin
-                </span>
-                {user.isStreamerOnly && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
-                    <EyeOff className="w-3 h-3" /> 直播脱敏
-                  </span>
-                )}
-              </div>
-              <div className="text-[11px] text-slate-400 truncate hidden sm:block">
-                游戏服 :{surface?.gamePort ?? 7911} · 控制面 :{window.location.port || surface?.adminPort || 7912}
-              </div>
-            </div>
+    <WorkspaceShell
+      themeClass="admin-theme"
+      ambientClass="admin-ambient-bg"
+      monogram="YP"
+      monogramClass="bg-indigo-500/20 text-indigo-300 border-indigo-500/35"
+      workspaceName="YGOProSharp"
+      workspaceBranchTag="/admin"
+      breadcrumbCurrent={currentTabObj?.label || '管理控制台'}
+      statusBadge={
+        user.isStreamerOnly ? (
+          <Chip size="sm" variant="soft" color="warning" className="h-5 px-2 text-[10px]">
+            <EyeOff className="w-3 h-3" />
+            <Chip.Label>直播脱敏</Chip.Label>
+          </Chip>
+        ) : (
+          <Chip size="sm" variant="soft" color="accent" className="h-5 px-2 text-[10px] font-mono">
+            RBAC: {user.roleCodes.join(',')}
+          </Chip>
+        )
+      }
+      navItems={visibleTabs.map((t) => ({
+        key: t.key,
+        label: t.label,
+        shortLabel: t.shortLabel,
+        icon: t.icon
+      }))}
+      activeNavKey={activeTab}
+      onSelectNav={(k) => {
+        setActiveTab(k as TabKey);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }}
+      sidebarFooterTop={
+        <div className="flex items-center justify-between gap-2 px-1.5 py-1 rounded-lg bg-surface border border-border/70 text-xs">
+          <div className="min-w-0">
+            <div className="font-semibold text-foreground truncate">{user.displayName}</div>
+            <div className="text-[10px] text-muted font-mono truncate">{user.roleCodes.join(', ')}</div>
           </div>
-
-          {/* 桌面端胶囊导航 */}
-          <nav className="hidden md:flex items-center gap-1 p-1 rounded-2xl bg-slate-900/90 border border-white/[0.06]">
-            {visibleTabs.map((t) => (
-              <button
-                key={t.key}
-                onClick={() => setActiveTab(t.key)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
-                  activeTab === t.key
-                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-950/60'
-                    : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
-                }`}
-              >
-                {t.icon}
-                <span>{t.label}</span>
-              </button>
-            ))}
-          </nav>
-
-          {/* 右侧返回玩家大厅 + 账号退出 */}
-          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-            {surface?.unifiedPortal !== false ? (
-              <button
-                type="button"
-                onClick={() => navigateTo('/')}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-medium cursor-pointer"
-                title="返回前台玩家大厅 (/)"
-              >
-                <Home className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">玩家大厅</span>
-              </button>
-            ) : (
-              surface?.portalPort && (
-                <a
-                  href={`${window.location.protocol}//${window.location.hostname}:${surface.portalPort}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-medium"
-                >
-                  玩家大厅 ↗
-                </a>
-              )
-            )}
-
-            <div className="text-right hidden lg:block">
-              <div className="text-xs font-medium text-slate-200">{user.displayName}</div>
-              <div className="text-[11px] text-slate-400">{user.roleCodes.join(', ')}</div>
-            </div>
-            <button
-              onClick={handleLogout}
-              className="p-2 rounded-xl text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
-              title="退出登录"
+          <Tooltip delay={200}>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label="退出登录"
+              className="h-6 w-6 min-w-0 text-muted data-[hovered=true]:text-danger"
+              onPress={handleLogout}
             >
-              <LogOut className="w-4 h-4" />
-            </button>
+              <LogOut className="w-3.5 h-3.5" />
+            </Button>
+            <Tooltip.Content>
+              <p className="text-xs">退出管理控制台</p>
+            </Tooltip.Content>
+          </Tooltip>
+        </div>
+      }
+      sidebarUtilityLeft={
+        <span className="text-[11px] font-mono text-muted truncate">
+          Port :{surface?.gamePort ?? 7911} / :{window.location.port || surface?.adminPort || 7912}
+        </span>
+      }
+      sidebarUtilityRight={
+        surface?.unifiedPortal !== false ? (
+          <Tooltip delay={200}>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label="返回玩家大厅"
+              className="h-7 w-7 min-w-0 text-emerald-400"
+              onPress={() => navigateTo('/')}
+            >
+              <Home className="w-3.5 h-3.5" />
+            </Button>
+            <Tooltip.Content>
+              <p className="text-xs">返回前台玩家大厅 (/)</p>
+            </Tooltip.Content>
+          </Tooltip>
+        ) : undefined
+      }
+      headerRightActions={
+        surface?.unifiedPortal !== false ? (
+          <Button size="sm" variant="secondary" className="h-7 px-2.5 text-xs" onPress={() => navigateTo('/')}>
+            <Home className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="hidden sm:inline">玩家大厅</span>
+          </Button>
+        ) : undefined
+      }
+      consoleLogs={adminLogs}
+      consoleStatusText={`GameServer :${surface?.gamePort ?? 7911} · ControlPlane :${window.location.port || 7912}`}
+      toast={
+        toast ? (
+          <div className="fixed bottom-16 md:bottom-10 right-4 left-4 sm:left-auto sm:max-w-md z-50 animate-slide-up">
+            <Alert status={toast.kind === 'ok' ? 'success' : 'danger'} className="shadow-2xl">
+              <Alert.Indicator />
+              <Alert.Content>
+                <Alert.Title className="text-xs">{toast.text}</Alert.Title>
+              </Alert.Content>
+            </Alert>
           </div>
-        </div>
-      </header>
-
-      {/* 悬浮提示条（移动端避让底部导航栏） */}
-      {toast && (
-        <div
-          className={`fixed bottom-20 md:bottom-6 right-4 left-4 sm:left-auto z-50 px-4 py-3 rounded-2xl shadow-2xl border text-xs sm:text-sm font-medium backdrop-blur-xl animate-slide-up ${
-            toast.kind === 'ok'
-              ? 'bg-emerald-950/90 border-emerald-500/45 text-emerald-100'
-              : 'bg-rose-950/90 border-rose-500/45 text-rose-100'
-          }`}
-        >
-          {toast.text}
-        </div>
-      )}
-
-      <main className="max-w-7xl w-full mx-auto px-3 sm:px-4 pt-4 sm:pt-6 pb-mobile-nav flex-1">
-        {activeTab === 'dashboard' && <DashboardView user={user} notify={notify} />}
-        {activeTab === 'rooms' && <RoomsView user={user} notify={notify} />}
-        {activeTab === 'studio' && <StudioView user={user} notify={notify} />}
-        {activeTab === 'mcp' && <McpHubView user={user} notify={notify} />}
-        {activeTab === 'security' && <SecurityView user={user} notify={notify} onRefreshMe={refreshMe} />}
-      </main>
-
-      {/* 手机端底部固定 Tab 导航栏 (md:hidden) */}
-      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-slate-950/92 backdrop-blur-xl border-t border-white/[0.08] pb-safe">
-        <div
-          className="grid h-14"
-          style={{ gridTemplateColumns: `repeat(${Math.max(1, visibleTabs.length)}, minmax(0, 1fr))` }}
-        >
-          {visibleTabs.map((t) => {
-            const active = activeTab === t.key;
-            return (
-              <button
-                key={t.key}
-                type="button"
-                onClick={() => {
-                  setActiveTab(t.key);
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }}
-                className={`relative flex flex-col items-center justify-center gap-0.5 text-[10px] font-semibold transition cursor-pointer ${
-                  active ? 'text-indigo-300' : 'text-slate-400 active:text-slate-200'
-                }`}
-              >
-                {active && (
-                  <span className="absolute top-0 w-7 h-0.5 rounded-full bg-indigo-400 shadow-[0_0_8px_rgba(129,140,248,0.9)]" />
-                )}
-                {t.icon}
-                <span>{t.shortLabel}</span>
-              </button>
-            );
-          })}
-        </div>
-      </nav>
-    </div>
+        ) : null
+      }
+    >
+      {activeTab === 'dashboard' && <DashboardView user={user} notify={notify} />}
+      {activeTab === 'rooms' && <RoomsView user={user} notify={notify} />}
+      {activeTab === 'studio' && <StudioView user={user} notify={notify} />}
+      {activeTab === 'mcp' && <McpHubView user={user} notify={notify} />}
+      {activeTab === 'security' && <SecurityView user={user} notify={notify} onRefreshMe={refreshMe} />}
+    </WorkspaceShell>
   );
 }
 
@@ -365,67 +384,58 @@ function LoginScreen({
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-950 admin-ambient-bg p-4">
-      <form
-        onSubmit={submit}
-        className="w-full max-w-md glass-card rounded-3xl p-6 shadow-2xl space-y-5 animate-slide-up"
-      >
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center font-black text-lg text-white shrink-0 shadow-lg shadow-indigo-950/60">
-              Y
-            </div>
+    <div className="admin-theme min-h-screen flex items-center justify-center bg-background admin-ambient-bg p-4">
+      <Card className="w-full max-w-md rounded-2xl p-6 shadow-2xl animate-slide-up">
+        <Card.Header className="p-0 flex-row items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/35 text-indigo-300 flex items-center justify-center font-extrabold text-xs shrink-0">
+              YP
+            </span>
             <div className="min-w-0">
-              <h1 className="text-base sm:text-lg font-bold truncate">管理控制台 (/admin)</h1>
-              <p className="text-[11px] text-slate-400 truncate">Argon2id 认证 · 细粒度 RBAC · 零外发大模型密钥</p>
+              <Card.Title className="text-base font-bold truncate">管理控制台 (/admin)</Card.Title>
+              <Card.Description className="text-[11px] truncate">
+                Argon2id 认证 · 细粒度 RBAC · 零外发大模型密钥
+              </Card.Description>
             </div>
           </div>
           {onBackToPortal && (
-            <button
-              type="button"
-              onClick={onBackToPortal}
-              className="px-3 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-xs font-medium text-emerald-300 cursor-pointer shrink-0"
-            >
+            <Button size="sm" variant="secondary" onPress={onBackToPortal} className="shrink-0 text-xs">
               返回玩家页
-            </button>
+            </Button>
           )}
-        </div>
+        </Card.Header>
 
-        {error && (
-          <div className="p-3 rounded-xl bg-rose-950/70 border border-rose-500/40 text-xs text-rose-200">{error}</div>
-        )}
+        <Card.Content className="p-0 pt-5 space-y-4">
+          {error && (
+            <Alert status="danger">
+              <Alert.Indicator />
+              <Alert.Content>
+                <Alert.Description className="text-xs">{error}</Alert.Description>
+              </Alert.Content>
+            </Alert>
+          )}
 
-        <div className="space-y-3.5">
-          <div>
-            <label className="block text-xs text-slate-400 mb-1">管理员 / 成员账号</label>
-            <input
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full px-3.5 py-2.5 text-sm input-modern input-modern-indigo"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-slate-400 mb-1">
-              登录密码（首次启动请查看服务端启动日志中的一次性密码）
-            </label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-3.5 py-2.5 text-sm input-modern input-modern-indigo"
-              required
-            />
-          </div>
-        </div>
+          <form id="admin-login-form" onSubmit={submit} className="space-y-3.5">
+            <TextField fullWidth isRequired value={username} onChange={setUsername}>
+              <Label className="text-xs">管理员 / 成员账号</Label>
+              <Input variant="secondary" placeholder="admin" />
+            </TextField>
 
-        <button
-          disabled={loading}
-          className="w-full min-h-[44px] py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-sm font-semibold text-white shadow-lg shadow-indigo-950/60 transition cursor-pointer"
-        >
-          {loading ? '正在验证...' : '安全登录'}
-        </button>
-      </form>
+            <TextField fullWidth isRequired type="password" value={password} onChange={setPassword}>
+              <Label className="text-xs">登录密码</Label>
+              <Input variant="secondary" placeholder="输入管理控制台密码" />
+              <Description className="text-[11px]">首次启动请查看服务端启动日志中的一次性初始密码</Description>
+            </TextField>
+          </form>
+        </Card.Content>
+
+        <Card.Footer className="p-0 pt-5">
+          <Button type="submit" form="admin-login-form" variant="primary" fullWidth isPending={loading}>
+            {loading && <Spinner color="current" size="sm" />}
+            {loading ? '正在验证...' : '安全登录'}
+          </Button>
+        </Card.Footer>
+      </Card>
     </div>
   );
 }
@@ -476,86 +486,75 @@ function ForcePasswordChangeScreen({
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-950 admin-ambient-bg p-4">
-      <form
-        onSubmit={submit}
-        className="w-full max-w-md glass-card border border-amber-500/40 rounded-3xl p-6 shadow-2xl space-y-4 animate-slide-up"
-      >
-        <div className="flex items-center gap-2 text-amber-300 font-bold text-sm sm:text-base">
-          <Lock className="w-5 h-5 shrink-0" /> 首次安全引导：管理员账号与密码设置
-        </div>
-        <p className="text-xs text-slate-400 leading-relaxed">
-          当前默认账号为 <span className="text-slate-200 font-mono">{user.username}</span>
-          。可自定义管理员用户名与新密码（最少 6 位字符）；未填写的项将自动保留默认设置。
-        </p>
-        {error && (
-          <div className="p-3 rounded-xl bg-rose-950/70 border border-rose-500/40 text-xs text-rose-200">{error}</div>
-        )}
-        <div>
-          <label className="block text-xs text-slate-400 mb-1">当前初始/临时密码（必填校验）</label>
-          <input
-            type="password"
-            placeholder="输入当前登录使用的初始密码"
-            value={currentPassword}
-            onChange={(e) => setCurrentPassword(e.target.value)}
-            className="w-full px-3.5 py-2.5 text-sm input-modern input-modern-indigo"
-            required
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-slate-400 mb-1">
-            自定义管理员用户名（选填，留空保持 {user.username}）
-          </label>
-          <input
-            placeholder={`留空默认使用 ${user.username}`}
-            value={customUsername}
-            onChange={(e) => setCustomUsername(e.target.value)}
-            className="w-full px-3.5 py-2.5 text-sm input-modern input-modern-indigo"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-slate-400 mb-1">
-            自定义新密码（最少 6 位；选填，留空保留当前密码）
-          </label>
-          <input
-            type="password"
-            minLength={6}
-            placeholder="至少 6 位字符（不填则保持当前默认密码）"
-            value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-            className="w-full px-3.5 py-2.5 text-sm input-modern input-modern-indigo"
-          />
-        </div>
-        {newPassword && (
-          <div>
-            <label className="block text-xs text-slate-400 mb-1">确认自定义新密码</label>
-            <input
+    <div className="admin-theme min-h-screen flex items-center justify-center bg-background admin-ambient-bg p-4">
+      <Card className="w-full max-w-md border border-warning/40 rounded-2xl p-6 shadow-2xl animate-slide-up">
+        <Card.Header className="p-0 space-y-1.5">
+          <Card.Title className="flex items-center gap-2 text-warning text-sm sm:text-base font-bold">
+            <Lock className="w-4 h-4 shrink-0" /> 首次安全引导：管理员账号与密码设置
+          </Card.Title>
+          <Card.Description className="text-xs leading-relaxed">
+            当前默认账号为 <span className="text-foreground font-mono">{user.username}</span>
+            。可自定义管理员用户名与新密码（最少 6 位字符）；未填写的项将自动保留默认设置。
+          </Card.Description>
+        </Card.Header>
+
+        <Card.Content className="p-0 pt-4 space-y-3.5">
+          {error && (
+            <Alert status="danger">
+              <Alert.Indicator />
+              <Alert.Content>
+                <Alert.Description className="text-xs">{error}</Alert.Description>
+              </Alert.Content>
+            </Alert>
+          )}
+
+          <form id="force-pw-form" onSubmit={submit} className="space-y-3.5">
+            <TextField
+              fullWidth
+              isRequired
               type="password"
-              minLength={6}
-              placeholder="再次输入新密码"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              className="w-full px-3.5 py-2.5 text-sm input-modern input-modern-indigo"
-              required
-            />
-          </div>
-        )}
-        <div className="flex gap-2.5 pt-1">
-          <button
-            type="button"
-            onClick={onLogout}
-            className="min-h-[42px] px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-medium cursor-pointer"
-          >
+              value={currentPassword}
+              onChange={setCurrentPassword}
+            >
+              <Label className="text-xs">当前初始/临时密码（必填校验）</Label>
+              <Input variant="secondary" placeholder="输入当前登录使用的初始密码" />
+            </TextField>
+
+            <TextField fullWidth value={customUsername} onChange={setCustomUsername}>
+              <Label className="text-xs">自定义管理员用户名（选填）</Label>
+              <Input variant="secondary" placeholder={`留空默认使用 ${user.username}`} />
+            </TextField>
+
+            <TextField fullWidth type="password" value={newPassword} onChange={setNewPassword}>
+              <Label className="text-xs">自定义新密码（最少 6 位；选填）</Label>
+              <Input variant="secondary" placeholder="不填则保持当前默认密码" />
+            </TextField>
+
+            {newPassword && (
+              <TextField
+                fullWidth
+                isRequired
+                type="password"
+                value={confirmPassword}
+                onChange={setConfirmPassword}
+              >
+                <Label className="text-xs">确认自定义新密码</Label>
+                <Input variant="secondary" placeholder="再次输入新密码" />
+              </TextField>
+            )}
+          </form>
+        </Card.Content>
+
+        <Card.Footer className="p-0 pt-5 gap-2.5">
+          <Button variant="tertiary" onPress={onLogout}>
             退出
-          </button>
-          <button
-            disabled={loading}
-            className="flex-1 min-h-[42px] py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm cursor-pointer"
-          >
+          </Button>
+          <Button type="submit" form="force-pw-form" variant="primary" isPending={loading} className="flex-1">
+            {loading && <Spinner color="current" size="sm" />}
             {loading ? '正在保存...' : '保存设置并进入控制台'}
-          </button>
-        </div>
-      </form>
+          </Button>
+        </Card.Footer>
+      </Card>
     </div>
   );
 }

@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { Check, Copy, X } from 'lucide-react';
+import React, { useState } from 'react';
+import { Button, Card, Chip, Drawer, Surface, Tooltip } from '@heroui/react';
+import { Check, Copy } from 'lucide-react';
 
 export interface SurfaceInfo {
   surface: 'admin' | 'portal';
@@ -36,31 +37,62 @@ export function StatBox({
   icon?: React.ReactNode;
   accent?: 'emerald' | 'sky' | 'indigo' | 'purple' | 'amber' | 'rose';
 }) {
-  const palette: Record<string, { text: string; iconBg: string }> = {
-    emerald: { text: 'text-emerald-300', iconBg: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25' },
-    sky: { text: 'text-sky-300', iconBg: 'bg-sky-500/15 text-sky-400 border-sky-500/25' },
-    indigo: { text: 'text-indigo-300', iconBg: 'bg-indigo-500/15 text-indigo-400 border-indigo-500/25' },
-    purple: { text: 'text-purple-300', iconBg: 'bg-purple-500/15 text-purple-400 border-purple-500/25' },
-    amber: { text: 'text-amber-300', iconBg: 'bg-amber-500/15 text-amber-400 border-amber-500/25' },
-    rose: { text: 'text-rose-300', iconBg: 'bg-rose-500/15 text-rose-400 border-rose-500/25' }
+  const palette: Record<string, { text: string; iconBg: string; glow: string }> = {
+    emerald: {
+      text: 'text-emerald-300',
+      iconBg: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+      glow: 'from-emerald-500/10'
+    },
+    sky: {
+      text: 'text-sky-300',
+      iconBg: 'bg-sky-500/15 text-sky-400 border-sky-500/30',
+      glow: 'from-sky-500/10'
+    },
+    indigo: {
+      text: 'text-indigo-300',
+      iconBg: 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30',
+      glow: 'from-indigo-500/10'
+    },
+    purple: {
+      text: 'text-purple-300',
+      iconBg: 'bg-purple-500/15 text-purple-400 border-purple-500/30',
+      glow: 'from-purple-500/10'
+    },
+    amber: {
+      text: 'text-amber-300',
+      iconBg: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+      glow: 'from-amber-500/12'
+    },
+    rose: {
+      text: 'text-rose-300',
+      iconBg: 'bg-rose-500/15 text-rose-400 border-rose-500/30',
+      glow: 'from-rose-500/10'
+    }
   };
   const style = palette[accent] || palette.emerald;
 
   return (
-    <div className="glass-card rounded-2xl p-3.5 sm:p-4 transition hover:border-slate-700/80">
-      <div className="flex items-start justify-between gap-2">
-        <div className="text-[11px] sm:text-xs font-medium text-slate-400">{title}</div>
+    <Card
+      variant="default"
+      className={`relative overflow-hidden rounded-2xl p-3.5 sm:p-4 bg-linear-to-br ${style.glow} via-surface/90 to-surface/90 transition hover:border-border-secondary`}
+    >
+      <Card.Header className="p-0 flex-row items-start justify-between gap-2">
+        <Card.Description className="text-[11px] sm:text-xs font-medium text-muted">
+          {title}
+        </Card.Description>
         {icon && (
-          <div className={`w-7 h-7 rounded-lg border flex items-center justify-center shrink-0 ${style.iconBg}`}>
+          <div className={`w-7 h-7 rounded-xl border flex items-center justify-center shrink-0 ${style.iconBg}`}>
             {icon}
           </div>
         )}
-      </div>
-      <div className={`text-base sm:text-xl font-bold font-mono tracking-tight mt-1.5 truncate ${style.text}`}>
-        {value}
-      </div>
-      <div className="text-[11px] text-slate-400/90 mt-1 truncate">{sub}</div>
-    </div>
+      </Card.Header>
+      <Card.Content className="p-0 mt-1.5 space-y-1">
+        <div className={`text-base sm:text-xl font-bold font-mono tracking-tight truncate ${style.text}`}>
+          {value}
+        </div>
+        <div className="text-[11px] text-muted truncate">{sub}</div>
+      </Card.Content>
+    </Card>
   );
 }
 
@@ -75,21 +107,29 @@ export function SmallCopy({
 }) {
   const [ok, setOk] = useState(false);
   return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        navigator.clipboard?.writeText(text);
-        setOk(true);
-        onCopied?.();
-        setTimeout(() => setOk(false), 1400);
-      }}
-      className="inline-flex items-center gap-1 p-1.5 rounded-lg hover:bg-slate-800/90 active:scale-95 text-slate-400 hover:text-white transition cursor-pointer"
-      title={`复制: ${text}`}
-    >
-      {ok ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-      {label && <span className="text-[11px]">{ok ? '已复制' : label}</span>}
-    </button>
+    <span onClick={(e) => e.stopPropagation()} className="inline-flex">
+      <Tooltip delay={250}>
+        <Button
+          size="sm"
+          variant={ok ? 'secondary' : 'ghost'}
+          isIconOnly={!label}
+          aria-label={label || `复制 ${text}`}
+          className="h-7 min-w-0 px-2 text-xs text-muted data-[hovered=true]:text-foreground"
+          onPress={() => {
+            navigator.clipboard?.writeText(text);
+            setOk(true);
+            onCopied?.();
+            setTimeout(() => setOk(false), 1400);
+          }}
+        >
+          {ok ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+          {label && <span className="text-[11px]">{ok ? '已复制' : label}</span>}
+        </Button>
+        <Tooltip.Content>
+          <p className="text-xs font-mono">点击复制: {text}</p>
+        </Tooltip.Content>
+      </Tooltip>
+    </span>
   );
 }
 
@@ -114,19 +154,19 @@ export function LpVersusBar({
   const pct1 = Math.max(4, Math.min(100, Math.round((Math.max(0, team1Lp) / base) * 100)));
 
   return (
-    <div className="glass-subcard rounded-xl p-2.5 space-y-1.5">
+    <Surface variant="secondary" className="rounded-xl p-2.5 space-y-1.5 border border-border/60">
       <div className="flex items-center justify-between text-[11px]">
         <div className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]" />
-          <span className="text-slate-400">{isTag ? 'A 队' : '先席'}</span>
+          <span className="text-muted">{isTag ? 'A 队' : '先席'}</span>
           <span className="font-mono font-bold text-emerald-300 text-xs">{team0Lp}</span>
         </div>
-        <span className="px-1.5 py-0.5 rounded-full bg-slate-900 border border-slate-800 font-mono text-[10px] text-slate-400">
+        <Chip size="sm" variant="soft" color={turnCount > 0 ? 'accent' : 'default'} className="h-5 px-2 text-[10px] font-mono">
           {turnCount > 0 ? `Turn ${turnCount}` : '待开局'}
-        </span>
+        </Chip>
         <div className="flex items-center gap-1.5">
           <span className="font-mono font-bold text-sky-300 text-xs">{team1Lp}</span>
-          <span className="text-slate-400">{isTag ? 'B 队' : '后席'}</span>
+          <span className="text-muted">{isTag ? 'B 队' : '后席'}</span>
           <span className="w-2 h-2 rounded-full bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.7)]" />
         </div>
       </div>
@@ -134,23 +174,23 @@ export function LpVersusBar({
       <div className="grid grid-cols-2 gap-1.5 h-1.5">
         <div className="bg-slate-800/90 rounded-full overflow-hidden flex justify-end">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-emerald-600 to-emerald-400 transition-all duration-300"
+            className="h-full rounded-full bg-gradient-to-r from-emerald-600 to-emerald-400 transition-all duration-300 motion-reduce:transition-none"
             style={{ width: `${pct0}%` }}
           />
         </div>
         <div className="bg-slate-800/90 rounded-full overflow-hidden">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-sky-400 to-sky-600 transition-all duration-300"
+            className="h-full rounded-full bg-gradient-to-r from-sky-400 to-sky-600 transition-all duration-300 motion-reduce:transition-none"
             style={{ width: `${pct1}%` }}
           />
         </div>
       </div>
-    </div>
+    </Surface>
   );
 }
 
 /**
- * 手机端底部弹出抽屉（Bottom Sheet）：解决移动端点击房间/详情后内容远在页面底部看不见的问题。
+ * 手机端底部弹出抽屉（基于 HeroUI v3 Drawer + React Aria 无障碍焦点控制）。
  */
 export function MobileBottomSheet({
   open,
@@ -165,45 +205,25 @@ export function MobileBottomSheet({
   onClose: () => void;
   children: React.ReactNode;
 }) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-
-  if (!open) return null;
-
   return (
-    <div
-      className="lg:hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-end justify-center"
-      onClick={onClose}
+    <Drawer.Backdrop
+      isOpen={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) onClose();
+      }}
+      className="lg:hidden"
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-h-[86vh] bg-slate-900 border-t border-slate-700/80 rounded-t-3xl shadow-2xl flex flex-col animate-slide-up pb-safe"
-      >
-        <div className="pt-2.5 pb-1 flex justify-center">
-          <div className="w-10 h-1 rounded-full bg-slate-700" />
-        </div>
-        <div className="px-4 py-2.5 border-b border-slate-800 flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="font-bold text-sm text-slate-100 truncate">{title}</div>
-            {subtitle && <div className="text-[11px] text-slate-400 truncate">{subtitle}</div>}
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 shrink-0 cursor-pointer"
-            aria-label="关闭抽屉"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        <div className="p-4 overflow-y-auto space-y-3 flex-1">{children}</div>
-      </div>
-    </div>
+      <Drawer.Content placement="bottom" className="lg:hidden">
+        <Drawer.Dialog className="max-h-[86vh] rounded-t-3xl bg-overlay text-overlay-foreground border-t border-border pb-safe">
+          <Drawer.Handle />
+          <Drawer.CloseTrigger aria-label="关闭抽屉" />
+          <Drawer.Header className="pb-2 border-b border-separator">
+            <Drawer.Heading className="text-sm font-bold truncate">{title}</Drawer.Heading>
+            {subtitle && <p className="text-[11px] text-muted truncate mt-0.5">{subtitle}</p>}
+          </Drawer.Header>
+          <Drawer.Body className="p-4 space-y-3">{children}</Drawer.Body>
+        </Drawer.Dialog>
+      </Drawer.Content>
+    </Drawer.Backdrop>
   );
 }

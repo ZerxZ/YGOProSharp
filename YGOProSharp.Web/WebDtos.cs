@@ -122,7 +122,7 @@ public sealed record DiyCardEntryDto(
     int? Attack,
     int? Defense,
     int? LinkMarker,
-    int? Category,
+    long? Category,
     string? Name,
     string? Desc,
     string[]? Strings);

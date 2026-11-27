@@ -54,10 +54,17 @@ public static class McpHttpEndpoints
             ActiveHttpSessions[sessionId] = token!.TokenId;
             http.Response.Headers["Mcp-Session-Id"] = sessionId;
 
+            if (http.Request.ContentLength is > 1024 * 1024)
+                return Results.Json(McpServerEngine.BuildJsonRpcError(null, -32600, "MCP JSON-RPC request payload exceeds 1 MiB limit."), statusCode: StatusCodes.Status413PayloadTooLarge);
+
             JsonNode? requestNode;
             try
             {
-                requestNode = await JsonNode.ParseAsync(http.Request.Body, cancellationToken: ct).ConfigureAwait(false);
+                requestNode = await ReadBoundedJsonNodeAsync(http.Request.Body, 1024 * 1024, ct).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException sizeEx)
+            {
+                return Results.Json(McpServerEngine.BuildJsonRpcError(null, -32600, sizeEx.Message), statusCode: StatusCodes.Status413PayloadTooLarge);
             }
             catch (Exception ex)
             {
@@ -229,6 +236,28 @@ public static class McpHttpEndpoints
         http.Response.Headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS";
         http.Response.Headers["Access-Control-Allow-Headers"] = "Content-Type, Accept, Authorization, X-MCP-Token, X-API-Key, Mcp-Session-Id, MCP-Protocol-Version";
         http.Response.Headers["Access-Control-Expose-Headers"] = "Mcp-Session-Id";
+    }
+
+    private static async Task<JsonNode?> ReadBoundedJsonNodeAsync(Stream body, int maxBytes, CancellationToken ct)
+    {
+        using MemoryStream ms = new();
+        byte[] buffer = new byte[16 * 1024];
+        int total = 0;
+        while (true)
+        {
+            int read = await body.ReadAsync(buffer, ct).ConfigureAwait(false);
+            if (read <= 0)
+                break;
+            total += read;
+            if (total > maxBytes)
+                throw new InvalidOperationException($"MCP JSON-RPC request payload exceeds {maxBytes} bytes limit.");
+            ms.Write(buffer, 0, read);
+        }
+
+        if (ms.Length == 0)
+            return null;
+        ms.Position = 0;
+        return await JsonNode.ParseAsync(ms, cancellationToken: ct).ConfigureAwait(false);
     }
 
     private static string? GetRemoteIp(HttpContext http)

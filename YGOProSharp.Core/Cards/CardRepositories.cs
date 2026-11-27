@@ -51,7 +51,7 @@ public sealed record DiyCardEntry
     public int Attack { get; init; }
     public int Defense { get; init; }
     public int LinkMarker { get; init; }
-    public int Category { get; init; }
+    public long Category { get; init; }
     public string Name { get; init; } = string.Empty;
     public string Desc { get; init; } = string.Empty;
     public IReadOnlyList<string> Strings { get; init; } = [];

@@ -936,4 +936,132 @@ public sealed class WebControlAndPortalTests
         }
     }
 
+    [Fact]
+    public async Task AntiBypassHardeningCrossSurfaceIsolationLogRedactionAndLocalConsoleAdminResetWorkAsync()
+    {
+        string tempRoot = Path.Combine(Path.GetTempPath(), "YGOProSharpAntiBypass_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            PersistenceOptions persistenceOptions = new()
+            {
+                DbProvider = OperationalDbProvider.Sqlite,
+                ConnectionString = $"Data Source={Path.Combine(tempRoot, "security.db")}",
+                ReplayDirectory = Path.Combine(tempRoot, "replays"),
+                Argon2MemoryKb = 4096,
+                Argon2Iterations = 1,
+                Argon2Parallelism = 1,
+                LoginRateLimitCount = 50
+            };
+
+            await using OperationalStore store = new(persistenceOptions);
+            BootstrapAdminResult boot = await store.InitializeAsync();
+            OperationalServerCoordinator coordinator = new(store);
+
+            LogRingBuffer logBuffer = new(200);
+            logBuffer.Append(
+                LogLevel.Warning,
+                "YGOProSharp.Cli.Server",
+                $"One-time initial password: {boot.GeneratedOneTimePassword} and token ygp_mcp_admin_secret1234567890 ?key=supersecret");
+
+            // 1. 验证环形内存日志已将一次性超管密码、MCP 令牌与 Query 密钥强制脱敏
+            BufferedLogEntry latestLog = logBuffer.GetRecent(10).Last();
+            AssertFalse(latestLog.Message.Contains(boot.GeneratedOneTimePassword!, StringComparison.Ordinal));
+            AssertFalse(latestLog.Message.Contains("secret1234567890", StringComparison.Ordinal));
+            AssertFalse(latestLog.Message.Contains("supersecret", StringComparison.Ordinal));
+            AssertTrue(latestLog.Message.Contains("[REDACTED", StringComparison.Ordinal));
+
+            ServerOptions serverOptions = new()
+            {
+                RootPath = tempRoot,
+                EnableNetworkListener = false,
+                EnableMultiRoom = true,
+                AddonFactories = [coordinator.CreateRoomAddonFactory()],
+                JoinAccessValidator = coordinator.CreateJoinAccessValidator()
+            };
+
+            using ServerTestFakeOcgRuntime fakeRuntime = new();
+            await using YGOProSharpServerHost serverHost = YGOProSharpServer.CreateHost(serverOptions, fakeRuntime);
+            serverHost.StartBackgroundLoop(tickDelayMilliseconds: 2, embedded: true);
+
+            await using WebControlHost webHost = new(
+                serverHost,
+                store,
+                coordinator,
+                new WebControlOptions { Host = "127.0.0.1", Port = 0, EnableUnifiedPortal = true },
+                logBuffer);
+            await webHost.StartAsync();
+
+            Uri baseUri = new(webHost.BoundAddresses.First());
+            using HttpClient rawHttp = new() { BaseAddress = baseUri };
+
+            // 2. 验证前台门户注册签发的 ygp_usr_sess_ 令牌禁止跨端访问管理后台 /api/v1/* 与 /ws/events
+            string playerPortalToken;
+            using (HttpResponseMessage regRes = await rawHttp.PostAsync(
+                       "/api/portal/auth/register",
+                       new StringContent(JsonSerializer.Serialize(new { username = "yugi_player", password = "KingOfGames#2026" }), Encoding.UTF8, "application/json")))
+            {
+                AssertEqual((int)HttpStatusCode.OK, (int)regRes.StatusCode);
+                using JsonDocument regDoc = JsonDocument.Parse(await regRes.Content.ReadAsStringAsync());
+                playerPortalToken = regDoc.RootElement.GetProperty("accessToken").GetString()!;
+                AssertTrue(playerPortalToken.StartsWith("ygp_usr_sess_", StringComparison.Ordinal));
+            }
+
+            using (HttpRequestMessage crossReq = new(HttpMethod.Get, "/api/v1/rooms"))
+            {
+                crossReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", playerPortalToken);
+                using HttpResponseMessage crossRes = await rawHttp.SendAsync(crossReq);
+                AssertEqual((int)HttpStatusCode.Unauthorized, (int)crossRes.StatusCode);
+                using JsonDocument errDoc = JsonDocument.Parse(await crossRes.Content.ReadAsStringAsync());
+                AssertEqual("cross_surface_token_rejected", errDoc.RootElement.GetProperty("error").GetString()!);
+            }
+
+            // 3. 验证 DNS Rebinding 伪造 Host 头、跨站伪造 Origin 头以及编码路径穿越探测 .db 文件均被 403 拦截
+            using (HttpRequestMessage rebindReq = new(HttpMethod.Get, "/api/portal/overview"))
+            {
+                rebindReq.Headers.Host = "evil-rebind.attacker.example:7912";
+                using HttpResponseMessage rebindRes = await rawHttp.SendAsync(rebindReq);
+                AssertEqual((int)HttpStatusCode.Forbidden, (int)rebindRes.StatusCode);
+            }
+
+            using (HttpRequestMessage crossOriginReq = new(HttpMethod.Post, "/api/v1/auth/login"))
+            {
+                crossOriginReq.Headers.Add("Origin", "https://evil.attacker.example");
+                crossOriginReq.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+                using HttpResponseMessage coRes = await rawHttp.SendAsync(crossOriginReq);
+                AssertEqual((int)HttpStatusCode.Forbidden, (int)coRes.StatusCode);
+            }
+
+            foreach (string probePath in new[] { "/..%2f..%2fdata/db/ygoprosharp.db", "/data/db/ygoprosharp.db", "/cards.cdb", "/.env" })
+            {
+                using HttpResponseMessage probeRes = await rawHttp.GetAsync(probePath);
+                AssertEqual((int)HttpStatusCode.Forbidden, (int)probeRes.StatusCode);
+            }
+
+            // 4. 验证本机物理控制台应急重置超管密码：立即吊销旧会话并签发新一次性密码
+            LoginResult oldAdminLogin = await store.LoginAsync("admin", boot.GeneratedOneTimePassword!, "127.0.0.1", "Test");
+            AssertTrue(oldAdminLogin.Success && oldAdminLogin.SessionToken is not null);
+
+            LocalConsoleAdminResetResult resetRes = await store.ResetSuperAdminFromLocalConsoleAsync();
+            AssertEqual("admin", resetRes.Username);
+            AssertTrue(resetRes.MustChangePassword);
+            AssertEqual(1, resetRes.RevokedSessionCount);
+
+            // 旧超管会话必须立即失效
+            AssertTrue(await store.ValidateSessionAsync(oldAdminLogin.SessionToken) is null);
+
+            // 新重置密码可正常登录管理台
+            LoginResult newAdminLogin = await store.LoginAsync("admin", resetRes.EffectivePassword, "127.0.0.1", "Test");
+            AssertTrue(newAdminLogin.Success);
+            AssertTrue(newAdminLogin.Principal!.MustChangePassword);
+
+            await serverHost.StopAsync();
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
 }

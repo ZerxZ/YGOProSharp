@@ -33,7 +33,7 @@ try
 {
     if (args.Length == 0)
     {
-        logger.LogError("Missing command. Usage: YGOProSharp.Cli server Key=Value ... | YGOProSharp.Cli windbot Key=Value ...");
+        logger.LogError("Missing command. Usage: YGOProSharp.Cli server Key=Value ... | YGOProSharp.Cli reset-admin [DbConnectionString=...] [AdminUser=admin] [NewPassword=...] | YGOProSharp.Cli windbot Key=Value ...");
         return 2;
     }
 
@@ -55,6 +55,7 @@ try
     return command switch
     {
         "server" => await RunServerAsync(configuration, sharedLogBuffer, shutdown.Token).ConfigureAwait(false),
+        "reset-admin" or "reset-password" => await RunResetAdminFromConsoleAsync(configuration, shutdown.Token).ConfigureAwait(false),
         "windbot" => await RunWindBotAsync(configuration, shutdown.Token).ConfigureAwait(false),
         "mcp" => await RunMcpStdioAsync(configuration, shutdown.Token).ConfigureAwait(false),
         _ => UnknownCommand(command)
@@ -477,10 +478,49 @@ static async Task<int> RunMcpStdioAsync(CliConfiguration configuration, Cancella
     return await McpStdioRelay.RunAsync(uri, token, input, output, cancellationToken: cancellationToken).ConfigureAwait(false);
 }
 
+static async Task<int> RunResetAdminFromConsoleAsync(CliConfiguration configuration, CancellationToken cancellationToken)
+{
+    ILogger consoleLogger = AppLog.CreateLogger("YGOProSharp.Cli.ResetAdmin");
+    ServerOptions baseOptions = CliOptionsFactory.CreateServerOptions(configuration);
+    PersistenceOptions persistenceOptions = CliOptionsFactory.CreatePersistenceOptions(configuration, baseOptions) with
+    {
+        BootstrapAdminUser = null,
+        BootstrapAdminPassword = null
+    };
+
+    string? targetUser = configuration.GetString("AdminUser") ?? configuration.GetString("Username");
+    string? newPassword = configuration.GetString("NewPassword") ?? configuration.GetString("AdminPassword");
+
+    await using OperationalStore store = new(persistenceOptions);
+    await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
+    LocalConsoleAdminResetResult reset = await store.ResetSuperAdminFromLocalConsoleAsync(
+        targetUser,
+        newPassword,
+        cancellationToken).ConfigureAwait(false);
+
+    if (reset.MustChangePassword)
+    {
+        consoleLogger.LogWarning(
+            "Local console reset completed for super_admin '{Username}' (RevokedSessions={RevokedCount}). Temporary reset password: {Password} (mandatory password change on next login).",
+            reset.Username,
+            reset.RevokedSessionCount,
+            reset.EffectivePassword);
+    }
+    else
+    {
+        consoleLogger.LogInformation(
+            "Local console password update completed for super_admin '{Username}' (RevokedSessions={RevokedCount}, MustChangePassword=False).",
+            reset.Username,
+            reset.RevokedSessionCount);
+    }
+
+    return 0;
+}
+
 static int UnknownCommand(string command)
 {
     AppLog.CreateLogger("YGOProSharp.Cli")
-        .LogError("Unknown command '{Command}'. Usage: YGOProSharp.Cli server Key=Value ... | YGOProSharp.Cli windbot Key=Value ... | YGOProSharp.Cli mcp Endpoint=http://127.0.0.1:7913/mcp Token=ygp_mcp_...", command);
+        .LogError("Unknown command '{Command}'. Usage: YGOProSharp.Cli server Key=Value ... | YGOProSharp.Cli reset-admin DbConnectionString=... | YGOProSharp.Cli windbot Key=Value ... | YGOProSharp.Cli mcp Endpoint=http://127.0.0.1:7913/mcp Token=ygp_mcp_...", command);
     return 2;
 }
 
